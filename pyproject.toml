@@ -1,0 +1,129 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "train-factory"
+version = "0.1.0"
+description = "A standalone training framework for Embedding and Reranker models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "TrainFactory Team"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    # Deep Learning
+    "torch>=2.0.0",
+    "transformers>=4.51.0",
+    "sentence-transformers>=3.0.0",
+    "accelerate>=0.25.0",
+    "peft>=0.10.0",
+    "datasets>=2.18.0",
+
+    # Decoder Reranker Training
+    # pre-1.0 库 0.x 间有破坏性 API 变更（见 docker/ANOMALY_REPORT.md），
+    # 上限 <0.3.0 防止新构建拉到未知 API 的版本；本地路径安装在 compose 中优先
+    "qwen3-rerank-trainer[eval]>=0.1.0,<0.3.0",
+
+    # LLM Fine-tuning (SFT, DPO, ORPO)
+    "trl>=0.9.0",
+
+    # Database
+    "sqlmodel>=0.0.16",
+    "pymysql>=1.1.0",
+    "alembic>=1.13.0",
+
+    # Configuration
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "email-validator>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+
+    # Model Download
+    "huggingface-hub>=0.20.0",
+    "modelscope>=1.10.0",
+    "modelscope-hub>=0.2.0",
+
+    # API
+    "fastapi>=0.100.0",
+    "uvicorn>=0.24.0",
+    "httpx>=0.25.0",
+    "requests>=2.32.2",
+    "slowapi>=0.1.9",
+    "python-multipart>=0.0.6",
+
+    # Authentication
+    "bcrypt>=4.0.0",
+    "argon2-cffi>=23.1.0",
+    "python-jose[cryptography]>=3.3.0",
+
+    # External Model API
+    "openai>=1.0.0",
+
+    # Vector Database
+    "pymilvus>=2.5.0",
+
+    # Object Storage
+    "minio>=7.2.0",
+
+    # Utilities
+    "loguru>=0.7.0",
+    "rich>=13.0.0",
+    "psutil>=5.9.0",
+    "nvidia-ml-py>=12.0.0",
+
+    # Experiment Tracking (optional)
+    "swanlab>=0.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+train-factory = "train_factory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["train_factory*"]
+
+[tool.black]
+line-length = 120
+target-version = ['py310', 'py311', 'py312']
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "host_tools: requires host Git or Docker tooling and never runs in the CPU test image",
+]
+filterwarnings = [
+    "error",
+    'ignore:^The pynvml package is deprecated\. Please install nvidia-ml-py instead\. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you\.$:FutureWarning:^torch\.cuda(\.__init__)?$',
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

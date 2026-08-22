@@ -1,0 +1,356 @@
+{
+  "hub": {
+    "tabs": {
+      "list": "Dataset List",
+      "generation": "Data Generation"
+    }
+  },
+  "list": {
+    "title": "Dataset Management",
+    "stats": {
+      "totalDatasets": "Total Datasets",
+      "trainSets": "Train Sets",
+      "evalSets": "Eval Sets",
+      "testSets": "Test Sets",
+      "ready": "Ready"
+    },
+    "filter": {
+      "status": "Status",
+      "usage": "Usage",
+      "modelType": "Model Type",
+      "datasetType": "Dataset Type"
+    },
+    "downloadDataset": "Download Dataset",
+    "uploadDataset": "Upload Dataset",
+    "registerDataset": "Register Dataset",
+    "columns": {
+      "name": "Name",
+      "usage": "Usage",
+      "status": "Status",
+      "modelType": "Model Type",
+      "datasetType": "Dataset Type",
+      "format": "Format",
+      "size": "Size",
+      "numRows": "Rows",
+      "storagePath": "Storage Path",
+      "createdAt": "Created At",
+      "actions": "Actions"
+    },
+    "notLabeled": "Not labeled",
+    "viewDetail": "View details",
+    "confirmDelete": "Are you sure you want to delete this dataset?",
+    "splitTooltip": {
+      "train": "Train: {{count}}",
+      "eval": "Eval: {{count}}",
+      "test": "Test: {{count}}"
+    },
+    "message": {
+      "modelTypeUpdated": "Model type updated",
+      "updateFailed": "Update failed"
+    }
+  },
+  "create": {
+    "title": "Add Dataset",
+    "form": {
+      "datasetName": {
+        "label": "Dataset Name",
+        "required": "Please enter a dataset name",
+        "placeholder": "e.g. my-embedding-dataset"
+      },
+      "description": {
+        "label": "Description",
+        "placeholder": "Dataset description (optional)"
+      },
+      "modelType": {
+        "label": "Model Type",
+        "extra": "Tag which model types this dataset is for (multi-select, optional)"
+      },
+      "datasetType": {
+        "label": "Dataset Type",
+        "required": "Please select a dataset type",
+        "placeholder": "Select dataset type"
+      },
+      "usage": {
+        "label": "Usage"
+      },
+      "storagePath": {
+        "label": "Storage Path",
+        "required": "Please enter a storage path",
+        "extra": "Local file path or HuggingFace dataset name",
+        "placeholder": "e.g. /data/datasets/train.jsonl or username/dataset"
+      },
+      "fileFormat": {
+        "label": "File Format"
+      },
+      "advanced": "Advanced Options",
+      "columns": {
+        "label": "Column Schema",
+        "extra": "Manually specify dataset column names and types (optional, auto-detected if empty)",
+        "fieldNameRequired": "Please enter a field name",
+        "fieldNamePlaceholder": "Field name",
+        "addField": "Add Field"
+      },
+      "sampleCount": {
+        "label": "Sample Count",
+        "extra": "Manually specify dataset sample counts (optional, auto-detected if empty)",
+        "total": "Total",
+        "train": "Train",
+        "eval": "Eval",
+        "test": "Test"
+      },
+      "tags": {
+        "label": "Tags",
+        "extra": "Separate multiple tags with commas",
+        "placeholder": "e.g. nlp, chinese, embedding"
+      },
+      "displayName": {
+        "label": "Display Name",
+        "placeholder": "Optional friendly display name"
+      },
+      "contentField": {
+        "label": "Content Field",
+        "extra": "For data generation pipeline, specify which field to use as document content (auto-detects content/text/passage/document by default)",
+        "placeholder": "e.g. doc_content, text, content"
+      },
+      "submit": "Add"
+    },
+    "message": {
+      "createSuccess": "Dataset added successfully",
+      "createFailed": "Failed to add dataset"
+    }
+  },
+  "detail": {
+    "notFound": "Dataset not found",
+    "backToList": "Back to list",
+    "confirmDelete": "Are you sure you want to delete this dataset?",
+    "confirmArchive": "Archive this dataset? It will no longer be used for training.",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "stats": {
+      "totalSamples": "Total Samples",
+      "trainSet": "Train Set",
+      "evalSet": "Eval Set",
+      "fileSize": "File Size"
+    },
+    "tabs": {
+      "basicInfo": "Basic Info",
+      "sourceInfo": "Source Info",
+      "schema": "Schema",
+      "preview": "Data Preview"
+    },
+    "info": {
+      "datasetId": "Dataset ID",
+      "datasetName": "Dataset Name",
+      "displayName": "Display Name",
+      "displayNamePlaceholder": "Optional display name",
+      "datasetType": "Dataset Type",
+      "usage": "Usage",
+      "modelType": "Model Type",
+      "fileFormat": "File Format",
+      "status": "Status",
+      "storagePath": "Storage Path",
+      "description": "Description",
+      "descriptionPlaceholder": "Dataset description",
+      "tags": "Tags",
+      "tagsExtra": "Separate multiple tags with commas",
+      "createdAt": "Created At",
+      "updatedAt": "Updated At"
+    },
+    "source": {
+      "sourceType": "Source Type",
+      "sourcePath": "Source Path",
+      "sourceDataset": "Source Dataset",
+      "remoteRepo": "Remote Repository",
+      "extraMetadata": "Extra Metadata"
+    },
+    "schema": {
+      "fieldName": "Field Name",
+      "fieldType": "Type",
+      "noFields": "No field information available"
+    },
+    "preview": {
+      "totalPreview": "{{total}} preview records",
+      "loading": "Loading...",
+      "noData": "No preview data available",
+      "showFirst": "Showing first 20 records, {{total}} total"
+    },
+    "message": {
+      "fetchFailed": "Failed to fetch dataset details",
+      "deleteSuccess": "Dataset deleted",
+      "deleteFailed": "Failed to delete dataset",
+      "updateSuccess": "Dataset updated",
+      "updateFailed": "Failed to update dataset"
+    }
+  },
+  "download": {
+    "title": "Download Remote Dataset",
+    "closeBackground": "Close (download in background)",
+    "startDownload": "Start Download",
+    "form": {
+      "sourceType": {
+        "label": "Download Source",
+        "required": "Please select a download source"
+      },
+      "remoteRepo": {
+        "label": "Repository",
+        "required": "Please enter a repository address",
+        "extra": "e.g. sentence-transformers/all-nli or shibing624/nli_zh",
+        "placeholder": "org/dataset-name"
+      },
+      "datasetName": {
+        "label": "Dataset Name",
+        "required": "Please enter a dataset name",
+        "placeholder": "Name for local display"
+      },
+      "hfSubset": {
+        "label": "HuggingFace Subset",
+        "placeholder": "Optional, dataset subset name"
+      },
+      "datasetType": {
+        "label": "Dataset Type",
+        "required": "Please select a dataset type"
+      },
+      "usage": {
+        "label": "Usage"
+      },
+      "modelType": {
+        "label": "Model Type"
+      },
+      "outputFormat": {
+        "label": "Output Format"
+      },
+      "description": {
+        "label": "Description",
+        "placeholder": "Optional"
+      }
+    },
+    "progress": {
+      "title": "Downloading Dataset",
+      "dataset": "Dataset",
+      "source": "Source: {{source}}",
+      "backgroundHint": "Download may take several minutes. You can close this dialog and the download will continue in the background."
+    },
+    "message": {
+      "downloadComplete": "Dataset download complete!",
+      "downloadFailed": "Download failed: {{error}}",
+      "unknownError": "Unknown error",
+      "progressFailed": "Failed to get download progress, please refresh manually",
+      "taskCreated": "Download task created, downloading...",
+      "taskCreateFailed": "Failed to create download task",
+      "backgroundContinue": "Download will continue in the background"
+    },
+    "downloadFailedAlert": "Download Failed"
+  },
+  "register": {
+    "title": "Register Local Dataset",
+    "form": {
+      "datasetName": {
+        "label": "Dataset Name",
+        "required": "Please enter a dataset name",
+        "placeholder": "e.g. my-training-data"
+      },
+      "storagePath": {
+        "label": "Storage Path",
+        "required": "Please enter a storage path",
+        "extra": "Local directory or file path where the dataset is stored",
+        "placeholder": "e.g. /app/data/datasets/my-data or /app/data/train.jsonl"
+      },
+      "usage": {
+        "label": "Dataset Usage"
+      },
+      "datasetType": {
+        "label": "Dataset Type",
+        "required": "Please select a dataset type"
+      },
+      "contentField": {
+        "label": "Content Field",
+        "extra": "Specify which JSON field to use as document content for the data generation pipeline",
+        "placeholder": "e.g. doc_content, text, content"
+      },
+      "fileFormat": {
+        "label": "File Format",
+        "required": "Please select a file format"
+      },
+      "displayName": {
+        "label": "Display Name",
+        "placeholder": "Optional, for UI display"
+      },
+      "description": {
+        "label": "Description",
+        "placeholder": "Optional"
+      }
+    },
+    "message": {
+      "registerSuccess": "Dataset registered successfully",
+      "registerFailed": "Dataset registration failed"
+    }
+  },
+  "options": {
+    "usage": {
+      "raw": "Raw Data",
+      "train": "Train",
+      "eval": "Eval",
+      "test": "Test"
+    },
+    "usageDataset": {
+      "raw": "Raw Data",
+      "train": "Train Dataset",
+      "eval": "Eval Dataset",
+      "test": "Test Dataset"
+    },
+    "optional": "Optional",
+    "datasetType": {
+      "embeddingUniversalDesc": "Universal format (query, pos[], neg[], scores[] optional)",
+      "embeddingPairDesc": "MNR pair (query, positive)",
+      "embeddingTripletDesc": "MNR triplet (query, positive, negative)",
+      "embeddingMultiNegDesc": "MNR multi-negative (query, pos, neg[]) fixed count",
+      "embeddingDynamicNegDesc": "Dynamic negative (query, pos, neg[]) variable count",
+      "embeddingCosineDesc": "Cosine similarity (text1, text2, label)",
+      "embeddingMarginDesc": "Margin triplet (anchor, pos, neg, margin)",
+      "embeddingMarginMultiDesc": "Margin multi-boundary (anchor, pos[], neg[], margins[])",
+      "embeddingScoredDesc": "Margin multi-score (anchor, pos[], neg[], scores[])",
+      "embeddingScoreTripletDesc": "Score triplet (query, pos, neg, [pos_score, neg_score])",
+      "rerankPairDesc": "Rerank pair (query, document, label)",
+      "rerankTripletDesc": "Rerank triplet (query, positives, negatives)",
+      "rerankListwiseDesc": "Listwise ranking (query, documents, labels)",
+      "sftInstructDesc": "SFT instruction (instruction, response)",
+      "dpoPreferenceDesc": "DPO preference (prompt, chosen, rejected)",
+      "rlRewardDesc": "RL reward (prompt, response, reward)",
+      "customDesc": "Custom format"
+    },
+    "downloadDatasetType": {
+      "embeddingPair": "Embedding Pair",
+      "embeddingTriplet": "Embedding Triplet",
+      "rerankPair": "Rerank Pair",
+      "rerankListwise": "Rerank Listwise",
+      "sftInstruct": "SFT Instruct",
+      "dpoPreference": "DPO Preference",
+      "rlReward": "RL Reward",
+      "custom": "Custom"
+    },
+    "outputFormat": {
+      "jsonlRecommended": "JSONL (Recommended)"
+    },
+    "sourceType": {
+      "modelscope": "ModelScope"
+    },
+    "status": {
+      "registered": "Not Ready",
+      "uploading": "Uploading",
+      "downloading": "Downloading",
+      "processing": "Processing",
+      "ready": "Ready",
+      "error": "Error",
+      "archived": "Archived"
+    }
+  },
+  "upload": {
+    "title": "Upload Dataset",
+    "dragText": "Click or drag file to upload",
+    "dragHint": "Supports .jsonl, .json, .csv, .parquet (max 500MB)",
+    "uploading": "Uploading...",
+    "success": "Dataset uploaded successfully",
+    "failed": "Upload failed",
+    "fileTooLarge": "File too large"
+  }
+}

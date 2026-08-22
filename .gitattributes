@@ -1,0 +1,6 @@
+*.sh text eol=lf
+requirements/*.txt text eol=lf
+requirements/*.lock text eol=lf
+requirements/*.toml text eol=lf
+requirements/*.in text eol=lf
+docker/images.lock.env text eol=lf

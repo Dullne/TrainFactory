@@ -1,0 +1,62 @@
+# Memov ignore file - similar to .gitignore
+# Files/directories matching these patterns will be ignored
+
+# Hidden files and directories
+.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+
+# Node.js
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build outputs
+dist/
+build/
+out/
+target/
+
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+
+# Binary and image files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+*.svg
+*.webp
+screenshots/
+
+# Data and model files
+*.bin
+*.pt
+*.pth
+*.onnx
+*.safetensors
+data/
+models/
+output/
+

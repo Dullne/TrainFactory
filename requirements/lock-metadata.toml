@@ -1,0 +1,27 @@
+[tool]
+uv_version = "0.11.19"
+python_version = "3.11"
+python_platform = "x86_64-unknown-linux-gnu"
+default_index = "https://pypi.org/simple"
+cpu_index = "https://download.pytorch.org/whl/cpu"
+torch_backend = "cpu"
+index_strategy = "first-index"
+resolution = "highest"
+prerelease = "if-necessary"
+keyring_provider = "disabled"
+exclude_newer = "2026-08-16T00:00:00Z"
+only_binary = ":all:"
+no_sources = true
+no_header = true
+
+[runtime]
+inputs = ["pyproject.toml"]
+overrides = "requirements/runtime-overrides.txt"
+providers = "requirements/base-image-provided.txt"
+output = "requirements/runtime.lock"
+
+[test_cpu]
+inputs = ["pyproject.toml", "requirements/test-build-requirements.in"]
+extra = ["dev"]
+overrides = "requirements/test-cpu-overrides.txt"
+output = "requirements/test-cpu.lock"

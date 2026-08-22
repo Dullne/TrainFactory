@@ -1,0 +1,67 @@
+.training-list-page {
+  width: 100%;
+  min-width: 0;
+}
+
+.training-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  margin-bottom: 16px;
+}
+
+.training-list-toolbar-title {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.training-list-toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.training-list-status-filter {
+  width: 120px;
+}
+
+.training-list-page .ant-table-tbody > tr > td.ant-table-cell-fix-right {
+  background: #161b22;
+}
+
+.training-list-page .ant-table-tbody > tr:hover > td.ant-table-cell-fix-right,
+.training-list-page .ant-table-tbody > tr > td.ant-table-cell-fix-right.ant-table-cell-row-hover {
+  background: #1c2128 !important;
+}
+
+@media (max-width: 820px) {
+  .training-list-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .training-list-toolbar-title {
+    width: 100%;
+  }
+
+  .training-list-toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .training-list-status-filter {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .training-list-toolbar-actions .ant-btn {
+    width: 100%;
+    min-width: 0;
+  }
+}

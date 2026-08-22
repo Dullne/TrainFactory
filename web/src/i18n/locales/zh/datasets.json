@@ -1,0 +1,356 @@
+{
+  "hub": {
+    "tabs": {
+      "list": "数据集列表",
+      "generation": "数据集生成"
+    }
+  },
+  "list": {
+    "title": "数据集管理",
+    "stats": {
+      "totalDatasets": "总数据集",
+      "trainSets": "训练集",
+      "evalSets": "评估集",
+      "testSets": "测试集",
+      "ready": "就绪"
+    },
+    "filter": {
+      "status": "状态",
+      "usage": "用途",
+      "modelType": "适用模型",
+      "datasetType": "数据类型"
+    },
+    "downloadDataset": "下载数据集",
+    "uploadDataset": "上传数据集",
+    "registerDataset": "注册数据集",
+    "columns": {
+      "name": "名称",
+      "usage": "用途",
+      "status": "状态",
+      "modelType": "适用模型",
+      "datasetType": "数据类型",
+      "format": "格式",
+      "size": "大小",
+      "numRows": "样本数",
+      "storagePath": "存储路径",
+      "createdAt": "创建时间",
+      "actions": "操作"
+    },
+    "notLabeled": "未标注",
+    "viewDetail": "查看详情",
+    "confirmDelete": "确定删除此数据集？",
+    "splitTooltip": {
+      "train": "训练: {{count}}",
+      "eval": "验证: {{count}}",
+      "test": "测试: {{count}}"
+    },
+    "message": {
+      "modelTypeUpdated": "适用模型已更新",
+      "updateFailed": "更新失败"
+    }
+  },
+  "create": {
+    "title": "添加数据集",
+    "form": {
+      "datasetName": {
+        "label": "数据集名称",
+        "required": "请输入数据集名称",
+        "placeholder": "例如: my-embedding-dataset"
+      },
+      "description": {
+        "label": "描述",
+        "placeholder": "数据集描述（可选）"
+      },
+      "modelType": {
+        "label": "适用模型",
+        "extra": "标注此数据集适用于哪些模型类型（可多选，可不选）"
+      },
+      "datasetType": {
+        "label": "数据集类型",
+        "required": "请选择数据集类型",
+        "placeholder": "选择数据集类型"
+      },
+      "usage": {
+        "label": "用途"
+      },
+      "storagePath": {
+        "label": "存储路径",
+        "required": "请输入存储路径",
+        "extra": "本地文件路径或 HuggingFace 数据集名称",
+        "placeholder": "例如: /data/datasets/train.jsonl 或 username/dataset"
+      },
+      "fileFormat": {
+        "label": "文件格式"
+      },
+      "advanced": "高级选项",
+      "columns": {
+        "label": "字段结构",
+        "extra": "手动指定数据集的字段名和类型（可选，留空则自动探测）",
+        "fieldNameRequired": "请输入字段名",
+        "fieldNamePlaceholder": "字段名",
+        "addField": "添加字段"
+      },
+      "sampleCount": {
+        "label": "样本数量",
+        "extra": "手动指定数据集的样本数量（可选，留空则自动探测）",
+        "total": "总数",
+        "train": "训练",
+        "eval": "验证",
+        "test": "测试"
+      },
+      "tags": {
+        "label": "标签",
+        "extra": "多个标签用逗号分隔",
+        "placeholder": "例如: nlp, chinese, embedding"
+      },
+      "displayName": {
+        "label": "显示名称",
+        "placeholder": "可选的友好显示名称"
+      },
+      "contentField": {
+        "label": "内容字段",
+        "extra": "用于数据生成管线，指定哪个字段作为文档内容（默认自动识别 content/text/passage/document）",
+        "placeholder": "例如: doc_content, text, content"
+      },
+      "submit": "添加"
+    },
+    "message": {
+      "createSuccess": "数据集添加成功",
+      "createFailed": "添加失败"
+    }
+  },
+  "detail": {
+    "notFound": "数据集不存在",
+    "backToList": "返回列表",
+    "confirmDelete": "确定要删除此数据集吗？",
+    "confirmArchive": "确定要归档此数据集吗？归档后不参与训练。",
+    "archive": "归档",
+    "unarchive": "取消归档",
+    "stats": {
+      "totalSamples": "总样本数",
+      "trainSet": "训练集",
+      "evalSet": "验证集",
+      "fileSize": "文件大小"
+    },
+    "tabs": {
+      "basicInfo": "基本信息",
+      "sourceInfo": "来源信息",
+      "schema": "字段结构",
+      "preview": "数据预览"
+    },
+    "info": {
+      "datasetId": "数据集 ID",
+      "datasetName": "数据集名称",
+      "displayName": "显示名称",
+      "displayNamePlaceholder": "可选的显示名称",
+      "datasetType": "数据类型",
+      "usage": "用途",
+      "modelType": "适用模型",
+      "fileFormat": "文件格式",
+      "status": "状态",
+      "storagePath": "存储路径",
+      "description": "描述",
+      "descriptionPlaceholder": "数据集描述",
+      "tags": "标签",
+      "tagsExtra": "多个标签用逗号分隔",
+      "createdAt": "创建时间",
+      "updatedAt": "更新时间"
+    },
+    "source": {
+      "sourceType": "来源类型",
+      "sourcePath": "来源路径",
+      "sourceDataset": "源数据集",
+      "remoteRepo": "远程仓库",
+      "extraMetadata": "额外元数据"
+    },
+    "schema": {
+      "fieldName": "字段名",
+      "fieldType": "类型",
+      "noFields": "暂无字段信息"
+    },
+    "preview": {
+      "totalPreview": "共 {{total}} 条预览数据",
+      "loading": "加载中...",
+      "noData": "暂无预览数据",
+      "showFirst": "显示前 20 条数据，总计 {{total}} 条"
+    },
+    "message": {
+      "fetchFailed": "获取数据集详情失败",
+      "deleteSuccess": "数据集已删除",
+      "deleteFailed": "删除数据集失败",
+      "updateSuccess": "数据集已更新",
+      "updateFailed": "更新数据集失败"
+    }
+  },
+  "download": {
+    "title": "下载远程数据集",
+    "closeBackground": "关闭（后台下载）",
+    "startDownload": "开始下载",
+    "form": {
+      "sourceType": {
+        "label": "下载来源",
+        "required": "请选择下载来源"
+      },
+      "remoteRepo": {
+        "label": "仓库地址",
+        "required": "请输入仓库地址",
+        "extra": "例如: sentence-transformers/all-nli 或 shibing624/nli_zh",
+        "placeholder": "组织/数据集名称"
+      },
+      "datasetName": {
+        "label": "数据集名称",
+        "required": "请输入数据集名称",
+        "placeholder": "用于本地显示的名称"
+      },
+      "hfSubset": {
+        "label": "HuggingFace Subset",
+        "placeholder": "可选，数据集子集名称"
+      },
+      "datasetType": {
+        "label": "数据集类型",
+        "required": "请选择数据集类型"
+      },
+      "usage": {
+        "label": "用途"
+      },
+      "modelType": {
+        "label": "适用模型"
+      },
+      "outputFormat": {
+        "label": "输出格式"
+      },
+      "description": {
+        "label": "描述",
+        "placeholder": "可选"
+      }
+    },
+    "progress": {
+      "title": "正在下载数据集",
+      "dataset": "数据集",
+      "source": "来源: {{source}}",
+      "backgroundHint": "下载可能需要几分钟，您可以关闭此窗口，下载将在后台继续进行。"
+    },
+    "message": {
+      "downloadComplete": "数据集下载完成!",
+      "downloadFailed": "下载失败: {{error}}",
+      "unknownError": "未知错误",
+      "progressFailed": "获取下载进度失败，请手动刷新",
+      "taskCreated": "下载任务已创建，正在下载中...",
+      "taskCreateFailed": "创建下载任务失败",
+      "backgroundContinue": "下载将在后台继续进行"
+    },
+    "downloadFailedAlert": "下载失败"
+  },
+  "register": {
+    "title": "注册本地数据集",
+    "form": {
+      "datasetName": {
+        "label": "数据集名称",
+        "required": "请输入数据集名称",
+        "placeholder": "例如: my-training-data"
+      },
+      "storagePath": {
+        "label": "存储路径",
+        "required": "请输入存储路径",
+        "extra": "数据集文件所在的本地目录或文件路径",
+        "placeholder": "例如: /app/data/datasets/my-data 或 /app/data/train.jsonl"
+      },
+      "usage": {
+        "label": "数据集用途"
+      },
+      "datasetType": {
+        "label": "数据集类型",
+        "required": "请选择数据集类型"
+      },
+      "contentField": {
+        "label": "内容字段名",
+        "extra": "指定 JSON 中哪个字段作为文档内容，用于数据生成管线读取",
+        "placeholder": "例如: doc_content, text, content"
+      },
+      "fileFormat": {
+        "label": "文件格式",
+        "required": "请选择文件格式"
+      },
+      "displayName": {
+        "label": "显示名称",
+        "placeholder": "可选，用于界面显示"
+      },
+      "description": {
+        "label": "描述",
+        "placeholder": "可选"
+      }
+    },
+    "message": {
+      "registerSuccess": "数据集注册成功",
+      "registerFailed": "数据集注册失败"
+    }
+  },
+  "options": {
+    "usage": {
+      "raw": "原始数据",
+      "train": "训练",
+      "eval": "评估",
+      "test": "测试"
+    },
+    "usageDataset": {
+      "raw": "原始数据",
+      "train": "训练数据集",
+      "eval": "评估数据集",
+      "test": "测试数据集"
+    },
+    "optional": "可选",
+    "datasetType": {
+      "embeddingUniversalDesc": "通用格式 (query, pos[], neg[], scores[]可选)",
+      "embeddingPairDesc": "MNR对 (query, positive)",
+      "embeddingTripletDesc": "MNR三元组 (query, positive, negative)",
+      "embeddingMultiNegDesc": "MNR多负例 (query, pos, neg[]) 数量一致",
+      "embeddingDynamicNegDesc": "动态负例 (query, pos, neg[]) 数量可变",
+      "embeddingCosineDesc": "余弦相似度 (text1, text2, label)",
+      "embeddingMarginDesc": "Margin三元组 (anchor, pos, neg, margin)",
+      "embeddingMarginMultiDesc": "Margin多边界 (anchor, pos[], neg[], margins[])",
+      "embeddingScoredDesc": "Margin多分数 (anchor, pos[], neg[], scores[])",
+      "embeddingScoreTripletDesc": "Score三元组 (query, pos, neg, [pos_score, neg_score])",
+      "rerankPairDesc": "重排序对 (query, document, label)",
+      "rerankTripletDesc": "重排序三元组 (query, positives, negatives)",
+      "rerankListwiseDesc": "列表排序 (query, documents, labels)",
+      "sftInstructDesc": "SFT 指令 (instruction, response)",
+      "dpoPreferenceDesc": "DPO 偏好 (prompt, chosen, rejected)",
+      "rlRewardDesc": "RL 奖励 (prompt, response, reward)",
+      "customDesc": "自定义格式"
+    },
+    "downloadDatasetType": {
+      "embeddingPair": "Embedding Pair (句对)",
+      "embeddingTriplet": "Embedding Triplet (三元组)",
+      "rerankPair": "Rerank Pair (重排序对)",
+      "rerankListwise": "Rerank Listwise (列表式重排序)",
+      "sftInstruct": "SFT Instruct (指令微调)",
+      "dpoPreference": "DPO Preference (偏好对)",
+      "rlReward": "RL Reward (强化学习)",
+      "custom": "Custom (自定义)"
+    },
+    "outputFormat": {
+      "jsonlRecommended": "JSONL (推荐)"
+    },
+    "sourceType": {
+      "modelscope": "ModelScope (魔搭)"
+    },
+    "status": {
+      "registered": "未就绪",
+      "uploading": "上传中",
+      "downloading": "下载中",
+      "processing": "处理中",
+      "ready": "就绪",
+      "error": "错误",
+      "archived": "已归档"
+    }
+  },
+  "upload": {
+    "title": "上传数据集",
+    "dragText": "点击或拖拽文件到此处上传",
+    "dragHint": "支持 .jsonl, .json, .csv, .parquet 格式，最大 500MB",
+    "uploading": "上传中...",
+    "success": "数据集上传成功",
+    "failed": "上传失败",
+    "fileTooLarge": "文件过大，超出大小限制"
+  }
+}

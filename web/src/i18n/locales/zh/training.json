@@ -1,0 +1,325 @@
+{
+  "list": {
+    "title": "训练任务",
+    "stats": {
+      "total": "总任务数",
+      "running": "运行中",
+      "succeeded": "已完成",
+      "failed": "失败"
+    },
+    "columns": {
+      "taskName": "任务名称",
+      "baseModel": "基础模型",
+      "type": "类型",
+      "status": "状态",
+      "progress": "进度",
+      "loss": "Loss",
+      "createdAt": "创建时间",
+      "actions": "操作"
+    },
+    "filter": {
+      "statusPlaceholder": "状态筛选",
+      "pending": "等待中",
+      "preparing": "准备中",
+      "running": "训练中",
+      "evaluating": "评估中",
+      "succeeded": "已完成",
+      "failed": "失败",
+      "stopped": "已停止",
+      "cancelled": "已取消"
+    },
+    "actions": {
+      "createTask": "创建任务",
+      "resumeFromCheckpoint": "从 Checkpoint 续传",
+      "confirmStop": "确定停止此任务？",
+      "confirmResume": "从最新 Checkpoint 续传训练？",
+      "confirmDelete": "确定删除此任务？"
+    },
+    "step": "步骤 {{current}}/{{total}}",
+    "trainLoss": "训练: {{loss}}",
+    "evalLoss": "验证: {{loss}}",
+    "message": {
+      "stopSent": "已发送停止请求",
+      "stopFailed": "停止任务失败",
+      "resumeSuccess": "已从 checkpoint 续传: {{checkpoint}}",
+      "resumeFailed": "续传失败"
+    }
+  },
+  "create": {
+    "title": "创建训练任务",
+    "basicConfig": "基础配置",
+    "trainingParams": "训练参数",
+    "taskName": {
+      "label": "任务名称",
+      "placeholder": "可选，用于标识任务"
+    },
+    "modelType": {
+      "label": "模型类型",
+      "required": "请选择模型类型"
+    },
+    "trainingMethod": {
+      "label": "训练方法",
+      "required": "请选择训练方法"
+    },
+    "baseModel": {
+      "label": "基础模型",
+      "required": "请选择模型或输入路径",
+      "placeholder": "选择已注册模型或输入路径",
+      "extra": "选择已注册模型或手动输入 HuggingFace 模型名称/本地路径"
+    },
+    "dataset": {
+      "title": "数据集配置",
+      "add": "添加数据集",
+      "train": "训练集",
+      "eval": "验证集",
+      "test": "测试集",
+      "placeholder": "选择数据集或输入路径",
+      "samplePrefix": "采样",
+      "samplePlaceholder": "全部",
+      "sampleHint": "采样数为空表示使用全部数据",
+      "requireTrain": "请至少选择一个训练集"
+    },
+    "outputDir": {
+      "label": "输出目录",
+      "placeholder": "可选，默认使用系统配置"
+    },
+    "embedding": {
+      "divider": "Embedding 参数",
+      "lossFunction": "损失函数",
+      "distanceMetric": "距离度量",
+      "numLabels": "类别数",
+      "guideModel": {
+        "label": "Guide 模型",
+        "placeholder": "可选，留空则回退 MNR"
+      },
+      "matryoshkaDims": {
+        "label": "Matryoshka 维度",
+        "extra": "支持逗号或空格分隔"
+      }
+    },
+    "reranker": {
+      "divider": "Reranker 参数",
+      "lossFunction": "损失函数"
+    },
+    "decoderReranker": {
+      "divider": "Decoder Reranker 参数",
+      "docsPerGroup": "每组文档数",
+      "positiveCount": "正例数量",
+      "positiveCountExtra": "0=动态分配",
+      "lossFunction": "损失函数",
+      "lossFunctionExtra": "仅 Decoder Reranker 生效；不同损失显示不同参数",
+      "temperature": "温度参数",
+      "infonceMode": "InfoNCE 正例模式",
+      "infonceSingle": "单正例 (single)",
+      "infoncePosset": "正例集合 (posset)",
+      "infonceAvgpos": "逐正例平均 (avgpos)",
+      "maxPairsPerBatch": "最大 Pair 数/批",
+      "targetMetric": "目标指标",
+      "chunkSize": "分块大小",
+      "chunkSizeExtra": "节省显存，0=不分块"
+    },
+    "preference": {
+      "divider": "偏好训练参数",
+      "rankingsDirection": "排序方向",
+      "rankingsDirectionExtra": "用于 responses + rankings 格式；auto 会自动判断，显式指定可避免整数排名歧义",
+      "rankingsDirectionAuto": "自动判断",
+      "rankingsDirectionHigher": "分数越大越好",
+      "rankingsDirectionLower": "排名越小越好"
+    },
+    "rl": {
+      "divider": "RL 训练参数",
+      "sftModelPath": {
+        "label": "SFT 模型路径",
+        "required": "请输入 SFT 模型路径",
+        "extra": "需要先完成 SFT 训练",
+        "placeholder": "SFT 训练输出目录/final"
+      },
+      "klCoef": "KL 惩罚系数",
+      "rewardType": "奖励类型",
+      "rewardRankBased": "基于排名",
+      "rewardScoreBased": "基于得分",
+      "rewardNdcgBased": "基于 NDCG",
+      "rewardRecallBased": "基于 Recall",
+      "updatePerBatch": "每批更新次数",
+      "chunkSize": "分块大小",
+      "chunkSizeExtra": "节省显存，0=不分块"
+    },
+    "params": {
+      "epochs": "训练轮数",
+      "batchSize": "批次大小",
+      "learningRate": "学习率",
+      "warmupRatio": "预热比例",
+      "gradientAccumulation": "梯度累积步数",
+      "gradientCheckpointing": "梯度检查点",
+      "loggingSteps": "日志记录步数",
+      "loggingStepsExtra": "Loss 曲线采样频率",
+      "mixedPrecision": "混合精度",
+      "mixedPrecisionPlaceholder": "FP32（不启用）",
+      "maxLength": "最大序列长度",
+      "maxLengthPlaceholder": "默认由模型决定",
+      "deepspeed": "DeepSpeed",
+      "deepspeedExtra": "分布式训练加速，大模型推荐 ZeRO-3",
+      "deepspeedPlaceholder": "不启用"
+    },
+    "evalAndSave": {
+      "divider": "评估与保存",
+      "evalStrategy": "评估策略",
+      "evalStrategyExtra": "需要配置验证集",
+      "evalNoEval": "不评估",
+      "evalPerEpoch": "每轮评估",
+      "evalPerSteps": "按步数评估",
+      "evalSteps": "评估间隔步数",
+      "evalStepsPlaceholder": "例如: 500",
+      "saveStrategy": "保存策略",
+      "saveNoSave": "不保存",
+      "savePerEpoch": "每轮保存",
+      "savePerSteps": "按步数保存",
+      "saveSteps": "保存间隔步数",
+      "saveStepsPlaceholder": "例如: 500"
+    },
+    "tuner": {
+      "divider": "微调方法",
+      "type": "微调类型",
+      "fullFinetune": "全参数微调",
+      "freeze": "冻结层"
+    },
+    "resource": {
+      "divider": "资源配置",
+      "gpuSelect": "GPU 选择",
+      "gpuExtra": "留空自动分配，已占用的 GPU 不可选"
+    },
+    "lossAuto": "自动",
+    "message": {
+      "createSuccess": "训练任务创建成功",
+      "createFailed": "创建失败"
+    },
+    "submitButton": "创建任务"
+  },
+  "detail": {
+    "errorInfo": "错误信息",
+    "taskNotFound": "任务不存在",
+    "taskNotFoundDesc": "未找到指定的训练任务",
+    "backToList": "返回列表",
+    "registered": "已注册",
+    "registeredTooltip": "该任务已注册模型，避免重复提交",
+    "registerModel": "注册模型",
+    "confirmStop": "确定停止此任务？",
+    "confirmDelete": "确定删除此任务？",
+    "pollingStale": "自动刷新失败，当前显示上一次成功获取的任务数据。",
+    "message": {
+      "loadFailed": "获取任务详情失败",
+      "stopSent": "已发送停止请求",
+      "stopFailed": "停止任务失败",
+      "registerSuccess": "模型注册成功",
+      "registerFailed": "模型注册失败"
+    },
+    "trainingProgress": "训练进度",
+    "lossCurve": {
+      "title": "Loss 曲线",
+      "loading": "正在加载训练指标…",
+      "empty": "暂无 Loss 数据",
+      "rangeUnsupported": "数值范围过大，无法绘制图表。请查看 Loss 数据表获取准确值。",
+      "axis": {
+        "step": "训练步数"
+      },
+      "series": {
+        "train": "训练 Loss",
+        "eval": "验证 Loss"
+      },
+      "tooltip": {
+        "step": "步数"
+      },
+      "ariaDescription": "训练 Loss 与验证 Loss 随训练步数变化的折线图",
+      "dataTable": {
+        "toggle": "查看 Loss 数据表",
+        "caption": "Loss 曲线数据",
+        "step": "训练步数",
+        "train": "训练 Loss",
+        "eval": "验证 Loss",
+        "missing": "无"
+      }
+    },
+    "statusSemantic": {
+      "queued": "排队态",
+      "in_progress": "执行中",
+      "succeeded": "完成态",
+      "failed": "失败态",
+      "inactive": "非活跃",
+      "unknown": "未知"
+    },
+    "currentStep": "当前步数",
+    "currentEpoch": "当前轮次",
+    "trainLoss": "训练 Loss",
+    "evalLoss": "验证 Loss",
+    "taskConfig": "任务配置",
+    "taskId": "任务 ID",
+    "modelType": "模型类型",
+    "trainingMethod": "训练方法",
+    "lora": "LoRA",
+    "loraEnabled": "启用",
+    "loraDisabled": "未启用",
+    "baseModel": "基础模型",
+    "trainDataset": "训练数据集",
+    "outputDir": "输出目录",
+    "gpu": "GPU",
+    "gpuAutoAssign": "自动分配",
+    "outputModel": "输出模型",
+    "trainingParams": "训练参数",
+    "learningRate": "学习率",
+    "epochs": "训练轮次",
+    "batchSize": "批次大小",
+    "warmupRatio": "预热比例",
+    "evalStrategy": "评估策略",
+    "saveStrategy": "保存策略",
+    "mixedPrecision": "混合精度",
+    "gradientAccumulation": "梯度累积步数",
+    "maxSeqLength": "最大序列长度",
+    "loggingSteps": "日志记录步数",
+    "deepspeed": "DeepSpeed",
+    "loraDropout": "LoRA Dropout",
+    "tunerType": "微调类型",
+    "fullFinetune": "全参数微调",
+    "lossConfig": "损失函数配置",
+    "lossName": "损失函数",
+    "rlConfig": "RL 训练配置",
+    "sftCheckpointPath": "SFT 模型路径",
+    "timeInfo": "时间信息",
+    "createdAt": "创建时间",
+    "startedAt": "开始时间",
+    "completedAt": "完成时间",
+    "updatedAt": "最后更新",
+    "trainingResult": "训练结果",
+    "finalTrainLoss": "最终训练 Loss",
+    "finalEvalLoss": "最终验证 Loss",
+    "taskEvents": "任务事件",
+    "noEvents": "暂无事件",
+    "moreEvents": "还有 {{count}} 条事件...",
+    "datasets": {
+      "title": "数据集",
+      "count": "{{count}} 个",
+      "noDataset": "暂无数据集信息",
+      "maxSamples": "采样: {{count}}",
+      "splitTrain": "训练集",
+      "splitEval": "验证集",
+      "splitTest": "测试集",
+      "colSplit": "类型",
+      "colPath": "路径",
+      "colNumRows": "样本数",
+      "colMaxSamples": "采样上限",
+      "allData": "全部"
+    },
+    "testResult": {
+      "title": "Test 集评估结果",
+      "titleWithSamples": "Test 集评估结果 ({{count}} 样本)",
+      "metricCount": "{{count}} 项指标",
+      "columns": {
+        "metric": "指标",
+        "before": "训练前",
+        "after": "训练后",
+        "delta": "变化"
+      },
+      "hideStd": "隐藏标准差",
+      "showStd": "显示标准差 ({{count}})"
+    }
+  }
+}

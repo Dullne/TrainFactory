@@ -1,0 +1,325 @@
+{
+  "list": {
+    "title": "Training Tasks",
+    "stats": {
+      "total": "Total Tasks",
+      "running": "Running",
+      "succeeded": "Succeeded",
+      "failed": "Failed"
+    },
+    "columns": {
+      "taskName": "Task Name",
+      "baseModel": "Base Model",
+      "type": "Type",
+      "status": "Status",
+      "progress": "Progress",
+      "loss": "Loss",
+      "createdAt": "Created At",
+      "actions": "Actions"
+    },
+    "filter": {
+      "statusPlaceholder": "Filter by Status",
+      "pending": "Pending",
+      "preparing": "Preparing",
+      "running": "Training",
+      "evaluating": "Evaluating",
+      "succeeded": "Succeeded",
+      "failed": "Failed",
+      "stopped": "Stopped",
+      "cancelled": "Cancelled"
+    },
+    "actions": {
+      "createTask": "Create Task",
+      "resumeFromCheckpoint": "Resume from Checkpoint",
+      "confirmStop": "Are you sure you want to stop this task?",
+      "confirmResume": "Resume training from the latest checkpoint?",
+      "confirmDelete": "Are you sure you want to delete this task?"
+    },
+    "step": "Step {{current}}/{{total}}",
+    "trainLoss": "Train: {{loss}}",
+    "evalLoss": "Eval: {{loss}}",
+    "message": {
+      "stopSent": "Stop request sent",
+      "stopFailed": "Failed to stop task",
+      "resumeSuccess": "Resumed from checkpoint: {{checkpoint}}",
+      "resumeFailed": "Resume failed"
+    }
+  },
+  "create": {
+    "title": "Create Training Task",
+    "basicConfig": "Basic Configuration",
+    "trainingParams": "Training Parameters",
+    "taskName": {
+      "label": "Task Name",
+      "placeholder": "Optional, used to identify the task"
+    },
+    "modelType": {
+      "label": "Model Type",
+      "required": "Please select a model type"
+    },
+    "trainingMethod": {
+      "label": "Training Method",
+      "required": "Please select a training method"
+    },
+    "baseModel": {
+      "label": "Base Model",
+      "required": "Please select a model or enter a path",
+      "placeholder": "Select registered model or enter path",
+      "extra": "Select a registered model or manually enter a HuggingFace model name / local path"
+    },
+    "dataset": {
+      "title": "Dataset Configuration",
+      "add": "Add Dataset",
+      "train": "Train",
+      "eval": "Eval",
+      "test": "Test",
+      "placeholder": "Select dataset or enter path",
+      "samplePrefix": "Sample",
+      "samplePlaceholder": "All",
+      "sampleHint": "Leave empty to use all data",
+      "requireTrain": "Please select at least one training dataset"
+    },
+    "outputDir": {
+      "label": "Output Directory",
+      "placeholder": "Optional, defaults to system configuration"
+    },
+    "embedding": {
+      "divider": "Embedding Parameters",
+      "lossFunction": "Loss Function",
+      "distanceMetric": "Distance Metric",
+      "numLabels": "Number of Labels",
+      "guideModel": {
+        "label": "Guide Model",
+        "placeholder": "Optional, falls back to MNR if empty"
+      },
+      "matryoshkaDims": {
+        "label": "Matryoshka Dimensions",
+        "extra": "Comma or space separated"
+      }
+    },
+    "reranker": {
+      "divider": "Reranker Parameters",
+      "lossFunction": "Loss Function"
+    },
+    "decoderReranker": {
+      "divider": "Decoder Reranker Parameters",
+      "docsPerGroup": "Docs per Group",
+      "positiveCount": "Positive Count",
+      "positiveCountExtra": "0 = dynamic allocation",
+      "lossFunction": "Loss Function",
+      "lossFunctionExtra": "Only applies to Decoder Reranker; different losses show different parameters",
+      "temperature": "Temperature",
+      "infonceMode": "InfoNCE Positive Mode",
+      "infonceSingle": "Single (single)",
+      "infoncePosset": "Positive Set (posset)",
+      "infonceAvgpos": "Average Positive (avgpos)",
+      "maxPairsPerBatch": "Max Pairs / Batch",
+      "targetMetric": "Target Metric",
+      "chunkSize": "Chunk Size",
+      "chunkSizeExtra": "Saves VRAM, 0 = no chunking"
+    },
+    "preference": {
+      "divider": "Preference Training Parameters",
+      "rankingsDirection": "Ranking Direction",
+      "rankingsDirectionExtra": "For responses + rankings datasets. Auto infers direction; explicit selection avoids ambiguity for integer rankings.",
+      "rankingsDirectionAuto": "Auto Detect",
+      "rankingsDirectionHigher": "Higher Is Better",
+      "rankingsDirectionLower": "Lower Is Better"
+    },
+    "rl": {
+      "divider": "RL Training Parameters",
+      "sftModelPath": {
+        "label": "SFT Model Path",
+        "required": "Please enter the SFT model path",
+        "extra": "SFT training must be completed first",
+        "placeholder": "SFT training output directory/final"
+      },
+      "klCoef": "KL Penalty Coefficient",
+      "rewardType": "Reward Type",
+      "rewardRankBased": "Rank Based",
+      "rewardScoreBased": "Score Based",
+      "rewardNdcgBased": "NDCG Based",
+      "rewardRecallBased": "Recall Based",
+      "updatePerBatch": "Updates per Batch",
+      "chunkSize": "Chunk Size",
+      "chunkSizeExtra": "Saves VRAM, 0 = no chunking"
+    },
+    "params": {
+      "epochs": "Training Epochs",
+      "batchSize": "Batch Size",
+      "learningRate": "Learning Rate",
+      "warmupRatio": "Warmup Ratio",
+      "gradientAccumulation": "Gradient Accumulation Steps",
+      "gradientCheckpointing": "Gradient Checkpointing",
+      "loggingSteps": "Logging Steps",
+      "loggingStepsExtra": "Loss curve sampling frequency",
+      "mixedPrecision": "Mixed Precision",
+      "mixedPrecisionPlaceholder": "FP32 (disabled)",
+      "maxLength": "Max Sequence Length",
+      "maxLengthPlaceholder": "Determined by model",
+      "deepspeed": "DeepSpeed",
+      "deepspeedExtra": "Distributed training acceleration, ZeRO-3 recommended for large models",
+      "deepspeedPlaceholder": "Disabled"
+    },
+    "evalAndSave": {
+      "divider": "Evaluation & Saving",
+      "evalStrategy": "Evaluation Strategy",
+      "evalStrategyExtra": "Requires an eval dataset",
+      "evalNoEval": "No Evaluation",
+      "evalPerEpoch": "Per Epoch",
+      "evalPerSteps": "Per Steps",
+      "evalSteps": "Evaluation Interval (Steps)",
+      "evalStepsPlaceholder": "e.g. 500",
+      "saveStrategy": "Save Strategy",
+      "saveNoSave": "No Save",
+      "savePerEpoch": "Per Epoch",
+      "savePerSteps": "Per Steps",
+      "saveSteps": "Save Interval (Steps)",
+      "saveStepsPlaceholder": "e.g. 500"
+    },
+    "tuner": {
+      "divider": "Fine-tuning Method",
+      "type": "Tuner Type",
+      "fullFinetune": "Full Fine-tuning",
+      "freeze": "Freeze Layers"
+    },
+    "resource": {
+      "divider": "Resource Configuration",
+      "gpuSelect": "GPU Selection",
+      "gpuExtra": "Leave empty for auto-assignment, occupied GPUs are not selectable"
+    },
+    "lossAuto": "Auto",
+    "message": {
+      "createSuccess": "Training task created successfully",
+      "createFailed": "Creation failed"
+    },
+    "submitButton": "Create Task"
+  },
+  "detail": {
+    "errorInfo": "Error Info",
+    "taskNotFound": "Task Not Found",
+    "taskNotFoundDesc": "The specified training task was not found",
+    "backToList": "Back to List",
+    "registered": "Registered",
+    "registeredTooltip": "This task has already been registered as a model",
+    "registerModel": "Register Model",
+    "confirmStop": "Are you sure you want to stop this task?",
+    "confirmDelete": "Are you sure you want to delete this task?",
+    "pollingStale": "Automatic refresh failed. Showing the last successful task data.",
+    "message": {
+      "loadFailed": "Failed to load task details",
+      "stopSent": "Stop request sent",
+      "stopFailed": "Failed to stop task",
+      "registerSuccess": "Model registered successfully",
+      "registerFailed": "Model registration failed"
+    },
+    "trainingProgress": "Training Progress",
+    "lossCurve": {
+      "title": "Loss Curve",
+      "loading": "Loading training metrics…",
+      "empty": "No loss data available",
+      "rangeUnsupported": "This numeric range cannot be plotted. View the loss data table for the exact values.",
+      "axis": {
+        "step": "Training step"
+      },
+      "series": {
+        "train": "Training loss",
+        "eval": "Evaluation loss"
+      },
+      "tooltip": {
+        "step": "Step"
+      },
+      "ariaDescription": "Line chart of training loss and evaluation loss by training step",
+      "dataTable": {
+        "toggle": "View loss data table",
+        "caption": "Loss curve data",
+        "step": "Training step",
+        "train": "Training loss",
+        "eval": "Evaluation loss",
+        "missing": "Not available"
+      }
+    },
+    "statusSemantic": {
+      "queued": "Queued",
+      "in_progress": "In Progress",
+      "succeeded": "Completed",
+      "failed": "Failed",
+      "inactive": "Inactive",
+      "unknown": "Unknown"
+    },
+    "currentStep": "Current Step",
+    "currentEpoch": "Current Epoch",
+    "trainLoss": "Train Loss",
+    "evalLoss": "Eval Loss",
+    "taskConfig": "Task Configuration",
+    "taskId": "Task ID",
+    "modelType": "Model Type",
+    "trainingMethod": "Training Method",
+    "lora": "LoRA",
+    "loraEnabled": "Enabled",
+    "loraDisabled": "Disabled",
+    "baseModel": "Base Model",
+    "trainDataset": "Training Dataset",
+    "outputDir": "Output Directory",
+    "gpu": "GPU",
+    "gpuAutoAssign": "Auto-assigned",
+    "outputModel": "Output Model",
+    "trainingParams": "Training Parameters",
+    "learningRate": "Learning Rate",
+    "epochs": "Epochs",
+    "batchSize": "Batch Size",
+    "warmupRatio": "Warmup Ratio",
+    "evalStrategy": "Eval Strategy",
+    "saveStrategy": "Save Strategy",
+    "mixedPrecision": "Mixed Precision",
+    "gradientAccumulation": "Gradient Accumulation Steps",
+    "maxSeqLength": "Max Sequence Length",
+    "loggingSteps": "Logging Steps",
+    "deepspeed": "DeepSpeed",
+    "loraDropout": "LoRA Dropout",
+    "tunerType": "Tuner Type",
+    "fullFinetune": "Full Fine-tuning",
+    "lossConfig": "Loss Function Config",
+    "lossName": "Loss Function",
+    "rlConfig": "RL Training Config",
+    "sftCheckpointPath": "SFT Model Path",
+    "timeInfo": "Time Info",
+    "createdAt": "Created At",
+    "startedAt": "Started At",
+    "completedAt": "Completed At",
+    "updatedAt": "Last Updated",
+    "trainingResult": "Training Result",
+    "finalTrainLoss": "Final Train Loss",
+    "finalEvalLoss": "Final Eval Loss",
+    "taskEvents": "Task Events",
+    "noEvents": "No events yet",
+    "moreEvents": "{{count}} more events...",
+    "datasets": {
+      "title": "Datasets",
+      "count": "{{count}} items",
+      "noDataset": "No dataset information",
+      "maxSamples": "Sample: {{count}}",
+      "splitTrain": "Train",
+      "splitEval": "Eval",
+      "splitTest": "Test",
+      "colSplit": "Split",
+      "colPath": "Path",
+      "colNumRows": "Samples",
+      "colMaxSamples": "Max Samples",
+      "allData": "All"
+    },
+    "testResult": {
+      "title": "Test Set Evaluation Results",
+      "titleWithSamples": "Test Set Evaluation Results ({{count}} samples)",
+      "metricCount": "{{count}} metrics",
+      "columns": {
+        "metric": "Metric",
+        "before": "Before",
+        "after": "After",
+        "delta": "Delta"
+      },
+      "hideStd": "Hide Std Dev",
+      "showStd": "Show Std Dev ({{count}})"
+    }
+  }
+}

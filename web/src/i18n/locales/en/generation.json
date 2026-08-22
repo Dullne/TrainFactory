@@ -1,0 +1,489 @@
+{
+  "list": {
+    "title": "Data Generation",
+    "createTask": "Create Task",
+    "stats": {
+      "total": "Total Tasks",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
+    "columns": {
+      "taskName": "Task Name",
+      "mode": "Mode",
+      "status": "Status",
+      "progress": "Progress",
+      "sampleCount": "Generated Samples",
+      "createdAt": "Created At",
+      "errorMessage": "Error Message",
+      "actions": "Actions"
+    },
+    "actions": {
+      "viewDetail": "View Details",
+      "confirmStop": "Are you sure you want to stop this task?",
+      "confirmResume": "Resume from checkpoint? Completed stages will be skipped.",
+      "confirmRerun": "Rerun from scratch? Existing output will be overwritten.",
+      "confirmRestart": "Rerun this task?",
+      "confirmDelete": "Are you sure you want to delete this task?"
+    },
+    "message": {
+      "fetchFailed": "Failed to fetch task list",
+      "stopSuccess": "Task stopped",
+      "stopFailed": "Failed to stop task",
+      "deleteSuccess": "Task deleted",
+      "deleteFailed": "Failed to delete task",
+      "resumeSuccess": "Task resumed from checkpoint",
+      "resumeFailed": "Failed to resume task",
+      "restartSuccess": "Task restarted",
+      "restartFailed": "Failed to restart task"
+    }
+  },
+  "generationStatus": {
+    "restarting": "Preparing restart"
+  },
+  "generationStatusDescription": {
+    "restarting": "Checkpoint files are being copied into an isolated generation attempt. The task cannot be stopped, restarted, or deleted yet."
+  },
+  "mode": {
+    "doc_to_training": "Doc → Training Data",
+    "qa_to_training": "QA → Training Data",
+    "qa_extraction": "QA Extraction",
+    "doc_to_eval": "Doc → Eval Data",
+    "qa_to_eval": "QA → Eval Data"
+  },
+  "modeDescription": {
+    "doc_to_training": "Doc → Training Data (Generate training data from raw documents)",
+    "qa_to_training": "QA → Training Data (Generate training data from QA datasets)",
+    "qa_extraction": "QA Extraction (Extract QA pairs from documents)",
+    "doc_to_eval": "Doc → Eval Data (Generate deep evaluation dataset from documents)",
+    "qa_to_eval": "QA → Eval Data (Generate deep evaluation dataset from QA datasets)"
+  },
+  "modeLabel": {
+    "doc_to_training": "Doc → Training Data (Doc to Training)",
+    "qa_to_training": "QA → Training Data (QA to Training)",
+    "qa_extraction": "QA Extraction (QA Extraction)",
+    "doc_to_eval": "Doc → Eval Data (Doc to Eval)",
+    "qa_to_eval": "QA → Eval Data (QA to Eval)"
+  },
+  "posNegMethod": {
+    "retrieval": "Vector Retrieval + Eval Classification",
+    "llm": "Pure LLM Generation",
+    "retrievalFull": "Vector Retrieval + Eval Classification (Requires Embedding)",
+    "llmFull": "Pure LLM Generation"
+  },
+  "stage": {
+    "qa_extraction": "QA Extraction",
+    "qa_filter": "QA Filter & Vector Ingest",
+    "pos_neg_generation": "Pos/Neg Generation",
+    "deep_eval_export": "Deep Evaluation"
+  },
+  "create": {
+    "title": "Create Data Generation Task",
+    "basicConfig": "Basic Configuration",
+    "taskName": {
+      "label": "Task Name",
+      "required": "Please enter a task name",
+      "placeholder": "e.g.: my-dataset-gen"
+    },
+    "generationMode": {
+      "label": "Generation Mode"
+    },
+    "qaDataset": {
+      "label": "QA Dataset",
+      "placeholder": "Select QA dataset (qa_pair type)",
+      "tag": "QA Data",
+      "path": "Path: {{path}}",
+      "numRows": "Records: {{count}}"
+    },
+    "docDataset": {
+      "label": "Select Dataset",
+      "placeholder": "Select a registered dataset",
+      "tag": "Raw Data",
+      "path": "Path: {{path}}",
+      "contentField": "Content Field: {{field}}",
+      "numRows": "Records: {{count}}"
+    },
+    "inputSource": {
+      "label": "Input Source",
+      "dataset": "Select Dataset",
+      "path": "Enter Path"
+    },
+    "inputPath": {
+      "label": "Input Path",
+      "placeholder": "/path/to/documents.jsonl"
+    },
+    "contentField": {
+      "label": "Content Field Name",
+      "extra": "Specify the JSON field used as document content (optional, auto-detects content/text/passage/document)",
+      "placeholder": "e.g.: doc_content"
+    },
+    "inputFormat": {
+      "label": "Input Format",
+      "auto": "Auto Detect"
+    },
+    "outputFormat": {
+      "label": "Output Format"
+    },
+    "posNegMethod": {
+      "label": "Positive/Negative Generation Method"
+    },
+    "vectorCollection": {
+      "label": "Vector Collection",
+      "auto": "Auto Create New Collection",
+      "existing": "Use Existing Collection",
+      "selectLabel": "Select Collection",
+      "selectPlaceholder": "Select an existing vector collection",
+      "collectionInfo": "{{name}} ({{model}} · {{count}} items)",
+      "unknownModel": "Unknown Model",
+      "dimension": "Dimension: {{dim}}",
+      "metric": "Metric: {{type}}",
+      "linkedDatasets": "{{count}} linked datasets"
+    },
+    "warning": {
+      "embeddingRequired": "Vector retrieval mode requires an Embedding model. Please select one in the model configuration below.",
+      "embeddingOptional": "No Embedding model configured. Similarity filtering will be skipped (optionally configure Embedding to auto-filter duplicates).",
+      "evalEmbeddingRequired": "Eval data generation mode requires an Embedding model. Please select one in the model configuration below."
+    },
+    "validation": {
+      "selectLLM": "Please select an LLM model first",
+      "selectQaDataset": "Please select a QA dataset",
+      "selectDataset": "Please select a dataset",
+      "inputPathRequired": "Please enter a file path",
+      "evalEmbeddingRequired": "Eval data generation mode requires an Embedding model",
+      "retrievalEmbeddingRequired": "Vector retrieval mode requires an Embedding model",
+      "selectCollection": "Please select an existing collection"
+    },
+    "message": {
+      "createSuccess": "Task created successfully",
+      "createFailed": "Failed to create task"
+    },
+    "submitButton": "Create Task"
+  },
+  "modelConfig": {
+    "title": "Model Configuration",
+    "llm": {
+      "label": "LLM Model",
+      "labelOptional": "LLM Model (Optional)",
+      "endpoint": "Endpoint: {{endpoint}}",
+      "model": "Model: {{model}}"
+    },
+    "evalLlm": {
+      "label": "Eval LLM (Optional)",
+      "tooltip": "Separate evaluation model for chunk positive/negative classification. Falls back to the LLM above if not selected."
+    },
+    "embedding": {
+      "label": "Embedding Model",
+      "labelOptional": "Embedding Model (Optional)"
+    },
+    "rerank": {
+      "label": "Rerank Model (Optional)"
+    },
+    "temperature": "Temperature",
+    "maxTokens": "Max Tokens",
+    "maxTokensExtra": "Max {{max}}",
+    "maxTokensRule": "Max {{max}}",
+    "concurrency": {
+      "label": "Concurrency",
+      "llmTooltip": "Number of concurrent LLM requests",
+      "embeddingTooltip": "Number of concurrent Embedding requests",
+      "rerankTooltip": "Number of concurrent Rerank requests"
+    },
+    "batchSize": {
+      "label": "Batch Size",
+      "embeddingTooltip": "Number of documents per request",
+      "rerankTooltip": "Maximum documents per request"
+    },
+    "similarityThreshold": {
+      "label": "Similarity Threshold",
+      "embeddingTooltip": "QA pairs with embedding cosine similarity > this value will be filtered",
+      "rerankTooltip": "Candidates with rerank score above this value will be filtered (treated as near-duplicates). Set to 1 to disable."
+    },
+    "retrievalTopK": {
+      "label": "Retrieval Top-K",
+      "tooltip": "Number of candidate chunks retrieved per query"
+    },
+    "rerankTopK": {
+      "label": "Top-K",
+      "tooltip": "Number of candidates to return"
+    },
+    "timeout": {
+      "label": "Per-Document Timeout (sec)",
+      "tooltip": "Total time limit from when a document enters the pipeline to completing all steps"
+    }
+  },
+  "steps": {
+    "title": "Processing Steps Configuration",
+    "outputConfig": "Output Configuration",
+    "docQuality": {
+      "title": "Document Quality Assessment",
+      "minScore": "Minimum Score"
+    },
+    "keypointGen": {
+      "title": "Keypoint Extraction",
+      "maxKeypoints": "Max Keypoints"
+    },
+    "qaGen": {
+      "title": "QA Generation",
+      "countPerDoc": "QA per Document",
+      "useRoleTooltip": "When enabled, automatically generates differentiated roles based on document content. Each role generates 1 QA.",
+      "useRole": "Use Roles",
+      "noRole": "No Roles",
+      "rolesPerDoc": "Roles per Doc"
+    },
+    "qaDedup": {
+      "title": "QA Deduplication",
+      "description": "Remove duplicate QA pairs based on query hash"
+    },
+    "posNeg": {
+      "title": "Positive/Negative Generation",
+      "positiveCount": "Positive Count",
+      "negativeCount": "Negative Count",
+      "evalMode": {
+        "label": "Eval Mode",
+        "tooltip": "Chunk evaluation mode: batch returns indices at once (fast but with position bias); individual calls per chunk (unbiased, most accurate, N times the cost)"
+      },
+      "advanced": "Advanced Options",
+      "useRole": "Use Roles",
+      "noRole": "No Roles",
+      "rolesPerDoc": "Roles per Doc",
+      "augment": {
+        "on": "Augment",
+        "off": "No Augment",
+        "tooltip": "Use LLM to supplement generation when retrieval results are insufficient"
+      },
+      "negMode": {
+        "label": "Negative Mode",
+        "chunk": "Full Chunk",
+        "statement": "Extract Statements"
+      },
+      "supplementPositives": {
+        "on": "Supplement Positives",
+        "off": "No Supplement",
+        "tooltip": "Add retrieved positive chunks as positives (chunk mode) or extract supporting statements as positives (statement mode)"
+      },
+      "confirmPositives": {
+        "on": "Confirm Positives",
+        "off": "No Confirm",
+        "tooltip": "Use LLM to verify extracted positive statements, filtering hallucinations and irrelevant statements (additional LLM calls)"
+      },
+      "confirmNegatives": {
+        "on": "Confirm Negatives",
+        "off": "No Confirm",
+        "tooltip": "Use Delta calculation + LLM confirmation to filter hard negative statements (requires Rerank or Embedding model)"
+      },
+      "answerRewrite": {
+        "on": "Answer Rewrite",
+        "off": "Original Answer",
+        "tooltip": "LLM merges query + answer into a complete self-contained statement as the first positive"
+      },
+      "rerankScoreClassification": {
+        "on": "Score Filtering",
+        "off": "No Filtering",
+        "tooltip": "Score each statement, discard weak negatives below the worst positive score, and do LLM re-verification on low-score positives (requires Rerank or Embedding model)"
+      },
+      "evidenceRemoval": {
+        "on": "Evidence Removal",
+        "off": "No Removal",
+        "tooltip": "Remove evidence from positive chunks to generate hard negative variants"
+      },
+      "evidencePruning": {
+        "on": "Evidence Pruning",
+        "off": "No Pruning",
+        "tooltip": "Trim irrelevant content from positive chunks to generate cleaner positives"
+      },
+      "negChunkScoring": {
+        "on": "Negative Stratification",
+        "off": "No Stratification",
+        "tooltipStatement": "Score negative chunks, keep only high-scoring chunks and extract statements, discard low-scoring chunks (requires Rerank or Embedding model)",
+        "tooltipChunk": "Score negative chunks, keep only those scoring above the worst positive as hard negatives (requires Rerank or Embedding model)"
+      },
+      "skipEasyNegatives": {
+        "on": "Skip Easy Negatives",
+        "off": "Keep",
+        "tooltip": "Negatives ranked after all positives are already distinguishable by the model, low training value"
+      },
+      "skipPerfectAp": {
+        "on": "Skip Perfect Ranking",
+        "off": "Keep",
+        "tooltip": "AP=1 means ranking is already perfect, model doesn't need to learn from this data"
+      },
+      "skipEasyWarning": "When ranking is completely correct, all negatives are easy negatives and will be discarded",
+      "skipZeroAp": {
+        "on": "Skip Zero Positives",
+        "off": "Keep",
+        "tooltip": "AP=0 means no positives in candidates, cannot construct valid training samples"
+      }
+    },
+    "validation": {
+      "title": "Validation",
+      "enable": "Enable Validation",
+      "disable": "Disable Validation",
+      "description": "When enabled, validates positive/negative quality (keyword overlap filtering)"
+    },
+    "datasetRegister": {
+      "title": "Dataset Registration",
+      "autoRegister": "Auto Register",
+      "noRegister": "No Register",
+      "description": "Automatically register to dataset management system upon completion"
+    },
+    "qaToEvalDescription": "QA → Eval Data mode: Performs vector retrieval for each record in the QA dataset, collects retrieval context to generate deep evaluation dataset. No LLM required, only uses Embedding model for vector retrieval.",
+    "docToEvalDescription": "Doc → Eval Data mode: First extracts QA pairs from documents, then performs vector retrieval for each QA, collects retrieval context to generate deep evaluation dataset. Does not perform positive/negative classification."
+  },
+  "switch": {
+    "enable": "Enable",
+    "disable": "Disable"
+  },
+  "detail": {
+    "taskNotFound": "Task not found",
+    "backToList": "Back to List",
+    "resume": "Resume",
+    "rerun": "Rerun",
+    "confirmStop": "Are you sure you want to stop this task?",
+    "confirmResume": "Resume from checkpoint? Completed stages will be skipped.",
+    "confirmRerun": "Rerun from scratch? Existing output will be overwritten.",
+    "confirmRestart": "Rerun this task? Existing output will be overwritten.",
+    "confirmDelete": "Are you sure you want to delete this task?",
+    "message": {
+      "fetchFailed": "Failed to fetch task details",
+      "fetchArtifactsFailed": "Failed to fetch stage artifacts",
+      "fetchArtifactPreviewFailed": "Failed to fetch artifact preview",
+      "stopSuccess": "Task stopped",
+      "stopFailed": "Failed to stop task",
+      "resumeSuccess": "Task resumed from checkpoint",
+      "resumeFailed": "Failed to resume task",
+      "restartSuccess": "Task restarted",
+      "restartFailed": "Failed to restart task",
+      "deleteSuccess": "Task deleted",
+      "deleteFailed": "Failed to delete task"
+    },
+    "progress": {
+      "title": "Processing Progress",
+      "sampleCount": "Generated Samples",
+      "stageView": "Stage View",
+      "resumeReady": "Resumable from checkpoint",
+      "resumeNotReady": "Not resumable yet (no checkpoint)",
+      "resumeNotSupported": "Resume is not supported for this stage"
+    },
+    "viewDataset": "View Dataset",
+    "qaFullDataset": "QA Full Dataset",
+    "qaFilteredDataset": "QA Filtered Dataset",
+    "tabs": {
+      "info": "Basic Info",
+      "config": "Configuration",
+      "artifacts": "Stage Artifacts",
+      "preview": "Data Preview"
+    },
+    "artifacts": {
+      "empty": "No registered artifacts for this task",
+      "stageEmpty": "No artifacts in this stage",
+      "colDataset": "Dataset",
+      "colRole": "Role",
+      "colType": "Type/Usage",
+      "colRows": "Rows",
+      "colStatus": "Status",
+      "colCreatedAt": "Created At",
+      "colActions": "Actions",
+      "previewAction": "Preview",
+      "openAction": "Open",
+      "previewTitle": "Artifact Preview (first 10 rows)",
+      "previewPlaceholder": "Select an artifact on the left to preview",
+      "previewEmpty": "No preview data available for this artifact",
+      "roles": {
+        "input": "Input",
+        "intermediate": "Intermediate",
+        "output": "Output",
+        "eval": "Evaluation",
+        "rejects": "Rejected"
+      }
+    },
+    "info": {
+      "taskId": "Task ID",
+      "generationMode": "Generation Mode",
+      "posNegMethod": "Pos/Neg Method",
+      "inputPath": "Input Path",
+      "inputFormat": "Input Format",
+      "contentField": "Content Field",
+      "outputFormat": "Output Format",
+      "autoRegister": "Auto Register Dataset",
+      "autoRegisterYes": "Yes",
+      "autoRegisterNo": "No",
+      "outputPath": "Output Path",
+      "createdAt": "Created At",
+      "startedAt": "Started At",
+      "completedAt": "Completed At",
+      "sourceDataset": "Source Dataset",
+      "similarityThreshold": "Similarity Threshold",
+      "retrievalTopK": "Vector Retrieval Top-K",
+      "rerankThreshold": "Rerank Similarity Threshold",
+      "milvusCollection": "Milvus Collection",
+      "qaOutputPath": "QA Full Output",
+      "qaFilteredPath": "QA Filtered Output",
+      "filterStats": {
+        "label": "Filter Statistics",
+        "total": "Total: {{count}}",
+        "kept": "Kept: {{count}}",
+        "filtered": "Filtered: {{count}}",
+        "uniqueChunks": "Unique Chunks: {{count}}",
+        "milvusInserted": "Milvus Inserted: {{count}}"
+      }
+    },
+    "config": {
+      "llmConfig": "LLM Config",
+      "evalLlmConfig": "Eval LLM Config",
+      "embeddingConfig": "Embedding Config",
+      "rerankConfig": "Rerank Config",
+      "workerConfig": "Worker Config",
+      "enabledSteps": "Enabled Steps",
+      "noEnabledSteps": "No enabled steps",
+      "postProcessConfig": "Post-Processing Config"
+    },
+    "stepLabels": {
+      "doc_quality": "Document Quality Assessment",
+      "keypoint_gen": "Keypoint Extraction",
+      "role_gen": "Role Generation",
+      "qa_gen": "QA Generation",
+      "pos_neg_extraction": "Positive/Negative Generation",
+      "validation": "Validation",
+      "embedding_scoring": "Embedding Scoring",
+      "rerank_scoring": "Rerank Scoring"
+    },
+    "stepParams": {
+      "num_qa_per_doc": "QA per Doc",
+      "num_positive": "Positives",
+      "num_negative": "Negatives",
+      "use_role": "Use Roles",
+      "roles_per_doc": "Roles per Doc",
+      "neg_detection_mode": "Negative Mode",
+      "chunk_eval_mode": "Eval Mode",
+      "supplement_positives": "Supplement Positives",
+      "confirm_positives": "Confirm Positives",
+      "confirm_negatives": "Confirm Negatives",
+      "answer_rewrite": "Answer Rewrite",
+      "rerank_score_classification": "Score Filtering",
+      "evidence_removal": "Evidence Removal",
+      "evidence_pruning": "Evidence Pruning",
+      "neg_chunk_scoring": "Negative Stratification",
+      "skip_easy_negatives": "Skip Easy Negatives",
+      "skip_perfect_ap": "Skip Perfect Ranking",
+      "skip_zero_ap": "Skip Zero Positives",
+      "augment": "Augmentation"
+    },
+    "preview": {
+      "detail": "Detail",
+      "noOutput": "No output file",
+      "notCompleted": "Task not completed, no data preview available",
+      "generating": "Generating data, refresh later...",
+      "tabTraining": "Training Samples",
+      "tabQaFull": "QA Extraction (Full)",
+      "tabQaFiltered": "QA Filtered",
+      "tabDeepEval": "Deep Eval",
+      "colQuery": "Query",
+      "colAnswer": "Answer",
+      "colChunkId": "Chunk ID",
+      "colPositives": "Positives",
+      "colNegatives": "Negatives",
+      "colScore": "Score",
+      "records": "{{count}} records"
+    }
+  }
+}

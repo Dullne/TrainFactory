@@ -1,0 +1,342 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 392" width="960" height="392">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0c1220"/>
+      <stop offset="50%" style="stop-color:#111827"/>
+      <stop offset="100%" style="stop-color:#0c1220"/>
+    </linearGradient>
+    <linearGradient id="purple" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#a78bfa"/>
+      <stop offset="100%" style="stop-color:#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="emerald" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#34d399"/>
+      <stop offset="100%" style="stop-color:#059669"/>
+    </linearGradient>
+    <linearGradient id="fire" x1="0%" y1="100%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#ef4444"/>
+      <stop offset="40%" style="stop-color:#f97316"/>
+      <stop offset="100%" style="stop-color:#fbbf24"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#fbbf24"/>
+      <stop offset="100%" style="stop-color:#d97706"/>
+    </linearGradient>
+    <linearGradient id="diamond" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#38bdf8"/>
+      <stop offset="50%" style="stop-color:#818cf8"/>
+      <stop offset="100%" style="stop-color:#c084fc"/>
+    </linearGradient>
+    <linearGradient id="border" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="25%" style="stop-color:#a78bfa"/>
+      <stop offset="50%" style="stop-color:#34d399"/>
+      <stop offset="75%" style="stop-color:#fbbf24"/>
+      <stop offset="100%" style="stop-color:#818cf8"/>
+    </linearGradient>
+    <linearGradient id="trackFwd" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#a78bfa"/>
+      <stop offset="40%" style="stop-color:#34d399"/>
+      <stop offset="100%" style="stop-color:#fbbf24"/>
+    </linearGradient>
+    <linearGradient id="trackBack" x1="100%" y1="0%" x2="0%" y2="0%">
+      <stop offset="0%" style="stop-color:#818cf8"/>
+      <stop offset="50%" style="stop-color:#fb7185"/>
+      <stop offset="100%" style="stop-color:#60a5fa"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect x="0" y="0" width="960" height="392" rx="24" fill="url(#bg)"/>
+  <rect x="4" y="4" width="952" height="384" rx="22" fill="none" stroke="url(#border)" stroke-width="2.5" opacity="0.5"/>
+
+  <!-- Subtle grid -->
+  <g opacity="0.02" stroke="white" stroke-width="0.5">
+    <line x1="0" y1="102" x2="960" y2="102"/><line x1="0" y1="205" x2="960" y2="205"/>
+    <line x1="0" y1="308" x2="960" y2="308"/>
+    <line x1="192" y1="0" x2="192" y2="392"/><line x1="384" y1="0" x2="384" y2="392"/>
+    <line x1="576" y1="0" x2="576" y2="392"/><line x1="768" y1="0" x2="768" y2="392"/>
+  </g>
+
+  <!-- ===== OVAL CYCLE TRACK ===== -->
+
+  <!-- Left descending: DATA → GENERATE -->
+  <path d="M 148,170 C 100,220 90,270 168,305"
+        fill="none" stroke="#60a5fa" stroke-width="6" opacity="0.08"/>
+  <path d="M 148,170 C 100,220 90,270 168,305"
+        fill="none" stroke="#60a5fa" stroke-width="2.5" opacity="0.4"/>
+  <!-- Arrow at midpoint (~113,257), tangent angle≈71° -->
+  <polygon points="-7,-5 7,0 -7,5" fill="#60a5fa" opacity="0.5" transform="translate(113,257) rotate(71)"/>
+
+  <!-- Curved connections: GENERATE → TRAIN → DEPLOY -->
+  <!-- GENERATE → TRAIN -->
+  <path d="M 228,305 C 290,345 375,350 427,316"
+        fill="none" stroke="#34d399" stroke-width="6" opacity="0.08"/>
+  <path d="M 228,305 C 290,345 375,350 427,316"
+        fill="none" stroke="#34d399" stroke-width="2.5" opacity="0.4"/>
+  <!-- Arrow at midpoint (~330,338), tangent angle≈5° -->
+  <polygon points="-7,-5 7,0 -7,5" fill="#34d399" opacity="0.5" transform="translate(330,338) rotate(5)"/>
+  <!-- TRAIN → DEPLOY -->
+  <path d="M 533,316 C 585,350 670,345 732,305"
+        fill="none" stroke="#fbbf24" stroke-width="6" opacity="0.08"/>
+  <path d="M 533,316 C 585,350 670,345 732,305"
+        fill="none" stroke="#fbbf24" stroke-width="2.5" opacity="0.4"/>
+  <!-- Arrow at midpoint (~630,338), tangent angle≈-5° -->
+  <polygon points="-7,-5 7,0 -7,5" fill="#fbbf24" opacity="0.5" transform="translate(630,338) rotate(-5)"/>
+
+  <!-- Right ascending: DEPLOY → SERVICE -->
+  <path d="M 792,305 C 870,270 870,220 812,170"
+        fill="none" stroke="#fbbf24" stroke-width="6" opacity="0.08"/>
+  <path d="M 792,305 C 870,270 870,220 812,170"
+        fill="none" stroke="#fbbf24" stroke-width="2.5" opacity="0.4"/>
+  <!-- Arrow at midpoint (~853,243), tangent angle≈-84° -->
+  <polygon points="-7,-5 7,0 -7,5" fill="#fbbf24" opacity="0.5" transform="translate(853,243) rotate(-84)"/>
+
+  <!-- Top feedback arc: SERVICE → EVAL → DATA (through EVAL) -->
+  <!-- Right half: SERVICE → EVAL -->
+  <path d="M 802,82 C 740,50 660,35 518,40"
+        fill="none" stroke="url(#trackBack)" stroke-width="6" opacity="0.06"/>
+  <path d="M 802,82 C 740,50 660,35 518,40"
+        fill="none" stroke="url(#trackBack)" stroke-width="2" opacity="0.35"/>
+  <polygon points="660,38 649,35 652,47" fill="#fb7185" opacity="0.5" transform="rotate(-5, 654, 40)"/>
+  <!-- Left half: EVAL → DATA -->
+  <path d="M 442,40 C 330,35 230,50 158,82"
+        fill="none" stroke="url(#trackBack)" stroke-width="6" opacity="0.06"/>
+  <path d="M 442,40 C 330,35 230,50 158,82"
+        fill="none" stroke="url(#trackBack)" stroke-width="2" opacity="0.35"/>
+  <polygon points="310,40 299,44 302,32" fill="#fb7185" opacity="0.5" transform="rotate(5, 304, 38)"/>
+
+  <!-- ===== EVAL station (on the arc, slightly elevated) ===== -->
+  <g transform="translate(480, 30)">
+    <rect x="-38" y="0" width="76" height="82" rx="5" fill="#1a0a1e" stroke="#fb7185" stroke-width="1.8" opacity="0.65"/>
+    <!-- Bar chart -->
+    <rect x="-26" y="12" width="10" height="30" rx="2" fill="#fb7185" opacity="0.45"/>
+    <rect x="-12" y="24" width="10" height="18" rx="2" fill="#fb7185" opacity="0.55"/>
+    <rect x="2" y="6" width="10" height="36" rx="2" fill="#fb7185" opacity="0.65"/>
+    <rect x="16" y="2" width="10" height="40" rx="2" fill="#fb7185" opacity="0.5"/>
+    <!-- Trend line -->
+    <polyline points="-21,18 -7,28 7,8 21,4" fill="none" stroke="#4ade80" stroke-width="1.8" opacity="0.55"/>
+    <circle cx="21" cy="4" r="2.5" fill="#4ade80" opacity="0.65"/>
+    <!-- Score badge -->
+    <rect x="-20" y="52" width="40" height="14" rx="3" fill="#111827" stroke="#fb7185" stroke-width="0.7" opacity="0.5"/>
+    <text x="0" y="62" text-anchor="middle" fill="#fb7185" font-family="monospace" font-size="7" opacity="0.6">SCORE</text>
+    <!-- Checkmark -->
+    <polyline points="-30,72 -26,76 -20,68" fill="none" stroke="#4ade80" stroke-width="1.5" opacity="0.5"/>
+    <!-- Dot decorations -->
+    <circle cx="-30" cy="6" r="1.5" fill="#fb7185" opacity="0.3"/>
+    <circle cx="-24" cy="6" r="1.5" fill="#4ade80" opacity="0.5"/>
+  </g>
+  <text x="480" y="128" text-anchor="middle" fill="#fb7185" font-family="Arial, sans-serif" font-size="12" font-weight="bold" opacity="0.8" letter-spacing="1">EVAL</text>
+
+  <!-- ===== TOP ROW: DATA (left) · SERVICE (right) ===== -->
+
+  <!-- DATA: boxed station -->
+  <g transform="translate(148, 82)">
+    <!-- Main box -->
+    <rect x="-38" y="0" width="76" height="82" rx="5" fill="#0c1a2e" stroke="#3b82f6" stroke-width="1.8"/>
+    <!-- Stacked data containers -->
+    <rect x="-26" y="44" width="52" height="28" rx="3" fill="#1e3a5f" stroke="#3b82f6" stroke-width="1.3" opacity="0.85"/>
+    <line x1="-14" y1="44" x2="-14" y2="72" stroke="#3b82f6" stroke-width="0.8" opacity="0.4"/>
+    <line x1="-2" y1="44" x2="-2" y2="72" stroke="#3b82f6" stroke-width="0.8" opacity="0.4"/>
+    <line x1="10" y1="44" x2="10" y2="72" stroke="#3b82f6" stroke-width="0.8" opacity="0.4"/>
+    <line x1="22" y1="44" x2="22" y2="72" stroke="#3b82f6" stroke-width="0.8" opacity="0.4"/>
+    <text x="0" y="62" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="7" opacity="0.6">JSON</text>
+    <!-- Top container -->
+    <rect x="-22" y="10" width="48" height="24" rx="3" fill="#1e3a5f" stroke="#60a5fa" stroke-width="1.2" opacity="0.65"/>
+    <line x1="-10" y1="10" x2="-10" y2="34" stroke="#60a5fa" stroke-width="0.7" opacity="0.4"/>
+    <line x1="2" y1="10" x2="2" y2="34" stroke="#60a5fa" stroke-width="0.7" opacity="0.4"/>
+    <line x1="14" y1="10" x2="14" y2="34" stroke="#60a5fa" stroke-width="0.7" opacity="0.4"/>
+    <text x="2" y="26" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="6" opacity="0.45">CSV</text>
+    <!-- Floating doc -->
+    <rect x="28" y="16" width="9" height="11" rx="1.5" fill="#60a5fa" opacity="0.35" transform="rotate(-8, 32, 22)"/>
+    <rect x="30" y="50" width="8" height="10" rx="1.5" fill="#60a5fa" opacity="0.25" transform="rotate(6, 34, 55)"/>
+    <!-- Dot decorations -->
+    <circle cx="-30" cy="6" r="1.5" fill="#60a5fa" opacity="0.3"/>
+    <circle cx="-24" cy="6" r="1.5" fill="#4ade80" opacity="0.5"/>
+  </g>
+  <text x="148" y="180" text-anchor="middle" fill="#60a5fa" font-family="Arial, sans-serif" font-size="12" font-weight="bold" opacity="0.8" letter-spacing="1">DATA</text>
+
+  <!-- SERVICE: boxed station -->
+  <g transform="translate(812, 82)">
+    <!-- Main box -->
+    <rect x="-38" y="0" width="76" height="82" rx="5" fill="#0e0e24" stroke="#818cf8" stroke-width="1.8"/>
+    <!-- Diamond gem -->
+    <polygon points="0,10 20,28 13,54 -13,54 -20,28" fill="url(#diamond)" opacity="0.85" filter="url(#glow)"/>
+    <polygon points="0,10 8,28 -8,28" fill="white" opacity="0.15"/>
+    <line x1="-8" y1="28" x2="-13" y2="54" stroke="white" stroke-width="0.8" opacity="0.12"/>
+    <line x1="8" y1="28" x2="13" y2="54" stroke="white" stroke-width="0.8" opacity="0.12"/>
+    <line x1="-8" y1="28" x2="8" y2="28" stroke="white" stroke-width="0.8" opacity="0.1"/>
+    <!-- Sparkles -->
+    <path d="M 26,18 C 30,14 30,22 34,18" fill="none" stroke="#818cf8" stroke-width="1.3" opacity="0.4"/>
+    <path d="M -26,20 C -30,16 -30,24 -34,20" fill="none" stroke="#818cf8" stroke-width="1.3" opacity="0.4"/>
+    <circle cx="24" cy="48" r="1.5" fill="white" opacity="0.4"/>
+    <circle cx="-22" cy="50" r="1.2" fill="white" opacity="0.3"/>
+    <circle cx="28" cy="8" r="2" fill="white" opacity="0.45"/>
+    <circle cx="-26" cy="10" r="1.5" fill="white" opacity="0.35"/>
+    <!-- API label -->
+    <rect x="-14" y="62" width="28" height="10" rx="2" fill="#111827" stroke="#818cf8" stroke-width="0.6" opacity="0.5"/>
+    <text x="0" y="70" text-anchor="middle" fill="#818cf8" font-family="monospace" font-size="6" opacity="0.5">API</text>
+  </g>
+  <text x="812" y="180" text-anchor="middle" fill="#818cf8" font-family="Arial, sans-serif" font-size="12" font-weight="bold" opacity="0.8" letter-spacing="1">SERVICE</text>
+
+  <!-- ===== Decorative particles (fill empty areas) ===== -->
+  <!-- Left area: between DATA and center -->
+  <g opacity="0.18">
+    <circle cx="265" cy="148" r="2.5" fill="#60a5fa"/>
+    <circle cx="290" cy="168" r="1.8" fill="#a78bfa"/>
+    <circle cx="310" cy="142" r="2" fill="#34d399"/>
+    <circle cx="248" cy="175" r="1.5" fill="#60a5fa"/>
+    <circle cx="335" cy="162" r="2.2" fill="#818cf8"/>
+    <circle cx="275" cy="192" r="1.5" fill="#34d399"/>
+    <circle cx="320" cy="185" r="1.8" fill="#fbbf24"/>
+    <line x1="258" y1="152" x2="282" y2="164" stroke="#60a5fa" stroke-width="0.8"/>
+    <line x1="300" y1="146" x2="326" y2="158" stroke="#a78bfa" stroke-width="0.7"/>
+    <line x1="242" y1="178" x2="268" y2="188" stroke="#34d399" stroke-width="0.6"/>
+  </g>
+  <!-- Right area: between center and SERVICE -->
+  <g opacity="0.18">
+    <circle cx="655" cy="148" r="2.5" fill="#818cf8"/>
+    <circle cx="680" cy="170" r="1.8" fill="#fbbf24"/>
+    <circle cx="630" cy="160" r="2" fill="#fb7185"/>
+    <circle cx="700" cy="145" r="1.5" fill="#c084fc"/>
+    <circle cx="645" cy="185" r="2.2" fill="#34d399"/>
+    <circle cx="715" cy="175" r="1.5" fill="#818cf8"/>
+    <circle cx="670" cy="192" r="1.8" fill="#60a5fa"/>
+    <line x1="648" y1="152" x2="672" y2="166" stroke="#818cf8" stroke-width="0.8"/>
+    <line x1="690" y1="148" x2="710" y2="170" stroke="#fbbf24" stroke-width="0.7"/>
+    <line x1="638" y1="182" x2="660" y2="190" stroke="#fb7185" stroke-width="0.6"/>
+  </g>
+
+  <!-- ===== CENTER: TrainFactory ===== -->
+  <text x="480" y="194" text-anchor="middle" fill="white" font-family="'Arial Black', 'Helvetica Neue', Arial, sans-serif" font-size="34" font-weight="900" letter-spacing="3" opacity="0.88">
+    <tspan fill="#60a5fa">T</tspan><tspan fill="#7dd3fc" letter-spacing="-3">r</tspan><tspan fill="#7dd3fc">a</tspan><tspan fill="#a78bfa" letter-spacing="-3">i</tspan><tspan fill="#a78bfa">n</tspan><tspan fill="#34d399">F</tspan><tspan fill="#fbbf24">acto</tspan><tspan fill="#c084fc">ry</tspan>
+  </text>
+  <text x="480" y="212" text-anchor="middle" fill="#64748b" font-family="Arial, sans-serif" font-size="9" letter-spacing="4" opacity="0.5">DATA · MODEL · SERVICE</text>
+
+  <!-- ===== BOTTOM ROW: GENERATE · TRAIN · DEPLOY ===== -->
+
+  <!-- GENERATE -->
+  <g transform="translate(192, 268)">
+    <rect x="-36" y="-10" width="72" height="78" rx="5" fill="#1a1040" stroke="url(#purple)" stroke-width="1.8"/>
+    <!-- Funnel top -->
+    <polygon points="-24,-10 24,-10 14,-24 -14,-24" fill="#1e1152" stroke="#a78bfa" stroke-width="1.2"/>
+    <!-- Input docs -->
+    <rect x="-5" y="-33" width="7" height="7" rx="1" fill="#60a5fa" opacity="0.4" transform="rotate(-10, -2, -30)"/>
+    <rect x="4" y="-36" width="5.5" height="6" rx="1" fill="#60a5fa" opacity="0.28" transform="rotate(12, 7, -33)"/>
+    <!-- Lightning bolt -->
+    <polygon points="-3,2 7,12 1,12 5,22 -7,12 0,12" fill="#a78bfa" opacity="0.85"/>
+    <!-- Particles -->
+    <circle cx="-16" cy="14" r="2" fill="#c4b5fd" opacity="0.3"/>
+    <circle cx="16" cy="11" r="2" fill="#c4b5fd" opacity="0.3"/>
+    <circle cx="-10" cy="30" r="1.8" fill="#c4b5fd" opacity="0.25"/>
+    <circle cx="12" cy="28" r="1.8" fill="#c4b5fd" opacity="0.25"/>
+    <!-- Gear (inside box) -->
+    <g transform="translate(-24, 42)">
+      <circle cx="0" cy="0" r="6" fill="none" stroke="#a78bfa" stroke-width="1.2" opacity="0.35"/>
+      <circle cx="0" cy="0" r="2" fill="#a78bfa" opacity="0.35"/>
+      <rect x="-0.8" y="-8" width="1.6" height="3" rx="0.6" fill="#a78bfa" opacity="0.35"/>
+      <rect x="-0.8" y="5" width="1.6" height="3" rx="0.6" fill="#a78bfa" opacity="0.35"/>
+      <rect x="-8" y="-0.8" width="3" height="1.6" rx="0.6" fill="#a78bfa" opacity="0.35"/>
+      <rect x="5" y="-0.8" width="3" height="1.6" rx="0.6" fill="#a78bfa" opacity="0.35"/>
+    </g>
+    <!-- Status dots -->
+    <circle cx="-24" cy="-2" r="2" fill="#4ade80" opacity="0.65"/>
+    <circle cx="-24" cy="7" r="2" fill="#a78bfa" opacity="0.45"/>
+    <!-- Smoke -->
+    <circle cx="-20" cy="-30" r="3" fill="#a78bfa" opacity="0.08"/>
+    <circle cx="-22" cy="-37" r="4.5" fill="#a78bfa" opacity="0.05"/>
+    <!-- Output belt -->
+    <rect x="-9" y="66" width="18" height="3" rx="1.5" fill="#334155" stroke="#a78bfa" stroke-width="0.6" opacity="0.5"/>
+  </g>
+  <text x="192" y="252" text-anchor="middle" fill="#a78bfa" font-family="Arial, sans-serif" font-size="11" font-weight="bold" opacity="0.8" letter-spacing="1">GENERATE</text>
+
+  <!-- TRAIN (center, biggest) -->
+  <g transform="translate(480, 274) scale(1.2)">
+    <rect x="-44" y="-12" width="88" height="92" rx="6" fill="#0a2218" stroke="url(#emerald)" stroke-width="2.2"/>
+    <!-- Chimneys -->
+    <rect x="-18" y="-36" width="12" height="26" rx="3" fill="#0d3320" stroke="#34d399" stroke-width="1.3"/>
+    <rect x="7" y="-32" width="10" height="22" rx="3" fill="#0d3320" stroke="#34d399" stroke-width="1.2"/>
+    <!-- Smoke -->
+    <circle cx="-12" cy="-42" r="5" fill="#34d399" opacity="0.10"/>
+    <circle cx="-16" cy="-50" r="7" fill="#34d399" opacity="0.06"/>
+    <circle cx="12" cy="-38" r="4" fill="#34d399" opacity="0.08"/>
+    <circle cx="15" cy="-44" r="5.5" fill="#34d399" opacity="0.05"/>
+    <!-- Neural net -->
+    <circle cx="-20" cy="2" r="3.2" fill="#34d399" opacity="0.75"/>
+    <circle cx="-20" cy="13" r="3.2" fill="#34d399" opacity="0.75"/>
+    <circle cx="0" cy="-2" r="3.5" fill="#34d399" opacity="0.6"/>
+    <circle cx="0" cy="10" r="3.5" fill="#34d399" opacity="0.6"/>
+    <circle cx="20" cy="2" r="3.5" fill="#34d399" opacity="0.75"/>
+    <circle cx="20" cy="13" r="3.5" fill="#34d399" opacity="0.75"/>
+    <line x1="-17" y1="2" x2="-3.5" y2="-2" stroke="#34d399" stroke-width="0.8" opacity="0.4"/>
+    <line x1="-17" y1="2" x2="-3.5" y2="10" stroke="#34d399" stroke-width="0.8" opacity="0.4"/>
+    <line x1="-17" y1="13" x2="-3.5" y2="10" stroke="#34d399" stroke-width="0.8" opacity="0.4"/>
+    <line x1="3.5" y1="-2" x2="17" y2="2" stroke="#34d399" stroke-width="0.8" opacity="0.4"/>
+    <line x1="3.5" y1="-2" x2="17" y2="13" stroke="#34d399" stroke-width="0.8" opacity="0.4"/>
+    <line x1="3.5" y1="10" x2="17" y2="2" stroke="#34d399" stroke-width="0.8" opacity="0.4"/>
+    <line x1="3.5" y1="10" x2="17" y2="13" stroke="#34d399" stroke-width="0.8" opacity="0.4"/>
+    <!-- Fire window -->
+    <rect x="-14" y="24" width="28" height="20" rx="3" fill="#111827" stroke="#34d399" stroke-width="1" opacity="0.6"/>
+    <path d="M -7,42 C -7,35 -3,28 0,24 C 3,28 7,35 7,42 Z" fill="url(#fire)" opacity="0.8"/>
+    <path d="M -3,42 C -3,36 -1,31 0,28 C 1,31 3,36 3,42 Z" fill="#fbbf24" opacity="0.6"/>
+    <!-- Gears -->
+    <g transform="translate(-48, 50)">
+      <circle cx="0" cy="0" r="8" fill="none" stroke="#34d399" stroke-width="1.3" opacity="0.35"/>
+      <circle cx="0" cy="0" r="2.5" fill="#34d399" opacity="0.35"/>
+      <rect x="-1" y="-11" width="2" height="4" rx="0.8" fill="#34d399" opacity="0.35"/>
+      <rect x="-1" y="7" width="2" height="4" rx="0.8" fill="#34d399" opacity="0.35"/>
+    </g>
+    <g transform="translate(48, 46)">
+      <circle cx="0" cy="0" r="6.5" fill="none" stroke="#34d399" stroke-width="1.2" opacity="0.3"/>
+      <circle cx="0" cy="0" r="2" fill="#34d399" opacity="0.3"/>
+    </g>
+    <!-- Gauge + Temp -->
+    <rect x="-34" y="54" width="20" height="11" rx="2" fill="#111827" stroke="#34d399" stroke-width="0.7" opacity="0.5"/>
+    <circle cx="-29" cy="59.5" r="1.8" fill="#4ade80" opacity="0.65"/>
+    <rect x="-26" y="58" width="7" height="1.4" rx="0.6" fill="#34d399" opacity="0.3"/>
+    <rect x="14" y="54" width="20" height="11" rx="2" fill="#111827" stroke="#f59e0b" stroke-width="0.7" opacity="0.5"/>
+    <text x="24" y="62" text-anchor="middle" fill="#f59e0b" font-family="monospace" font-size="6" opacity="0.55">98°</text>
+    <!-- Progress bar -->
+    <rect x="-32" y="70" width="64" height="3.5" rx="1.8" fill="#111827" opacity="0.5"/>
+    <rect x="-32" y="70" width="46" height="3.5" rx="1.8" fill="#34d399" opacity="0.55"/>
+    <!-- Loss curve -->
+    <rect x="-32" y="76" width="64" height="9" rx="1.5" fill="#111827" opacity="0.25"/>
+    <polyline points="-28,82 -20,79 -12,80 -4,78 4,79 12,77 20,77 28,76" fill="none" stroke="#34d399" stroke-width="0.9" opacity="0.45"/>
+  </g>
+  <text x="480" y="250" text-anchor="middle" fill="#34d399" font-family="Arial, sans-serif" font-size="13" font-weight="bold" opacity="0.85" letter-spacing="2">TRAIN</text>
+
+  <!-- DEPLOY -->
+  <g transform="translate(768, 268)">
+    <rect x="-36" y="-8" width="72" height="78" rx="5" fill="#1a1508" stroke="url(#amber)" stroke-width="1.8"/>
+    <!-- Docker container grid -->
+    <g transform="translate(0, 4)">
+      <rect x="-22" y="0" width="13" height="8" rx="1.8" fill="#d97706" opacity="0.3"/>
+      <rect x="-7" y="0" width="13" height="8" rx="1.8" fill="#d97706" opacity="0.3"/>
+      <rect x="8" y="0" width="13" height="8" rx="1.8" fill="#d97706" opacity="0.3"/>
+      <rect x="-22" y="10" width="13" height="8" rx="1.8" fill="#d97706" opacity="0.25"/>
+      <rect x="-7" y="10" width="13" height="8" rx="1.8" fill="#d97706" opacity="0.25"/>
+      <rect x="8" y="10" width="13" height="8" rx="1.8" fill="#d97706" opacity="0.25"/>
+    </g>
+    <!-- Rocket -->
+    <g transform="translate(0, 44)">
+      <path d="M 0,-14 C 7,-10 8,-3 6.5,3 L 3,4.5 L 0,1 L -3,4.5 L -6.5,3 C -8,-3 -7,-10 0,-14Z" fill="#fbbf24" opacity="0.9"/>
+      <circle cx="0" cy="-4" r="2.2" fill="#1a1508"/>
+      <path d="M -3,4.5 L 0,13 L 3,4.5" fill="#f59e0b" opacity="0.6"/>
+      <path d="M -1.2,8 L 0,16 L 1.2,8" fill="#ef4444" opacity="0.35"/>
+    </g>
+    <!-- Base platform -->
+    <rect x="-28" y="62" width="56" height="2.5" rx="1.2" fill="#4a3520" stroke="#fbbf24" stroke-width="0.5" opacity="0.5"/>
+    <!-- API label -->
+    <rect x="-24" y="66" width="48" height="7" rx="1.2" fill="#111827" opacity="0.5"/>
+    <text x="0" y="72" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="5.5" opacity="0.55">:18000/api</text>
+    <!-- Sparkle dots -->
+    <circle cx="-32" cy="54" r="1.2" fill="#fbbf24" opacity="0.35"/>
+    <circle cx="32" cy="52" r="1.2" fill="#fbbf24" opacity="0.35"/>
+  </g>
+  <text x="768" y="252" text-anchor="middle" fill="#fbbf24" font-family="Arial, sans-serif" font-size="11" font-weight="bold" opacity="0.85" letter-spacing="1">DEPLOY</text>
+
+</svg>

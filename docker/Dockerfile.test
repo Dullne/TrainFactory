@@ -1,0 +1,81 @@
+# check=skip=InvalidDefaultArgInFrom
+# CPU-only test and API-smoke images. Dependency resolution happens separately;
+# the CPU wheel index is fixed here only for artifact installation.
+ARG API_TEST_BASE_IMAGE
+FROM ${API_TEST_BASE_IMAGE} AS test-base
+
+ARG BUILD_VERSION
+ARG VCS_REF
+ARG VCS_DATE
+ARG SOURCE_REPOSITORY
+RUN test -n "${BUILD_VERSION}" \
+    && test -n "${VCS_REF}" \
+    && test -n "${VCS_DATE}" \
+    && test -n "${SOURCE_REPOSITORY}"
+
+WORKDIR /app
+
+COPY requirements/ requirements/
+# Required project build providers: setuptools==75.8.0 and wheel==0.45.1.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip --isolated install \
+        --index-url https://pypi.org/simple \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        --require-hashes --only-binary=:all: -r requirements/test-cpu.lock \
+    && python -c "import importlib.metadata as m; assert m.version('setuptools') == '75.8.0'; assert m.version('wheel') == '0.45.1'; import torch; assert torch.__version__ == '2.6.0+cpu'; assert not torch.cuda.is_available()"
+
+COPY pyproject.toml README.md ./
+COPY .env.example .dockerignore .gitignore .gitattributes ./
+COPY train_factory/ train_factory/
+COPY tests/ tests/
+COPY .github/workflows/ci.yml .github/workflows/ci.yml
+COPY scripts/check_base_image_providers.py scripts/check_dependency_locks.py scripts/snapshot_base_providers.py scripts/
+COPY scripts/materialize_compose_secrets.py scripts/scan_tracked_secrets.py scripts/validate_compose_config.py scripts/
+COPY scripts/build_release.py scripts/
+COPY scripts/run_mysql_migration_tests.py scripts/compose_manifest.py scripts/compose_release.py scripts/promote_web_release.py scripts/verify_deployment.py scripts/
+COPY scripts/check_pytest_partitions.py scripts/validate_test_report.py scripts/run_compose_smoke.py scripts/
+COPY docker/Dockerfile docker/Dockerfile.test docker/Dockerfile.test.dockerignore docker/entrypoint.sh docker/docker-compose.yml docker/docker-compose.secrets.yml docker/docker-compose.cpu.yml docker/docker-compose.gpu-compat.yml docker/docker-compose.deployment.yml docker/docker-compose.release.yml docker/docker-compose.verify.yml docker/images.lock.env docker/init.sql docker/
+COPY docker/xinference-patches/ docker/xinference-patches/
+COPY web/nginx.conf web/vite.config.ts web/Dockerfile web/
+COPY secrets/README.md secrets/README.md
+COPY --chmod=0555 docker/entrypoint.sh /app/docker/entrypoint.sh
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip --isolated install --no-deps --no-build-isolation . \
+    && rm -rf build train_factory.egg-info \
+    && python -c "import importlib.metadata as m; assert m.version('setuptools') == '75.8.0'; assert m.version('wheel') == '0.45.1'"
+
+ENV PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    API_HOST=0.0.0.0 \
+    API_PORT=8000
+
+FROM test-base AS test
+ARG BUILD_VERSION
+ARG VCS_REF
+ARG VCS_DATE
+ARG SOURCE_REPOSITORY
+LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${VCS_DATE}" \
+      org.opencontainers.image.source="${SOURCE_REPOSITORY}"
+ENV GPU_PREFLIGHT_MODE=off
+ENV MYSQL_URL=mysql+pymysql://trainfactory_app@localhost:3306/train_factory
+HEALTHCHECK NONE
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
+CMD ["python", "-m", "pytest", "-q"]
+
+FROM test-base AS api-smoke
+ARG BUILD_VERSION
+ARG VCS_REF
+ARG VCS_DATE
+ARG SOURCE_REPOSITORY
+LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${VCS_DATE}" \
+      org.opencontainers.image.source="${SOURCE_REPOSITORY}"
+ENV GPU_PREFLIGHT_MODE=off
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"API_PORT\", \"8000\")}/health', timeout=3)"]
+EXPOSE 8000
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
+CMD ["python", "-m", "train_factory.api.server"]

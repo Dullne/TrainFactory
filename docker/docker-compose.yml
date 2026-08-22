@@ -1,0 +1,587 @@
+services:
+  # ============ 生产模式 ============
+  # 使用 (项目根目录): docker compose up -d --build
+  # 默认只构建并启动 API + Web + MySQL；部署/推理/向量组件通过 profile 手动启用。
+
+  # Frontend - React + Nginx (生产)
+  train-factory-web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+      args:
+        WEB_NODE_BUILD_IMAGE: ${WEB_NODE_BUILD_IMAGE:-node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436}
+        WEB_NGINX_IMAGE: ${WEB_NGINX_IMAGE:-nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752}
+        BUILD_VERSION: ${BUILD_VERSION:-0.1.0-dev}
+        VCS_REF: ${VCS_REF:-0000000000000000000000000000000000000000}
+        VCS_DATE: ${VCS_DATE:-1970-01-01T00:00:00Z}
+        SOURCE_REPOSITORY: ${SOURCE_REPOSITORY:-https://example.invalid/train-factory}
+    image: ${COMPOSE_PROJECT_NAME:-trainfactory}-web:${VERSION:-0.1.0}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-web
+    restart: unless-stopped
+    ports:
+      - target: 80
+        published: "${WEB_PORT:-3000}"
+        # Web 的发布绑定默认跟随全局 HOST_BIND_ADDRESS；如需只把 Web 界面开放给
+        # 局域网而不暴露 API 等其他发布端口，在 .env 设置 WEB_HOST_BIND_ADDRESS=0.0.0.0。
+        host_ip: "${WEB_HOST_BIND_ADDRESS:-${HOST_BIND_ADDRESS:-127.0.0.1}}"
+        protocol: tcp
+    environment:
+      - API_HOST=${API_HOST:-train-factory-api}
+      - API_PORT=${API_PORT:-18000}
+    depends_on:
+      - train-factory-api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "3", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      default:
+        ipv4_address: ${WEB_PROXY_IPV4:-172.18.0.4}
+
+  # Backend API - FastAPI (生产 / production)
+  train-factory-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        API_BASE_IMAGE: ${API_BASE_IMAGE:-pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel@sha256:0cf3402e946b7c384ba943ee05c90b4c5a4a05227923921f2b0918c011cfaf56}
+        BUILD_VERSION: ${BUILD_VERSION:-0.1.0-dev}
+        VCS_REF: ${VCS_REF:-0000000000000000000000000000000000000000}
+        VCS_DATE: ${VCS_DATE:-1970-01-01T00:00:00Z}
+        SOURCE_REPOSITORY: ${SOURCE_REPOSITORY:-https://example.invalid/train-factory}
+    image: ${COMPOSE_PROJECT_NAME:-trainfactory}-api:${VERSION:-0.1.0}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-api
+    restart: unless-stopped
+    pid: host  # Share host PID namespace for GPU process monitoring (prod parity with dev)
+    # 训练以 API 容器内子进程运行，PyTorch DataLoader 依赖共享内存；
+    # Docker 默认 /dev/shm 仅 64MB，多 worker 加载数据会 OOM。1g 起步，可 API_SHM_SIZE 覆盖。
+    shm_size: ${API_SHM_SIZE:-1g}
+    deploy:
+      resources:
+        # 容器资源限额：环境变量不设或 0 = 不限制（compose 会收敛为空）。
+        # - API_MEM_LIMIT  内存，如 6g（resource_monitor 读 cgroup 后监控面板显示限额）
+        # - API_CPU_LIMIT  CPU 核数，如 4（浮点）
+        # - API_PIDS_LIMIT 进程数上限（防 fork 炸弹）
+        # 磁盘无法在 Docker 平台层限制（overlay2 不支持 storage_opt size），
+        # 数据盘（bind mount）容量由宿主管理，监控面板显示其真实占用。
+        limits:
+          memory: ${API_MEM_LIMIT:-0}
+          cpus: ${API_CPU_LIMIT:-0}
+          pids: ${API_PIDS_LIMIT:-0}
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../data:/app/data
+      - ../models:/app/models
+      - ../output:/app/output
+      - train_cache:/app/cache
+    environment:
+      GPU_PREFLIGHT_MODE: required
+      MYSQL_APP_USER: ${MYSQL_APP_USER:-trainfactory_app}
+      MYSQL_APP_PASSWORD: ${MYSQL_APP_PASSWORD:-}
+      MYSQL_HOST: mysql
+      MYSQL_DATABASE: train_factory
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      HOST_BIND_ADDRESS: ${HOST_BIND_ADDRESS:-127.0.0.1}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-}
+      SELF_REGISTRATION_ENABLED: ${SELF_REGISTRATION_ENABLED:-false}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_DEFAULT: ${RATE_LIMIT_DEFAULT:-100/minute}
+      RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-5/minute}
+      RATE_LIMIT_REGISTER: ${RATE_LIMIT_REGISTER:-3/hour}
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-172.18.0.4/32}
+      AUDIT_LOG_RETENTION_DAYS: ${AUDIT_LOG_RETENTION_DAYS:-90}
+      AUDIT_LOG_CLEANUP_INTERVAL_HOURS: ${AUDIT_LOG_CLEANUP_INTERVAL_HOURS:-24}
+      TRAINING_CACHE: ${TRAINING_CACHE:-/app/cache}
+      MODELS_DIR: ${MODELS_DIR:-/app/models}
+      DATASETS_DIR: ${DATASETS_DIR:-/app/data/datasets}
+      OUTPUT_DIR: ${OUTPUT_DIR:-/app/output}
+      HF_HOME: ${HF_HOME:-/app/cache/hf_home}
+      HF_DATASETS_CACHE: ${HF_DATASETS_CACHE:-/app/cache/hf_datasets}
+      MODELSCOPE_CACHE: ${MODELSCOPE_CACHE:-/app/cache/modelscope}
+      PATH_MAPPINGS: ${PATH_MAPPINGS:-}
+      API_HOST: 0.0.0.0
+      API_PORT: ${API_PORT:-18000}
+      API_WORKERS: ${API_WORKERS:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      APP_TIMEZONE: ${APP_TIMEZONE:-UTC}
+      ALLOW_MODEL_REMOTE_CODE: ${ALLOW_MODEL_REMOTE_CODE:-false}
+      DOWNLOAD_MAX_CONCURRENT_GLOBAL: ${DOWNLOAD_MAX_CONCURRENT_GLOBAL:-4}
+      DOWNLOAD_MAX_CONCURRENT_PER_USER: ${DOWNLOAD_MAX_CONCURRENT_PER_USER:-2}
+      MODEL_DOWNLOAD_MAX_BYTES: ${MODEL_DOWNLOAD_MAX_BYTES:-32212254720}
+      DATASET_DOWNLOAD_MAX_BYTES: ${DATASET_DOWNLOAD_MAX_BYTES:-10737418240}
+      DOWNLOAD_STORAGE_MAX_BYTES_GLOBAL: ${DOWNLOAD_STORAGE_MAX_BYTES_GLOBAL:-214748364800}
+      DOWNLOAD_STORAGE_MAX_BYTES_PER_USER: ${DOWNLOAD_STORAGE_MAX_BYTES_PER_USER:-64424509440}
+      DOWNLOAD_METADATA_TIMEOUT_SECONDS: ${DOWNLOAD_METADATA_TIMEOUT_SECONDS:-15}
+      DOWNLOAD_MAX_WORKERS: ${DOWNLOAD_MAX_WORKERS:-4}
+      BACKGROUND_TASK_MAX_ACTIVE_GLOBAL: ${BACKGROUND_TASK_MAX_ACTIVE_GLOBAL:-8}
+      BACKGROUND_TASK_MAX_ACTIVE_PER_USER: ${BACKGROUND_TASK_MAX_ACTIVE_PER_USER:-2}
+      SYNC_STORAGE_MAX_BYTES_GLOBAL: ${SYNC_STORAGE_MAX_BYTES_GLOBAL:-21474836480}
+      SYNC_STORAGE_MAX_BYTES_PER_USER: ${SYNC_STORAGE_MAX_BYTES_PER_USER:-5368709120}
+      SYNC_PENDING_MAX_BATCHES_PER_TASK: ${SYNC_PENDING_MAX_BATCHES_PER_TASK:-1000}
+      SYNC_PENDING_MAX_RECORDS_PER_TASK: ${SYNC_PENDING_MAX_RECORDS_PER_TASK:-1000000}
+      SYNC_GENERATION_MAX_INPUT_BYTES: ${SYNC_GENERATION_MAX_INPUT_BYTES:-1073741824}
+      SYNC_MAX_RECORD_BYTES: ${SYNC_MAX_RECORD_BYTES:-8388608}
+      SYNC_MAX_FUTURE_SKEW_SECONDS: ${SYNC_MAX_FUTURE_SKEW_SECONDS:-300}
+      SYNC_BOUNDARY_MAX_IDS: ${SYNC_BOUNDARY_MAX_IDS:-10000}
+      SYNC_BOUNDARY_MAX_BYTES: ${SYNC_BOUNDARY_MAX_BYTES:-4194304}
+      SYNC_HISTORICAL_MAX_DOCS: ${SYNC_HISTORICAL_MAX_DOCS:-100000}
+      SYNC_HISTORICAL_MAX_BYTES: ${SYNC_HISTORICAL_MAX_BYTES:-67108864}
+      TRAINING_ALLOW_CPU_FALLBACK: ${TRAINING_ALLOW_CPU_FALLBACK:-false}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      SWANLAB_API_KEY: ${SWANLAB_API_KEY:-}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-trainfactory}
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_BUCKET: ${MINIO_BUCKET:-trainfactory}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      HOST_IP: ${HOST_IP:-172.17.0.1}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.11.0@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c}
+      SGLANG_IMAGE: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0}
+      XINFERENCE_IMAGE: ${XINFERENCE_IMAGE:-xprobe/xinference:v1.13.0@sha256:b5df50f3d04e5f7290cf0c6765b5a2b06ab29657d721cfaa13389a7c1d666291}
+      DOCKER_NETWORK_NAME: ${DOCKER_NETWORK_NAME:-trainfactory_network}
+      PORT_RANGE_START: ${PORT_RANGE_START:-9997}
+      PORT_RANGE_END: ${PORT_RANGE_END:-10100}
+      DISCOVER_MODELS_ALLOWED_PRIVATE_HOSTS: ${DISCOVER_MODELS_ALLOWED_PRIVATE_HOSTS:-}
+      DISCOVER_MODELS_ALLOW_PRIVATE_ALL: ${DISCOVER_MODELS_ALLOW_PRIVATE_ALL:-false}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      # 默认保留基础镜像的最低驱动版本校验。仅在确认 CUDA 次要版本兼容后，
+      # 通过 docker-compose.gpu-compat.yml 显式启用兼容模式。
+      NVIDIA_DISABLE_REQUIRE: "0"
+    ports:
+      - target: ${API_PORT:-18000}
+        published: "${API_PORT:-18000}"
+        host_ip: "${HOST_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ============ 开发模式 ============
+  # 使用: docker compose --profile dev up -d --build mysql train-factory-api-dev train-factory-web-dev
+
+  # Frontend - 开发模式 (热更新)
+  train-factory-web-dev:
+    image: ${NODE_IMAGE:-node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-web-dev
+    working_dir: /app
+    volumes:
+      - ../web:/app
+      - web_node_modules:/app/node_modules
+    ports:
+      - target: 3000
+        published: "${WEB_DEV_PORT:-3001}"
+        host_ip: "${HOST_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
+    environment:
+      # 前端使用 /api 前缀，由 Vite 代理到后端
+      - VITE_API_BASE_URL=/api
+      # Vite 代理目标（服务端使用）
+      - VITE_PROXY_TARGET=http://train-factory-api-dev:${API_DEV_PORT:-18001}
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - train-factory-api-dev
+    profiles:
+      - dev
+    networks:
+      default:
+        ipv4_address: ${WEB_DEV_PROXY_IPV4:-172.18.0.5}
+
+  # Frontend E2E tests - Playwright (独立容器)
+  train-factory-e2e:
+    image: ${PLAYWRIGHT_IMAGE:-mcr.microsoft.com/playwright:v1.57.0-jammy@sha256:6aca677c27a967caf7673d108ac67ffaf8fed134f27e17b27a05464ca0ace831}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-e2e
+    working_dir: /app
+    volumes:
+      - ../web:/app
+      - e2e_node_modules:/app/node_modules
+    environment:
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+      - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+    command: sh -c "npm ci && npm run test:e2e"
+    profiles:
+      - test
+
+  # Backend API - 开发模式 (代码挂载，重启生效)
+  train-factory-api-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        API_BASE_IMAGE: ${API_BASE_IMAGE:-pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel@sha256:0cf3402e946b7c384ba943ee05c90b4c5a4a05227923921f2b0918c011cfaf56}
+        BUILD_VERSION: ${BUILD_VERSION:-0.1.0-dev}
+        VCS_REF: ${VCS_REF:-0000000000000000000000000000000000000000}
+        VCS_DATE: ${VCS_DATE:-1970-01-01T00:00:00Z}
+        SOURCE_REPOSITORY: ${SOURCE_REPOSITORY:-https://example.invalid/train-factory}
+    image: ${COMPOSE_PROJECT_NAME:-trainfactory}-api:${VERSION:-0.1.0}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-api-dev
+    restart: unless-stopped
+    pid: host  # Share host PID namespace for GPU process monitoring
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../data:/app/data
+      - ../models:/app/models
+      - ../output:/app/output
+      - train_cache:/app/cache
+      - ../train_factory:/app/train_factory  # 代码挂载
+      - /var/run/docker.sock:/var/run/docker.sock  # Docker socket for container deployment
+      - /usr/bin/docker:/usr/bin/docker:ro  # Docker CLI from host
+      - /data:/data  # 模型文件和本地包访问
+    # 开发模式：优先安装本地 qwen3-rerank-trainer；路径不存在时跳过，避免启动被外部路径卡死
+    command: >
+      sh -c 'if [ -d "$$QWEN3_RERANK_TRAINER_PATH" ]; then
+               pip install "$$QWEN3_RERANK_TRAINER_PATH" --no-deps -q;
+             else
+               echo "Skip local qwen3-rerank-trainer: $$QWEN3_RERANK_TRAINER_PATH not found";
+             fi &&
+             python -m train_factory.api.server'
+    environment:
+      GPU_PREFLIGHT_MODE: required
+      MYSQL_APP_USER: ${MYSQL_APP_USER:-trainfactory_app}
+      MYSQL_APP_PASSWORD: ${MYSQL_APP_PASSWORD:-}
+      MYSQL_HOST: mysql
+      MYSQL_DATABASE: train_factory
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      HOST_BIND_ADDRESS: ${HOST_BIND_ADDRESS:-127.0.0.1}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-false}  # dev http: Secure cookie 不会被浏览器存储
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+      DEFAULT_ADMIN_EMAIL: ${DEFAULT_ADMIN_EMAIL:-}
+      SELF_REGISTRATION_ENABLED: ${SELF_REGISTRATION_ENABLED:-false}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_DEFAULT: ${RATE_LIMIT_DEFAULT:-100/minute}
+      RATE_LIMIT_LOGIN: ${RATE_LIMIT_LOGIN:-5/minute}
+      RATE_LIMIT_REGISTER: ${RATE_LIMIT_REGISTER:-3/hour}
+      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_DEV_TRUSTED_PROXIES:-172.18.0.5/32}
+      AUDIT_LOG_RETENTION_DAYS: ${AUDIT_LOG_RETENTION_DAYS:-90}
+      AUDIT_LOG_CLEANUP_INTERVAL_HOURS: ${AUDIT_LOG_CLEANUP_INTERVAL_HOURS:-24}
+      TRAINING_CACHE: ${TRAINING_CACHE:-/app/cache}
+      MODELS_DIR: ${MODELS_DIR:-/app/models}
+      DATASETS_DIR: ${DATASETS_DIR:-/app/data/datasets}
+      OUTPUT_DIR: ${OUTPUT_DIR:-/app/output}
+      HF_HOME: ${HF_HOME:-/app/cache/hf_home}
+      HF_DATASETS_CACHE: ${HF_DATASETS_CACHE:-/app/cache/hf_datasets}
+      MODELSCOPE_CACHE: ${MODELSCOPE_CACHE:-/app/cache/modelscope}
+      PATH_MAPPINGS: ${PATH_MAPPINGS:-}
+      QWEN3_RERANK_TRAINER_PATH: ${QWEN3_RERANK_TRAINER_PATH:-/data/code/rerank/qwen3-rerank-trainer}
+      API_HOST: 0.0.0.0
+      API_PORT: ${API_DEV_PORT:-18001}
+      API_WORKERS: ${API_WORKERS:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      APP_TIMEZONE: ${APP_TIMEZONE:-UTC}
+      ALLOW_MODEL_REMOTE_CODE: ${ALLOW_MODEL_REMOTE_CODE:-false}
+      DOWNLOAD_MAX_CONCURRENT_GLOBAL: ${DOWNLOAD_MAX_CONCURRENT_GLOBAL:-4}
+      DOWNLOAD_MAX_CONCURRENT_PER_USER: ${DOWNLOAD_MAX_CONCURRENT_PER_USER:-2}
+      MODEL_DOWNLOAD_MAX_BYTES: ${MODEL_DOWNLOAD_MAX_BYTES:-32212254720}
+      DATASET_DOWNLOAD_MAX_BYTES: ${DATASET_DOWNLOAD_MAX_BYTES:-10737418240}
+      DOWNLOAD_STORAGE_MAX_BYTES_GLOBAL: ${DOWNLOAD_STORAGE_MAX_BYTES_GLOBAL:-214748364800}
+      DOWNLOAD_STORAGE_MAX_BYTES_PER_USER: ${DOWNLOAD_STORAGE_MAX_BYTES_PER_USER:-64424509440}
+      DOWNLOAD_METADATA_TIMEOUT_SECONDS: ${DOWNLOAD_METADATA_TIMEOUT_SECONDS:-15}
+      DOWNLOAD_MAX_WORKERS: ${DOWNLOAD_MAX_WORKERS:-4}
+      BACKGROUND_TASK_MAX_ACTIVE_GLOBAL: ${BACKGROUND_TASK_MAX_ACTIVE_GLOBAL:-8}
+      BACKGROUND_TASK_MAX_ACTIVE_PER_USER: ${BACKGROUND_TASK_MAX_ACTIVE_PER_USER:-2}
+      SYNC_STORAGE_MAX_BYTES_GLOBAL: ${SYNC_STORAGE_MAX_BYTES_GLOBAL:-21474836480}
+      SYNC_STORAGE_MAX_BYTES_PER_USER: ${SYNC_STORAGE_MAX_BYTES_PER_USER:-5368709120}
+      SYNC_PENDING_MAX_BATCHES_PER_TASK: ${SYNC_PENDING_MAX_BATCHES_PER_TASK:-1000}
+      SYNC_PENDING_MAX_RECORDS_PER_TASK: ${SYNC_PENDING_MAX_RECORDS_PER_TASK:-1000000}
+      SYNC_GENERATION_MAX_INPUT_BYTES: ${SYNC_GENERATION_MAX_INPUT_BYTES:-1073741824}
+      SYNC_MAX_RECORD_BYTES: ${SYNC_MAX_RECORD_BYTES:-8388608}
+      SYNC_MAX_FUTURE_SKEW_SECONDS: ${SYNC_MAX_FUTURE_SKEW_SECONDS:-300}
+      SYNC_BOUNDARY_MAX_IDS: ${SYNC_BOUNDARY_MAX_IDS:-10000}
+      SYNC_BOUNDARY_MAX_BYTES: ${SYNC_BOUNDARY_MAX_BYTES:-4194304}
+      SYNC_HISTORICAL_MAX_DOCS: ${SYNC_HISTORICAL_MAX_DOCS:-100000}
+      SYNC_HISTORICAL_MAX_BYTES: ${SYNC_HISTORICAL_MAX_BYTES:-67108864}
+      TRAINING_ALLOW_CPU_FALLBACK: ${TRAINING_ALLOW_CPU_FALLBACK:-false}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      SWANLAB_API_KEY: ${SWANLAB_API_KEY:-}
+      HOST_IP: ${HOST_IP:-172.17.0.1}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.11.0@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c}
+      SGLANG_IMAGE: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0}
+      XINFERENCE_IMAGE: ${XINFERENCE_IMAGE:-xprobe/xinference:v1.13.0@sha256:b5df50f3d04e5f7290cf0c6765b5a2b06ab29657d721cfaa13389a7c1d666291}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-trainfactory}
+      MILVUS_HOST: milvus
+      MILVUS_PORT: 19530
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_BUCKET: ${MINIO_BUCKET:-trainfactory}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      DOCKER_NETWORK_NAME: ${DOCKER_NETWORK_NAME:-trainfactory_network}
+      PORT_RANGE_START: ${PORT_RANGE_START:-9997}
+      PORT_RANGE_END: ${PORT_RANGE_END:-10100}
+      DISCOVER_MODELS_ALLOWED_PRIVATE_HOSTS: ${DISCOVER_MODELS_ALLOWED_PRIVATE_HOSTS:-}
+      DISCOVER_MODELS_ALLOW_PRIVATE_ALL: ${DISCOVER_MODELS_ALLOW_PRIVATE_ALL:-false}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      # 默认保留基础镜像的最低驱动版本校验。仅在确认 CUDA 次要版本兼容后，
+      # 通过 docker-compose.gpu-compat.yml 显式启用兼容模式。
+      NVIDIA_DISABLE_REQUIRE: "0"
+    ports:
+      - target: ${API_DEV_PORT:-18001}
+        published: "${API_DEV_PORT:-18001}"
+        host_ip: "${HOST_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
+    depends_on:
+      mysql:
+        condition: service_healthy
+    profiles:
+      - dev
+
+  # ============ 推理服务镜像预拉取 ============
+  # 使用: docker compose --profile pull pull vllm-pull sglang-pull
+  # 全量预拉: docker compose --profile all-images pull --ignore-buildable
+  # 这些服务仅用于镜像拉取，实际部署由 API 动态创建容器
+  # 镜像版本在 .env 文件中统一配置
+
+  # vLLM 镜像 (用于预拉取)
+  vllm-pull:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.11.0@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-vllm-pull
+    entrypoint: ["echo", "vLLM image ready"]
+    profiles:
+      - pull
+      - all-images
+
+  # SGLang 镜像 (用于预拉取)
+  sglang-pull:
+    image: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-sglang-pull
+    entrypoint: ["echo", "SGLang image ready"]
+    profiles:
+      - pull
+      - all-images
+
+  # ============ 推理服务 (可选) ============
+  # 使用: docker compose --profile inference up -d xinference
+  # 随基础设施一键启动: docker compose --profile infra up -d
+  xinference:
+    # Xinference - 镜像版本在 .env 中配置
+    image: ${XINFERENCE_IMAGE:-xprobe/xinference:v1.13.0@sha256:b5df50f3d04e5f7290cf0c6765b5a2b06ab29657d721cfaa13389a7c1d666291}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-xinference
+    restart: unless-stopped
+    profiles:
+      - inference
+      - all-images
+      - infra
+    volumes:
+      - ../models:/models:ro
+      - ../output:/app/output:ro
+      - xinference_cache:/root/.cache
+      - xinference_home:/root/.xinference
+      # 修复 Qwen3-Embedding Last Token Pooling 问题
+      - ./xinference-patches/sentence_transformers_core.py:/opt/inference/xinference/model/embedding/sentence_transformers/core.py:ro
+      # 修复 Qwen3-Reranker dtype: flash_attn 下使用 bfloat16 而非 float16
+      - ./xinference-patches/rerank_sentence_transformers_core.py:/opt/inference/xinference/model/rerank/sentence_transformers/core.py:ro
+    environment:
+      - XINFERENCE_HOME=/root/.xinference
+      - ALLOW_MODEL_REMOTE_CODE=${ALLOW_MODEL_REMOTE_CODE:-false}
+    ports:
+      - target: 9997
+        published: "${XINFERENCE_PORT:-9997}"
+        host_ip: "${HOST_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
+    command: xinference-local -H 0.0.0.0 -p 9997
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9997/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ============ 向量数据库 (可选) ============
+  # 使用: docker compose --profile vector up -d etcd minio milvus
+  # 随基础设施一键启动: docker compose --profile infra up -d
+
+  # etcd - Milvus 元数据存储
+  etcd:
+    image: ${ETCD_IMAGE:-quay.io/coreos/etcd:v3.5.18@sha256:d0a641d5fbcc89678c931a61b7de7b8a1cf097149f135c9c73bc81d076a1494b}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-etcd
+    restart: unless-stopped
+    profiles:
+      - vector
+      - all-images
+      - infra
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # MinIO - Milvus 对象存储
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:RELEASE.2024-11-07T00-52-20Z@sha256:ac591851803a79aee64bc37f66d77c56b0a4b6e12d9e5356380f4105510f2332}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-minio
+    restart: unless-stopped
+    profiles:
+      - vector
+      - all-images
+      - infra
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-}
+    volumes:
+      - minio_data:/minio_data
+    ports:
+      - target: 9001
+        published: "${MINIO_CONSOLE_PORT:-9001}"
+        host_ip: "${HOST_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        test -n "$$MINIO_ROOT_USER" || {
+          echo "MINIO_ROOT_USER is required; set MINIO_ACCESS_KEY" >&2
+          exit 1
+        }
+        test -n "$$MINIO_ROOT_PASSWORD" || {
+          echo "MINIO_ROOT_PASSWORD is required; set MINIO_SECRET_KEY" >&2
+          exit 1
+        }
+        exec minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Milvus Standalone - 向量数据库
+  milvus:
+    image: ${MILVUS_IMAGE:-milvusdb/milvus:v2.5.4@sha256:081e5471cb53756bd86bf2e2bfbedadec9e87cb181583c6f19410b23a711be00}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-milvus
+    restart: unless-stopped
+    profiles:
+      - vector
+      - all-images
+      - infra
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-}
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - target: 19530
+        published: "${MILVUS_PORT:-19530}"
+        host_ip: "${HOST_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
+      - target: 9091
+        published: "${MILVUS_GRPC_PORT:-9091}"
+        host_ip: "${HOST_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 90s
+
+  # ============ 数据库 (共用) ============
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b}
+    container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-}
+      MYSQL_DATABASE: train_factory
+      MYSQL_USER: ${MYSQL_APP_USER:-trainfactory_app}
+      MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:-}
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          password_file="$${MYSQL_PASSWORD_FILE:-}";
+          if [ -n "$$password_file" ]; then
+            MYSQL_PWD="$$(cat -- "$$password_file")";
+          else
+            MYSQL_PWD="$${MYSQL_PASSWORD:-}";
+          fi;
+          export MYSQL_PWD;
+          mysql --protocol=TCP -h 127.0.0.1
+          -u"$${MYSQL_USER}" "$${MYSQL_DATABASE}"
+          --batch --skip-column-names --execute="SELECT 1" >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  mysql_data:
+    name: ${MYSQL_DATA_VOLUME:-trainfactory_mysql_data}
+  etcd_data:
+    name: ${ETCD_DATA_VOLUME:-trainfactory_etcd_data}
+  minio_data:
+    name: ${MINIO_DATA_VOLUME:-trainfactory_minio_data}
+  milvus_data:
+    name: ${MILVUS_DATA_VOLUME:-trainfactory_milvus_data}
+  train_cache:
+    name: ${TRAIN_CACHE_VOLUME:-trainfactory_train_cache}
+  web_node_modules:
+    name: ${WEB_NODE_MODULES_VOLUME:-trainfactory_web_node_modules}
+  e2e_node_modules:
+    name: ${E2E_NODE_MODULES_VOLUME:-trainfactory_e2e_node_modules}
+  xinference_cache:
+    name: ${XINFERENCE_CACHE_VOLUME:-trainfactory_xinference_cache}
+  xinference_home:
+    name: ${XINFERENCE_HOME_VOLUME:-trainfactory_xinference_home}
+
+networks:
+  default:
+    name: ${DOCKER_NETWORK_NAME:-trainfactory_network}
+    ipam:
+      config:
+        - subnet: ${DOCKER_NETWORK_SUBNET:-172.18.0.0/16}
+          ip_range: ${DOCKER_DYNAMIC_IP_RANGE:-172.18.128.0/17}

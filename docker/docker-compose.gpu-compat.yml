@@ -1,0 +1,8 @@
+# Use only when the host driver satisfies CUDA 12.x minor-version compatibility
+# but is older than the CUDA version encoded in the base image requirement.
+# Verify the GPU with torch before starting any training task.
+services:
+  train-factory-api:
+    environment:
+      NVIDIA_DISABLE_REQUIRE: "1"
+      GPU_PREFLIGHT_MODE: required

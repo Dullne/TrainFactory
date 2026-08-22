@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+/dist/
+/build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+/web/dist/
+/web/playwright-report/
+/web/test-results/
+
+# Project runtime artifacts
+/data/
+/models/
+/output/
+/.runtime/
+/secrets/*
+!/secrets/README.md
+
+# Env (keep example env files tracked)
+.env
+.env.local
+.env.*.local

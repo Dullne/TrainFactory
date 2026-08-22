@@ -1,0 +1,505 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11.13"
+  UV_VERSION: "0.11.19"
+  NODE_VERSION: "22.20.0"
+  COMPOSE_VERSION: "2.29.2"
+  BUILDX_VERSION: "v0.16.2"
+
+jobs:
+  lock-and-static:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11.13"
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          checksum: 7035608168e106375b36d0c818d537a889c51a8625fe7f8f7cad5e62b947c368
+          enable-cache: false
+      - name: Setup Compose
+        uses: docker/setup-compose-action@2fe291b7677a45ee1269ec56a42604c143505e7e # v1.3.0
+        with:
+          version: "v2.29.2"
+      - name: Verify tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(python -I -c 'import platform; print(platform.python_version())')" = "$PYTHON_VERSION"
+          test "$(uv --version)" = "uv $UV_VERSION"
+          test "$(docker compose version --short)" = "$COMPOSE_VERSION"
+      - name: Validate dependency locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -I scripts/check_dependency_locks.py
+      - name: Install locked static environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --no-deps --no-build-isolation .
+      - name: Validate static policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -I -m compileall -q train_factory scripts
+          python -I scripts/validate_compose_config.py --images-lock docker/images.lock.env --require-digests
+          python -I scripts/scan_tracked_secrets.py
+          git diff --check
+
+  backend-full:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11.13"
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: "v0.16.2"
+      - name: Build CPU test image
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker buildx version | awk '{print $2}')" = "$BUILDX_VERSION"
+          IMAGE_ARGS_OUTPUT="$(python -I scripts/build_release.py --ci-build-args)"
+          mapfile -t IMAGE_ARGS <<< "$IMAGE_ARGS_OUTPUT"
+          unset IMAGE_ARGS_OUTPUT
+          test "${#IMAGE_ARGS[@]}" -eq 4
+          [[ "${IMAGE_ARGS[0]}" == API_BASE_IMAGE=* ]]
+          [[ "${IMAGE_ARGS[1]}" == API_TEST_BASE_IMAGE=* ]]
+          [[ "${IMAGE_ARGS[2]}" == WEB_NODE_BUILD_IMAGE=* ]]
+          [[ "${IMAGE_ARGS[3]}" == WEB_NGINX_IMAGE=* ]]
+          VCS_DATE="$(git show -s --format=%cI "$GITHUB_SHA")"
+          SOURCE_REPOSITORY="https://github.com/${GITHUB_REPOSITORY}"
+          docker build --platform linux/amd64 -f docker/Dockerfile.test --target test \
+            --build-arg "${IMAGE_ARGS[1]}" \
+            --build-arg BUILD_VERSION=0.1.0-ci \
+            --build-arg "VCS_REF=$GITHUB_SHA" \
+            --build-arg "VCS_DATE=$VCS_DATE" \
+            --build-arg "SOURCE_REPOSITORY=$SOURCE_REPOSITORY" \
+            -t "trainfactory-test:$GITHUB_SHA" .
+      - name: Run backend partition
+        id: backend-tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_ROOT="$RUNNER_TEMP/trainfactory-reports"
+          install -d -m 700 "$REPORT_ROOT"
+          REPORT_SECRET="$REPORT_ROOT/backend-canary.secret"
+          install -m 600 /dev/null "$REPORT_SECRET"
+          install -m 600 /dev/null "$REPORT_ROOT/backend.xml"
+          python -I -c 'import secrets,sys; open(sys.argv[1], "w", encoding="utf-8").write(secrets.token_urlsafe(32))' "$REPORT_SECRET"
+          REPORT_CANARY="$(cat "$REPORT_SECRET")"
+          printf '::add-mask::%s\n' "$REPORT_CANARY"
+          export TRAINFACTORY_JUNIT_CANARY="$REPORT_CANARY"
+          docker run --rm \
+            -e DEBUG=false \
+            -e GPU_PREFLIGHT_MODE=off \
+            -e TRAINFACTORY_JUNIT_CANARY \
+            -v "$REPORT_ROOT:/reports" \
+            "trainfactory-test:$GITHUB_SHA" \
+            python -I -m pytest -q --strict-markers -m "not host_tools" \
+              --ignore=tests/integration/test_mysql_migrations.py \
+              --junitxml=/reports/backend.xml
+      - name: Validate backend report
+        id: backend-validator
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_ROOT="$RUNNER_TEMP/trainfactory-reports"
+          REPORT_SECRET="$REPORT_ROOT/backend-canary.secret"
+          python -I scripts/validate_test_report.py \
+            --report-root "$REPORT_ROOT" \
+            --report "$REPORT_ROOT/backend.xml" \
+            --secret-file "$REPORT_SECRET" \
+            --validated-output "$REPORT_ROOT/validated-backend.xml"
+      - name: Upload backend report
+        if: always() && steps.backend-validator.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-junit
+          path: ${{ runner.temp }}/trainfactory-reports/validated-backend.xml
+          if-no-files-found: error
+          retention-days: 1
+      - name: Enforce backend report outcome
+        if: always()
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ steps.backend-tests.outcome }}
+          VALIDATOR_OUTCOME: ${{ steps.backend-validator.outcome }}
+        run: |
+          test "$TEST_OUTCOME" = success
+          test "$VALIDATOR_OUTCOME" = success
+      - name: Remove CPU test image
+        if: always()
+        shell: bash
+        run: docker image rm "trainfactory-test:$GITHUB_SHA" >/dev/null 2>&1 || true
+
+  host-policy:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11.13"
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          checksum: 7035608168e106375b36d0c818d537a889c51a8625fe7f8f7cad5e62b947c368
+          enable-cache: false
+      - name: Setup Compose
+        uses: docker/setup-compose-action@2fe291b7677a45ee1269ec56a42604c143505e7e # v1.3.0
+        with:
+          version: "v2.29.2"
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: "v0.16.2"
+      - name: Install locked host environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --no-deps --no-build-isolation .
+      - name: Verify host tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          GIT_VERSION="$(git version | awk '{print $3}')"
+          printf 'git=%s\n' "$GIT_VERSION"
+          test "$(printf '%s\n' 2.43.0 "$GIT_VERSION" | sort -V | head -n1)" = "2.43.0"
+          test "$(docker compose version --short)" = "$COMPOSE_VERSION"
+          test "$(docker buildx version | awk '{print $2}')" = "$BUILDX_VERSION"
+      - name: Check pytest partitions
+        run: python -I scripts/check_pytest_partitions.py
+      - name: Run host policy tests
+        id: host-tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_ROOT="$RUNNER_TEMP/trainfactory-reports"
+          install -d -m 700 "$REPORT_ROOT"
+          REPORT_SECRET="$REPORT_ROOT/host-canary.secret"
+          install -m 600 /dev/null "$REPORT_SECRET"
+          install -m 600 /dev/null "$REPORT_ROOT/host-policy.xml"
+          python -I -c 'import secrets,sys; open(sys.argv[1], "w", encoding="utf-8").write(secrets.token_urlsafe(32))' "$REPORT_SECRET"
+          REPORT_CANARY="$(cat "$REPORT_SECRET")"
+          printf '::add-mask::%s\n' "$REPORT_CANARY"
+          TRAINFACTORY_JUNIT_CANARY="$REPORT_CANARY" python -I -m pytest -q --strict-markers -m host_tools \
+            --junitxml="$REPORT_ROOT/host-policy.xml"
+      - name: Validate host report
+        id: host-validator
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_ROOT="$RUNNER_TEMP/trainfactory-reports"
+          REPORT_SECRET="$REPORT_ROOT/host-canary.secret"
+          python -I scripts/validate_test_report.py \
+            --report-root "$REPORT_ROOT" \
+            --report "$REPORT_ROOT/host-policy.xml" \
+            --secret-file "$REPORT_SECRET" \
+            --validated-output "$REPORT_ROOT/validated-host-policy.xml"
+      - name: Upload host report
+        if: always() && steps.host-validator.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: host-policy-junit
+          path: ${{ runner.temp }}/trainfactory-reports/validated-host-policy.xml
+          if-no-files-found: error
+          retention-days: 1
+      - name: Enforce host report outcome
+        if: always()
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ steps.host-tests.outcome }}
+          VALIDATOR_OUTCOME: ${{ steps.host-validator.outcome }}
+        run: |
+          test "$TEST_OUTCOME" = success
+          test "$VALIDATOR_OUTCOME" = success
+
+  mysql-migrations:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11.13"
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          checksum: 7035608168e106375b36d0c818d537a889c51a8625fe7f8f7cad5e62b947c368
+          enable-cache: false
+      - name: Install locked migration environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --no-deps --no-build-isolation .
+      - name: Run isolated MySQL migrations
+        id: mysql-tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_ROOT="$RUNNER_TEMP/trainfactory-reports"
+          install -d -m 700 "$REPORT_ROOT"
+          REPORT_SECRET="$REPORT_ROOT/mysql-canary.secret"
+          install -m 600 /dev/null "$REPORT_SECRET"
+          python -I -c 'import secrets,sys; open(sys.argv[1], "w", encoding="utf-8").write(secrets.token_urlsafe(32))' "$REPORT_SECRET"
+          REPORT_CANARY="$(cat "$REPORT_SECRET")"
+          printf '::add-mask::%s\n' "$REPORT_CANARY"
+          python -I scripts/run_mysql_migration_tests.py \
+            --github-actions-mask \
+            --images-lock docker/images.lock.env \
+            --test-file tests/integration/test_mysql_migrations.py \
+            --work-root .runtime \
+            --junit-out "$REPORT_ROOT/mysql-migrations.xml"
+      - name: Validate migration report
+        id: mysql-validator
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPORT_ROOT="$RUNNER_TEMP/trainfactory-reports"
+          REPORT_SECRET="$REPORT_ROOT/mysql-canary.secret"
+          python -I scripts/validate_test_report.py \
+            --report-root "$REPORT_ROOT" \
+            --report "$REPORT_ROOT/mysql-migrations.xml" \
+            --secret-file "$REPORT_SECRET" \
+            --validated-output "$REPORT_ROOT/validated-mysql-migrations.xml"
+      - name: Upload migration report
+        if: always() && steps.mysql-validator.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mysql-migrations-junit
+          path: ${{ runner.temp }}/trainfactory-reports/validated-mysql-migrations.xml
+          if-no-files-found: error
+          retention-days: 1
+      - name: Enforce migration report outcome
+        if: always()
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ steps.mysql-tests.outcome }}
+          VALIDATOR_OUTCOME: ${{ steps.mysql-validator.outcome }}
+        run: |
+          test "$TEST_OUTCOME" = success
+          test "$VALIDATOR_OUTCOME" = success
+
+  frontend-quality:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "22.20.0"
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run test:playwright-runtime
+      - run: npm run lint
+      - run: npm run test:bundle
+      - run: npm run build
+      - run: npm run check:bundle
+
+  frontend-e2e:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: "22.20.0"
+          package-manager-cache: false
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run frontend E2E
+        env:
+          PLAYWRIGHT_PORT: "43231"
+        run: npm run test:e2e -- --workers=2
+
+  compose-smoke:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11.13"
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          checksum: 7035608168e106375b36d0c818d537a889c51a8625fe7f8f7cad5e62b947c368
+          enable-cache: false
+      - name: Setup Compose
+        uses: docker/setup-compose-action@2fe291b7677a45ee1269ec56a42604c143505e7e # v1.3.0
+        with:
+          version: "v2.29.2"
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: "v0.16.2"
+      - name: Install locked smoke environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --no-deps --no-build-isolation .
+      - name: Verify Docker tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker compose version --short)" = "$COMPOSE_VERSION"
+          test "$(docker buildx version | awk '{print $2}')" = "$BUILDX_VERSION"
+      - name: Run isolated Compose smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          VCS_DATE="$(git show -s --format=%cI "$GITHUB_SHA")"
+          SOURCE_REPOSITORY="https://github.com/${GITHUB_REPOSITORY}"
+          python -I scripts/run_compose_smoke.py \
+            --github-actions-mask \
+            --images-lock docker/images.lock.env \
+            --revision "$GITHUB_SHA" \
+            --vcs-date "$VCS_DATE" \
+            --source-repository "$SOURCE_REPOSITORY" \
+            --work-root .runtime \
+            --no-gpu
+
+  release-input-validation:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11.13"
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.11.19"
+          checksum: 7035608168e106375b36d0c818d537a889c51a8625fe7f8f7cad5e62b947c368
+          enable-cache: false
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          version: "v0.16.2"
+      - name: Install locked policy environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --no-deps --no-build-isolation .
+      - name: Validate release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker buildx version | awk '{print $2}')" = "$BUILDX_VERSION"
+          IMAGE_ARGS_OUTPUT="$(python -I scripts/build_release.py --ci-build-args)"
+          mapfile -t IMAGE_ARGS <<< "$IMAGE_ARGS_OUTPUT"
+          unset IMAGE_ARGS_OUTPUT
+          test "${#IMAGE_ARGS[@]}" -eq 4
+          [[ "${IMAGE_ARGS[0]}" == API_BASE_IMAGE=* ]]
+          [[ "${IMAGE_ARGS[1]}" == API_TEST_BASE_IMAGE=* ]]
+          [[ "${IMAGE_ARGS[2]}" == WEB_NODE_BUILD_IMAGE=* ]]
+          [[ "${IMAGE_ARGS[3]}" == WEB_NGINX_IMAGE=* ]]
+          VCS_DATE="$(git show -s --format=%cI "$GITHUB_SHA")"
+          SOURCE_REPOSITORY="https://github.com/${GITHUB_REPOSITORY}"
+          docker build --check -f docker/Dockerfile \
+            --build-arg "${IMAGE_ARGS[0]}" \
+            --build-arg BUILD_VERSION=0.1.0-ci \
+            --build-arg "VCS_REF=$GITHUB_SHA" \
+            --build-arg "VCS_DATE=$VCS_DATE" \
+            --build-arg "SOURCE_REPOSITORY=$SOURCE_REPOSITORY" .
+          python -I -m pytest -q tests/test_dependency_locks.py tests/test_build_release.py
+          docker build --platform linux/amd64 -f web/Dockerfile \
+            --build-arg "${IMAGE_ARGS[2]}" \
+            --build-arg "${IMAGE_ARGS[3]}" \
+            --build-arg BUILD_VERSION=0.1.0-ci \
+            --build-arg "VCS_REF=$GITHUB_SHA" \
+            --build-arg "VCS_DATE=$VCS_DATE" \
+            --build-arg "SOURCE_REPOSITORY=$SOURCE_REPOSITORY" \
+            -t "trainfactory-web-input:$GITHUB_SHA" web
+          docker build --platform linux/amd64 -f docker/Dockerfile.test --target api-smoke \
+            --build-arg "${IMAGE_ARGS[1]}" \
+            --build-arg BUILD_VERSION=0.1.0-ci \
+            --build-arg "VCS_REF=$GITHUB_SHA" \
+            --build-arg "VCS_DATE=$VCS_DATE" \
+            --build-arg "SOURCE_REPOSITORY=$SOURCE_REPOSITORY" \
+            -t "trainfactory-api-input:$GITHUB_SHA" .
+      - name: Remove validation images
+        if: always()
+        shell: bash
+        run: |
+          docker image rm "trainfactory-web-input:$GITHUB_SHA" >/dev/null 2>&1 || true
+          docker image rm "trainfactory-api-input:$GITHUB_SHA" >/dev/null 2>&1 || true

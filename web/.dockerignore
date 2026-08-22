@@ -1,0 +1,13 @@
+dist
+node_modules
+playwright-report
+test-results
+screenshots
+tests
+.git
+.gitignore
+*.md
+.env*
+!.env.production
+.vscode
+.idea

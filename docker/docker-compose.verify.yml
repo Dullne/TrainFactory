@@ -1,0 +1,70 @@
+# Disposable verification overlay. This file must follow the release overlay.
+# Project identity is supplied with `docker compose -p` and must contain a
+# random 128-bit suffix; no resource below retains a production-global name.
+services:
+  train-factory-web:
+    container_name: !reset null
+    restart: "no"
+    ports: !override
+      - target: 80
+        published: "0"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks: !override
+      - default
+
+  train-factory-api:
+    container_name: !reset null
+    restart: "no"
+    pid: !reset null
+    volumes: !override
+      - verify_data:/app/data
+      - verify_models:/app/models
+      - verify_output:/app/output
+      - train_cache:/app/cache
+    ports: !override
+      - target: ${API_PORT:-18000}
+        published: "0"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    networks: !override
+      - default
+    environment:
+      DOCKER_NETWORK_NAME: ${COMPOSE_PROJECT_NAME:?COMPOSE_PROJECT_NAME is required}_default
+
+  mysql:
+    container_name: !reset null
+    restart: "no"
+    volumes: !override
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: !override
+      - default
+
+volumes:
+  mysql_data:
+    name: !reset null
+  train_cache:
+    name: !reset null
+  verify_data:
+  verify_models:
+  verify_output:
+  etcd_data:
+    name: !reset null
+  minio_data:
+    name: !reset null
+  milvus_data:
+    name: !reset null
+  web_node_modules:
+    name: !reset null
+  e2e_node_modules:
+    name: !reset null
+  xinference_cache:
+    name: !reset null
+  xinference_home:
+    name: !reset null
+
+networks:
+  default:
+    name: !reset null
+    ipam: !reset null

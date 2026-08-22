@@ -1,0 +1,9 @@
+# Opt in only when the API must create or manage inference containers on a
+# trusted Linux/WSL host. Access to the Docker socket is equivalent to host root.
+# Add this file after docker/docker-compose.yml in the compose command.
+services:
+  train-factory-api:
+    profiles: [deployment]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro

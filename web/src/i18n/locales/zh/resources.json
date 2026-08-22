@@ -1,0 +1,42 @@
+{
+  "monitor": {
+    "title.system": "系统信息",
+    "title.gpu": "GPU 监控",
+    "stat.memory": "内存 ({{percent}}%)",
+    "stat.memoryUnlimited": "内存 ({{percent}}%, 未限制)",
+    "stat.memoryUnavailable": "内存（暂不可用）",
+    "stat.cpuUnavailable": "CPU（暂不可用）",
+    "stat.diskUnavailable": "磁盘（暂不可用）",
+    "tip.memoryLimited": "容器内存限额 {{total}}G，已用 {{used}}G",
+    "tip.memoryUnlimited": "未设置内存限制；显示所在环境可用内存总量",
+    "tip.memoryUnavailable": "暂时无法采集内存使用情况",
+    "stat.disk": "磁盘 ({{percent}}%)",
+    "tip.disk": "数据盘挂载点：{{mount}}",
+    "tip.diskConfigured": "已配置存储卷中余量最紧张的一项",
+    "tip.diskUnavailable": "暂时无法采集存储使用情况",
+    "state.stale": "自动刷新失败，当前显示上一次成功采集的资源数据。",
+    "state.unavailable": "资源监控暂时不可用。",
+    "state.partial": "部分资源指标暂时不可用。",
+    "action.cleanup": "清理资源",
+    "message.fetchFailed": "获取资源状态失败",
+    "message.cleanupSuccess": "资源清理完成",
+    "message.cleanupFailed": "资源清理失败",
+    "empty.noGpu": "未检测到 GPU 设备",
+    "empty.noData": "暂无 GPU 数据",
+    "empty.unavailable": "GPU 监控暂时不可用"
+  },
+  "gpuCard": {
+    "status.allocated": "使用中",
+    "status.free": "空闲",
+    "label.vram": "显存",
+    "label.utilization": "利用率",
+    "label.temperature": "温度",
+    "label.power": "功耗",
+    "label.task": "任务: {{task}}",
+    "process.title": "GPU {{id}} 进程列表",
+    "process.name": "进程",
+    "process.count": "进程 ({{count}})",
+    "process.none": "无计算进程",
+    "process.container": "容器 {{name}}"
+  }
+}

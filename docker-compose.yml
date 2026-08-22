@@ -1,0 +1,18 @@
+# 项目根入口 — .env 自动从此目录读取
+# 用法:
+#   docker compose up -d --build
+#     生产：构建 API/Web，只启动 API + Web + MySQL。
+#   docker compose --profile dev up -d --build mysql train-factory-api-dev train-factory-web-dev
+#     开发：启动 API-dev + Web-dev + MySQL，不启动部署/向量大组件。
+#   docker compose --profile vector up -d etcd minio milvus
+#     可选：只启动 Milvus 依赖栈。
+#   docker compose --profile inference up -d xinference
+#     可选：只启动 Xinference。
+#   docker compose --profile infra up -d
+#     可选：生产服务 + Milvus 依赖栈 + Xinference，不启动 vLLM/SGLang 部署入口。
+#   docker compose --profile pull pull vllm-pull sglang-pull
+#     可选：只预拉 vLLM/SGLang 推理镜像。
+#   docker compose --profile all-images pull --ignore-buildable
+#     可选：预拉全部外部镜像，跳过 API/Web 这种本地构建镜像。
+include:
+  - path: docker/docker-compose.yml

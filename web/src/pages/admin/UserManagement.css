@@ -1,0 +1,70 @@
+.admin-users-page {
+  width: 100%;
+  min-width: 0;
+}
+
+.admin-users-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.admin-users-toolbar h3.ant-typography {
+  margin: 0 0 2px;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.admin-loading-status {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  color: #8b949e;
+  font-size: 13px;
+}
+
+.admin-list-alert {
+  margin-bottom: 14px;
+}
+
+.admin-command-alert {
+  margin-bottom: 16px;
+}
+
+.admin-reset-note {
+  margin-bottom: 16px;
+  color: #d29922;
+}
+
+.admin-account-identity {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-account-identity strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-account-identity span {
+  color: #6e7681;
+  font-size: 11px;
+}
+
+.admin-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .admin-users-toolbar {
+    flex-direction: column;
+  }
+}

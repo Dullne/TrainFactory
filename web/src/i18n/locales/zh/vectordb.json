@@ -1,0 +1,98 @@
+{
+  "list": {
+    "title": "向量集合",
+    "createCollection": "创建集合",
+    "fetchFailed": "获取集合列表失败: {{error}}",
+    "collectionDeleted": "集合 {{name}} 已删除",
+    "collectionReleased": "集合 {{name}} 已释放",
+    "collectionLoaded": "集合 {{name}} 已加载",
+    "deleteFailed": "删除失败: {{error}}",
+    "operationFailed": "操作失败: {{error}}",
+    "stats": {
+      "totalCollections": "总集合数",
+      "totalEntities": "总实体数",
+      "loaded": "已加载",
+      "unloaded": "未加载"
+    },
+    "columns": {
+      "collectionName": "集合名称",
+      "entityCount": "实体数量",
+      "vectorDimension": "向量维度",
+      "indexMetric": "索引/度量",
+      "status": "状态",
+      "linkedDatasets": "关联数据集",
+      "embeddingModel": "Embedding 模型",
+      "actions": "操作"
+    },
+    "filter": {
+      "loaded": "已加载",
+      "notLoaded": "未加载"
+    },
+    "state": {
+      "loaded": "已加载",
+      "loading": "加载中",
+      "notLoaded": "未加载"
+    },
+    "datasetsCount": "{{count}} 个数据集",
+    "browseData": "浏览数据",
+    "semanticSearch": "搜索",
+    "hybridTag": "混合搜索",
+    "release": "释放",
+    "load": "加载",
+    "confirmDeleteTitle": "确定删除集合 {{name}}？",
+    "confirmDeleteDescription": "此操作不可撤销，集合中的所有数据将被永久删除。"
+  },
+  "create": {
+    "title": "创建向量集合",
+    "createSuccess": "集合创建成功",
+    "createFailed": "创建失败: {{error}}",
+    "collectionName": "集合名称",
+    "collectionNameRequired": "请输入集合名称",
+    "collectionNameExtra": "只允许字母、数字和下划线，以字母开头",
+    "collectionNamePlaceholder": "如: my_collection",
+    "displayName": "显示名称",
+    "displayNamePlaceholder": "可选，用于前端展示",
+    "embeddingModel": "Embedding 模型",
+    "embeddingModelExtra": "绑定 embedding 模型后不可更改",
+    "embeddingModelPlaceholder": "选择 Embedding 模型（可选）",
+    "vectorDimension": "向量维度",
+    "vectorDimensionRequired": "请输入向量维度",
+    "distanceMetric": "距离度量",
+    "metricCosine": "COSINE - 余弦相似度",
+    "metricL2": "L2 - 欧氏距离",
+    "metricIP": "IP - 内积",
+    "description": "描述",
+    "optional": "可选",
+    "enableHybrid": "启用混合搜索",
+    "enableHybridExtra": "启用后支持 BM25 关键词搜索和混合搜索，创建后不可更改"
+  },
+  "browse": {
+    "title": "浏览数据 - {{name}}",
+    "copyFullText": "复制全文"
+  },
+  "search": {
+    "title": "搜索 - {{name}}",
+    "queryPlaceholder": "输入查询文本...",
+    "queryRequired": "请输入查询文本",
+    "embeddingRequired": "请选择 Embedding 模型",
+    "searchFailed": "搜索失败: {{error}}",
+    "contentColumn": "内容",
+    "copyFullText": "复制全文",
+    "similarity": "相似度",
+    "noResults": "无搜索结果",
+    "searchMode": "搜索模式",
+    "modeDense": "语义搜索",
+    "modeSparse": "关键词搜索",
+    "modeHybrid": "混合搜索",
+    "hybridNotSupported": "该集合未启用混合搜索",
+    "ranker": "融合策略",
+    "rankerRrf": "RRF（默认）",
+    "rankerWeighted": "加权融合",
+    "denseWeight": "语义权重",
+    "sparseWeight": "关键词权重",
+    "filterByDataset": "按数据集过滤",
+    "filterByDatasetPlaceholder": "选择数据集",
+    "filterExpression": "自定义过滤",
+    "filterExprPlaceholder": "如: metadata[\"task_id\"] == \"xxx\""
+  }
+}

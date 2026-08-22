@@ -1,0 +1,199 @@
+/* TrainFactory 全局样式 - 深色科技风主题 */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  background: #0d1117;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  color: #e6edf3;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 深色主题滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #161b22;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+/* 状态指示器动画 */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+/* 渐变按钮 */
+.btn-gradient {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  color: #fff;
+  font-weight: 500;
+  transition: all 0.3s;
+}
+
+.btn-gradient:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+/* 卡片 hover 效果 */
+.card-hover {
+  transition: all 0.3s;
+}
+
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* 统计数字渐变 */
+.stat-gradient {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* 表格行 hover */
+.ant-table-tbody > tr:hover > td {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+/* 输入框焦点效果 */
+.ant-input:focus,
+.ant-input-focused,
+.ant-select-focused .ant-select-selector {
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.2) !important;
+}
+
+/* 输入框 placeholder */
+.ant-input::placeholder {
+  color: #c9d1d9 !important;
+  opacity: 1 !important;
+}
+
+/* 按钮过渡 */
+.ant-btn {
+  transition: all 0.2s;
+}
+
+/* 菜单选中项左侧指示条 */
+.ant-menu-item-selected {
+  position: relative;
+}
+
+.ant-menu-item-selected::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 24px;
+  background: #1677ff;
+  border-radius: 0 2px 2px 0;
+}
+
+/* 模态框深色背景 */
+.ant-modal-mask {
+  background: rgba(0, 0, 0, 0.6) !important;
+}
+
+/* 下拉菜单深色背景 */
+.ant-select-dropdown,
+.ant-dropdown-menu {
+  background: #21262d !important;
+  border: 1px solid #30363d;
+}
+
+/* Select 选择器文字颜色 */
+.ant-select-selection-item {
+  color: #e6edf3 !important;
+}
+
+.ant-select-selection-placeholder {
+  color: #c9d1d9 !important;
+  opacity: 1 !important;
+}
+
+.ant-select-item-option-content {
+  color: #e6edf3;
+}
+
+/* 空状态文字 */
+.ant-empty-description {
+  color: #8b949e;
+}
+
+/* 标签页 */
+.ant-tabs-tab {
+  color: #8b949e !important;
+}
+
+.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #1677ff !important;
+}
+
+/* 面包屑 */
+.ant-breadcrumb-link,
+.ant-breadcrumb-separator {
+  color: #8b949e !important;
+}
+
+/* 分页器 */
+.ant-pagination-item {
+  background: #21262d !important;
+  border-color: #30363d !important;
+}
+
+.ant-pagination-item a {
+  color: #8b949e !important;
+}
+
+.ant-pagination-item-active {
+  border-color: #1677ff !important;
+}
+
+.ant-pagination-item-active a {
+  color: #1677ff !important;
+}
+
+/* 工具提示 */
+.ant-tooltip-inner {
+  background: #21262d !important;
+  color: #e6edf3 !important;
+}
+
+.ant-tooltip-arrow::before {
+  background: #21262d !important;
+}
+
+/* 已排除的表格行灰化 */
+.ant-table-row-excluded > td {
+  opacity: 0.45;
+}

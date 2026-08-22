@@ -1,0 +1,489 @@
+{
+  "list": {
+    "title": "数据生成",
+    "createTask": "创建任务",
+    "stats": {
+      "total": "总任务数",
+      "running": "运行中",
+      "completed": "已完成",
+      "failed": "失败"
+    },
+    "columns": {
+      "taskName": "任务名称",
+      "mode": "模式",
+      "status": "状态",
+      "progress": "进度",
+      "sampleCount": "生成样本数",
+      "createdAt": "创建时间",
+      "errorMessage": "错误信息",
+      "actions": "操作"
+    },
+    "actions": {
+      "viewDetail": "查看详情",
+      "confirmStop": "确定要停止此任务吗？",
+      "confirmResume": "从检查点断点续传？已完成的阶段将被跳过。",
+      "confirmRerun": "从头重新运行？已有的输出将被覆盖。",
+      "confirmRestart": "重新运行此任务？",
+      "confirmDelete": "确定要删除此任务吗？"
+    },
+    "message": {
+      "fetchFailed": "获取任务列表失败",
+      "stopSuccess": "任务已停止",
+      "stopFailed": "停止任务失败",
+      "deleteSuccess": "任务已删除",
+      "deleteFailed": "删除任务失败",
+      "resumeSuccess": "任务已从检查点恢复",
+      "resumeFailed": "断点续传失败",
+      "restartSuccess": "任务已重新启动",
+      "restartFailed": "重启任务失败"
+    }
+  },
+  "generationStatus": {
+    "restarting": "重启准备中"
+  },
+  "generationStatusDescription": {
+    "restarting": "正在将检查点复制到隔离的生成尝试中；此时任务不可停止、再次重启或删除。"
+  },
+  "mode": {
+    "doc_to_training": "文档 → 训练数据",
+    "qa_to_training": "QA → 训练数据",
+    "qa_extraction": "QA 提取",
+    "doc_to_eval": "文档 → 评估数据",
+    "qa_to_eval": "QA → 评估数据"
+  },
+  "modeDescription": {
+    "doc_to_training": "文档 → 训练数据 (从原始文档生成训练数据)",
+    "qa_to_training": "QA → 训练数据 (从 QA 数据集生成训练数据)",
+    "qa_extraction": "QA 提取 (从文档提取 QA 对)",
+    "doc_to_eval": "文档 → 评估数据 (从文档生成深度评估数据集)",
+    "qa_to_eval": "QA → 评估数据 (从 QA 数据集生成深度评估数据集)"
+  },
+  "modeLabel": {
+    "doc_to_training": "文档 → 训练数据 (Doc to Training)",
+    "qa_to_training": "QA → 训练数据 (QA to Training)",
+    "qa_extraction": "QA 提取 (QA Extraction)",
+    "doc_to_eval": "文档 → 评估数据 (Doc to Eval)",
+    "qa_to_eval": "QA → 评估数据 (QA to Eval)"
+  },
+  "posNegMethod": {
+    "retrieval": "向量检索 + 评估分类",
+    "llm": "纯 LLM 生成",
+    "retrievalFull": "向量检索 + 评估分类 (需要 Embedding)",
+    "llmFull": "纯 LLM 生成"
+  },
+  "stage": {
+    "qa_extraction": "QA 提取",
+    "qa_filter": "QA 过滤 & 向量入库",
+    "pos_neg_generation": "正负例生成",
+    "deep_eval_export": "深度评估"
+  },
+  "create": {
+    "title": "创建数据生成任务",
+    "basicConfig": "基本配置",
+    "taskName": {
+      "label": "任务名称",
+      "required": "请输入任务名称",
+      "placeholder": "例如: my-dataset-gen"
+    },
+    "generationMode": {
+      "label": "生成模式"
+    },
+    "qaDataset": {
+      "label": "QA 数据集",
+      "placeholder": "选择 QA 数据集 (qa_pair 类型)",
+      "tag": "QA 数据",
+      "path": "路径: {{path}}",
+      "numRows": "记录数: {{count}}"
+    },
+    "docDataset": {
+      "label": "选择数据集",
+      "placeholder": "选择已注册的数据集",
+      "tag": "原始数据",
+      "path": "路径: {{path}}",
+      "contentField": "内容字段: {{field}}",
+      "numRows": "记录数: {{count}}"
+    },
+    "inputSource": {
+      "label": "输入源",
+      "dataset": "选择数据集",
+      "path": "输入路径"
+    },
+    "inputPath": {
+      "label": "输入路径",
+      "placeholder": "/path/to/documents.jsonl"
+    },
+    "contentField": {
+      "label": "内容字段名",
+      "extra": "指定 JSON 中作为文档内容的字段（可选，默认识别 content/text/passage/document）",
+      "placeholder": "例如: doc_content"
+    },
+    "inputFormat": {
+      "label": "输入格式",
+      "auto": "自动检测"
+    },
+    "outputFormat": {
+      "label": "输出格式"
+    },
+    "posNegMethod": {
+      "label": "正负例生成方式"
+    },
+    "vectorCollection": {
+      "label": "向量集合",
+      "auto": "自动创建新集合",
+      "existing": "使用已有集合",
+      "selectLabel": "选择集合",
+      "selectPlaceholder": "选择已有的向量集合",
+      "collectionInfo": "{{name}} ({{model}} · {{count}} 条)",
+      "unknownModel": "未知模型",
+      "dimension": "维度: {{dim}}",
+      "metric": "度量: {{type}}",
+      "linkedDatasets": "已关联 {{count}} 个数据集"
+    },
+    "warning": {
+      "embeddingRequired": "向量检索模式需要配置 Embedding 模型，请在下方模型配置中选择",
+      "embeddingOptional": "未配置 Embedding 模型，将跳过相似度筛选（可选配置 Embedding 以自动过滤重复数据）",
+      "evalEmbeddingRequired": "评估数据生成模式必须配置 Embedding 模型，请在下方模型配置中选择"
+    },
+    "validation": {
+      "selectLLM": "请先选择 LLM 模型",
+      "selectQaDataset": "请选择 QA 数据集",
+      "selectDataset": "请选择数据集",
+      "inputPathRequired": "请输入文件路径",
+      "evalEmbeddingRequired": "评估数据生成模式需要配置 Embedding 模型",
+      "retrievalEmbeddingRequired": "向量检索模式需要配置 Embedding 模型",
+      "selectCollection": "请选择一个已有集合"
+    },
+    "message": {
+      "createSuccess": "任务创建成功",
+      "createFailed": "创建任务失败"
+    },
+    "submitButton": "创建任务"
+  },
+  "modelConfig": {
+    "title": "模型配置",
+    "llm": {
+      "label": "LLM 模型",
+      "labelOptional": "LLM 模型 (可选)",
+      "endpoint": "端点: {{endpoint}}",
+      "model": "模型: {{model}}"
+    },
+    "evalLlm": {
+      "label": "评估 LLM (可选)",
+      "tooltip": "独立的评估模型，用于 chunk 正负例分类。不选则复用上方 LLM"
+    },
+    "embedding": {
+      "label": "Embedding 模型",
+      "labelOptional": "Embedding 模型 (可选)"
+    },
+    "rerank": {
+      "label": "Rerank 模型 (可选)"
+    },
+    "temperature": "Temperature",
+    "maxTokens": "Max Tokens",
+    "maxTokensExtra": "最大 {{max}}",
+    "maxTokensRule": "最大 {{max}}",
+    "concurrency": {
+      "label": "并发数",
+      "llmTooltip": "同时发出的 LLM 请求数",
+      "embeddingTooltip": "同时发出的 Embedding 请求数",
+      "rerankTooltip": "同时发出的 Rerank 请求数"
+    },
+    "batchSize": {
+      "label": "批大小",
+      "embeddingTooltip": "单次请求的文档数量",
+      "rerankTooltip": "单次请求最大文档数"
+    },
+    "similarityThreshold": {
+      "label": "相似度阈值",
+      "embeddingTooltip": "embedding 余弦相似度 > 此值的 QA 对将被过滤",
+      "rerankTooltip": "rerank 分数大于此值的候选将被过滤（视为近似重复），1 表示不过滤"
+    },
+    "retrievalTopK": {
+      "label": "检索 Top-K",
+      "tooltip": "每个 query 检索的候选 chunk 数量"
+    },
+    "rerankTopK": {
+      "label": "Top-K",
+      "tooltip": "返回的候选数量"
+    },
+    "timeout": {
+      "label": "单文档处理超时(秒)",
+      "tooltip": "单个文档从进入流水线到完成所有步骤的总时间上限"
+    }
+  },
+  "steps": {
+    "title": "处理步骤配置",
+    "outputConfig": "输出配置",
+    "docQuality": {
+      "title": "文档质量评估",
+      "minScore": "最低分数"
+    },
+    "keypointGen": {
+      "title": "关键点提取",
+      "maxKeypoints": "最大关键点数"
+    },
+    "qaGen": {
+      "title": "QA 生成",
+      "countPerDoc": "每文档 QA 数",
+      "useRoleTooltip": "启用后根据文档内容自动生成差异化角色，每个角色生成 1 个 QA",
+      "useRole": "使用角色",
+      "noRole": "不使用角色",
+      "rolesPerDoc": "角色数"
+    },
+    "qaDedup": {
+      "title": "QA 去重",
+      "description": "基于 query 哈希去除重复 QA 对"
+    },
+    "posNeg": {
+      "title": "正负例生成",
+      "positiveCount": "正例数量",
+      "negativeCount": "负例数量",
+      "evalMode": {
+        "label": "评估模式",
+        "tooltip": "Chunk 评估模式：batch 一次返回索引（快但有位置偏差）；individual 每个 chunk 单独调用（无偏差，最准，N 倍成本）"
+      },
+      "advanced": "高级选项",
+      "useRole": "使用角色",
+      "noRole": "不使用角色",
+      "rolesPerDoc": "角色数",
+      "augment": {
+        "on": "数据增广",
+        "off": "不增广",
+        "tooltip": "检索结果不足目标数量时，使用 LLM 补充生成"
+      },
+      "negMode": {
+        "label": "负例模式",
+        "chunk": "整 Chunk",
+        "statement": "提取语句"
+      },
+      "supplementPositives": {
+        "on": "补充正例",
+        "off": "不补充",
+        "tooltip": "将检索到的正例 chunk 加入正例（chunk 模式）或提取支持性语句加入正例（statement 模式）"
+      },
+      "confirmPositives": {
+        "on": "确认正例",
+        "off": "不确认",
+        "tooltip": "对提取的正例语句进行二次 LLM 确认，过滤幻觉和无关语句（额外消耗 LLM 调用）"
+      },
+      "confirmNegatives": {
+        "on": "确认负例",
+        "off": "不确认",
+        "tooltip": "使用 Delta 计算 + LLM 确认筛选难负例语句（需配置 Rerank 或 Embedding 模型）"
+      },
+      "answerRewrite": {
+        "on": "Answer 重述",
+        "off": "原始 Answer",
+        "tooltip": "LLM 将 query + answer 合并为完整自包含陈述句作为首正例"
+      },
+      "rerankScoreClassification": {
+        "on": "评分筛选",
+        "off": "不筛选",
+        "tooltip": "给每条语句打分，丢弃低于最差正例分数的弱负例，对低分正例做 LLM 二次确认（需配置 Rerank 或 Embedding 模型）"
+      },
+      "evidenceRemoval": {
+        "on": "证据去除",
+        "off": "不去除",
+        "tooltip": "从正例 chunk 中去除证据生成硬负例变体"
+      },
+      "evidencePruning": {
+        "on": "证据裁剪",
+        "off": "不裁剪",
+        "tooltip": "裁剪正例 chunk 中无关内容生成更干净正例"
+      },
+      "negChunkScoring": {
+        "on": "负例分层",
+        "off": "不分层",
+        "tooltipStatement": "给负例 chunk 打分，只保留高分 chunk 并提取语句，低分 chunk 直接丢弃（需配置 Rerank 或 Embedding 模型）",
+        "tooltipChunk": "给负例 chunk 打分，只保留分数高于最差正例的难负例（需配置 Rerank 或 Embedding 模型）"
+      },
+      "skipEasyNegatives": {
+        "on": "跳过简单负例",
+        "off": "保留",
+        "tooltip": "排在所有正例之后的负例模型已能区分，训练价值低"
+      },
+      "skipPerfectAp": {
+        "on": "跳过完美排序",
+        "off": "保留",
+        "tooltip": "AP=1 表示排序已完美，模型不需要学习这条数据"
+      },
+      "skipEasyWarning": "排序完全正确时所有负例均为简单负例，会被全部丢弃",
+      "skipZeroAp": {
+        "on": "跳过无正例",
+        "off": "保留",
+        "tooltip": "AP=0 表示候选中没有正例，无法构建有效训练样本"
+      }
+    },
+    "validation": {
+      "title": "校验",
+      "enable": "启用校验",
+      "disable": "禁用校验",
+      "description": "启用后会校验正负例质量（关键词重叠度过滤）"
+    },
+    "datasetRegister": {
+      "title": "数据集注册",
+      "autoRegister": "自动注册",
+      "noRegister": "不注册",
+      "description": "完成后自动注册到数据集管理系统"
+    },
+    "qaToEvalDescription": "QA → 评估数据模式：从 QA 数据集中的每条记录执行向量检索，收集检索上下文生成深度评估数据集。不需要 LLM，仅使用 Embedding 模型进行向量检索。",
+    "docToEvalDescription": "文档 → 评估数据模式：先从文档提取 QA 对，然后对每条 QA 执行向量检索，收集检索上下文生成深度评估数据集。不执行正负例分类。"
+  },
+  "switch": {
+    "enable": "启用",
+    "disable": "禁用"
+  },
+  "detail": {
+    "taskNotFound": "任务不存在",
+    "backToList": "返回列表",
+    "resume": "断点续传",
+    "rerun": "重新运行",
+    "confirmStop": "确定要停止此任务吗？",
+    "confirmResume": "从检查点断点续传？已完成的阶段将被跳过。",
+    "confirmRerun": "从头重新运行？已有的输出将被覆盖。",
+    "confirmRestart": "重新运行此任务？已有的输出将被覆盖。",
+    "confirmDelete": "确定要删除此任务吗？",
+    "message": {
+      "fetchFailed": "获取任务详情失败",
+      "fetchArtifactsFailed": "获取阶段产物失败",
+      "fetchArtifactPreviewFailed": "获取产物预览失败",
+      "stopSuccess": "任务已停止",
+      "stopFailed": "停止任务失败",
+      "resumeSuccess": "任务已从检查点恢复",
+      "resumeFailed": "断点续传失败",
+      "restartSuccess": "任务已重新启动",
+      "restartFailed": "重启任务失败",
+      "deleteSuccess": "任务已删除",
+      "deleteFailed": "删除任务失败"
+    },
+    "progress": {
+      "title": "处理进度",
+      "sampleCount": "生成样本数",
+      "stageView": "阶段视图",
+      "resumeReady": "可从检查点恢复",
+      "resumeNotReady": "暂不可恢复（无检查点）",
+      "resumeNotSupported": "当前阶段不支持断点恢复"
+    },
+    "viewDataset": "查看数据集",
+    "qaFullDataset": "QA 全量数据集",
+    "qaFilteredDataset": "QA 筛选后数据集",
+    "tabs": {
+      "info": "基本信息",
+      "config": "配置详情",
+      "artifacts": "阶段产物",
+      "preview": "数据预览"
+    },
+    "artifacts": {
+      "empty": "当前任务暂无已注册产物",
+      "stageEmpty": "该阶段暂无产物",
+      "colDataset": "数据集",
+      "colRole": "角色",
+      "colType": "类型/用途",
+      "colRows": "行数",
+      "colStatus": "状态",
+      "colCreatedAt": "创建时间",
+      "colActions": "操作",
+      "previewAction": "预览",
+      "openAction": "打开",
+      "previewTitle": "产物预览（前 10 条）",
+      "previewPlaceholder": "请选择左侧产物进行预览",
+      "previewEmpty": "该产物暂无可预览数据",
+      "roles": {
+        "input": "输入",
+        "intermediate": "中间",
+        "output": "输出",
+        "eval": "评估",
+        "rejects": "过滤"
+      }
+    },
+    "info": {
+      "taskId": "任务 ID",
+      "generationMode": "生成模式",
+      "posNegMethod": "正负例方式",
+      "inputPath": "输入路径",
+      "inputFormat": "输入格式",
+      "contentField": "内容字段",
+      "outputFormat": "输出格式",
+      "autoRegister": "自动注册数据集",
+      "autoRegisterYes": "是",
+      "autoRegisterNo": "否",
+      "outputPath": "输出路径",
+      "createdAt": "创建时间",
+      "startedAt": "开始时间",
+      "completedAt": "完成时间",
+      "sourceDataset": "源数据集",
+      "similarityThreshold": "相似度阈值",
+      "retrievalTopK": "向量检索 Top-K",
+      "rerankThreshold": "Rerank 相似度阈值",
+      "milvusCollection": "Milvus Collection",
+      "qaOutputPath": "QA 全量输出",
+      "qaFilteredPath": "QA 筛选后输出",
+      "filterStats": {
+        "label": "筛选统计",
+        "total": "总数: {{count}}",
+        "kept": "保留: {{count}}",
+        "filtered": "过滤: {{count}}",
+        "uniqueChunks": "唯一 chunks: {{count}}",
+        "milvusInserted": "Milvus 入库: {{count}}"
+      }
+    },
+    "config": {
+      "llmConfig": "LLM 配置",
+      "evalLlmConfig": "评估 LLM 配置",
+      "embeddingConfig": "Embedding 配置",
+      "rerankConfig": "Rerank 配置",
+      "workerConfig": "Worker 配置",
+      "enabledSteps": "启用的步骤",
+      "noEnabledSteps": "无已启用步骤",
+      "postProcessConfig": "后处理配置"
+    },
+    "stepLabels": {
+      "doc_quality": "文档质量评估",
+      "keypoint_gen": "关键点提取",
+      "role_gen": "角色生成",
+      "qa_gen": "QA 生成",
+      "pos_neg_extraction": "正负例生成",
+      "validation": "校验",
+      "embedding_scoring": "Embedding 评分",
+      "rerank_scoring": "Rerank 评分"
+    },
+    "stepParams": {
+      "num_qa_per_doc": "每文档 QA 数",
+      "num_positive": "正例数",
+      "num_negative": "负例数",
+      "use_role": "使用角色",
+      "roles_per_doc": "角色数",
+      "neg_detection_mode": "负例模式",
+      "chunk_eval_mode": "评估模式",
+      "supplement_positives": "补充正例",
+      "confirm_positives": "确认正例",
+      "confirm_negatives": "确认负例",
+      "answer_rewrite": "Answer 重述",
+      "rerank_score_classification": "评分筛选",
+      "evidence_removal": "证据去除",
+      "evidence_pruning": "证据裁剪",
+      "neg_chunk_scoring": "负例分层",
+      "skip_easy_negatives": "跳过简单负例",
+      "skip_perfect_ap": "跳过完美排序",
+      "skip_zero_ap": "跳过无正例",
+      "augment": "数据增广"
+    },
+    "preview": {
+      "detail": "详情",
+      "noOutput": "无输出文件",
+      "notCompleted": "任务未完成，暂无数据预览",
+      "generating": "数据生成中，稍后刷新查看...",
+      "tabTraining": "训练样本",
+      "tabQaFull": "QA 提取（全量）",
+      "tabQaFiltered": "QA 过滤后",
+      "tabDeepEval": "深度评估",
+      "colQuery": "Query",
+      "colAnswer": "Answer",
+      "colChunkId": "Chunk ID",
+      "colPositives": "正例数",
+      "colNegatives": "负例数",
+      "colScore": "Score",
+      "records": "{{count}} 条记录"
+    }
+  }
+}

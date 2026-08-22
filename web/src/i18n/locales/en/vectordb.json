@@ -1,0 +1,98 @@
+{
+  "list": {
+    "title": "Vector Collections",
+    "createCollection": "Create Collection",
+    "fetchFailed": "Failed to fetch collections: {{error}}",
+    "collectionDeleted": "Collection {{name}} deleted",
+    "collectionReleased": "Collection {{name}} released",
+    "collectionLoaded": "Collection {{name}} loaded",
+    "deleteFailed": "Delete failed: {{error}}",
+    "operationFailed": "Operation failed: {{error}}",
+    "stats": {
+      "totalCollections": "Total Collections",
+      "totalEntities": "Total Entities",
+      "loaded": "Loaded",
+      "unloaded": "Unloaded"
+    },
+    "columns": {
+      "collectionName": "Collection Name",
+      "entityCount": "Entities",
+      "vectorDimension": "Dimension",
+      "indexMetric": "Index / Metric",
+      "status": "Status",
+      "linkedDatasets": "Linked Datasets",
+      "embeddingModel": "Embedding Model",
+      "actions": "Actions"
+    },
+    "filter": {
+      "loaded": "Loaded",
+      "notLoaded": "Not Loaded"
+    },
+    "state": {
+      "loaded": "Loaded",
+      "loading": "Loading",
+      "notLoaded": "Not Loaded"
+    },
+    "datasetsCount": "{{count}} datasets",
+    "browseData": "Browse Data",
+    "semanticSearch": "Search",
+    "hybridTag": "Hybrid",
+    "release": "Release",
+    "load": "Load",
+    "confirmDeleteTitle": "Delete collection {{name}}?",
+    "confirmDeleteDescription": "This action cannot be undone. All data in the collection will be permanently deleted."
+  },
+  "create": {
+    "title": "Create Vector Collection",
+    "createSuccess": "Collection created successfully",
+    "createFailed": "Create failed: {{error}}",
+    "collectionName": "Collection Name",
+    "collectionNameRequired": "Please enter collection name",
+    "collectionNameExtra": "Only letters, numbers and underscores allowed, must start with a letter",
+    "collectionNamePlaceholder": "e.g. my_collection",
+    "displayName": "Display Name",
+    "displayNamePlaceholder": "Optional, used for display",
+    "embeddingModel": "Embedding Model",
+    "embeddingModelExtra": "Cannot be changed after binding an embedding model",
+    "embeddingModelPlaceholder": "Select Embedding Model (optional)",
+    "vectorDimension": "Vector Dimension",
+    "vectorDimensionRequired": "Please enter vector dimension",
+    "distanceMetric": "Distance Metric",
+    "metricCosine": "COSINE - Cosine Similarity",
+    "metricL2": "L2 - Euclidean Distance",
+    "metricIP": "IP - Inner Product",
+    "description": "Description",
+    "optional": "Optional",
+    "enableHybrid": "Enable Hybrid Search",
+    "enableHybridExtra": "Enables BM25 keyword search and hybrid search. Cannot be changed after creation"
+  },
+  "browse": {
+    "title": "Browse Data - {{name}}",
+    "copyFullText": "Copy Full Text"
+  },
+  "search": {
+    "title": "Search - {{name}}",
+    "queryPlaceholder": "Enter query text...",
+    "queryRequired": "Please enter query text",
+    "embeddingRequired": "Please select an Embedding model",
+    "searchFailed": "Search failed: {{error}}",
+    "contentColumn": "Content",
+    "copyFullText": "Copy Full Text",
+    "similarity": "Similarity",
+    "noResults": "No search results",
+    "searchMode": "Search Mode",
+    "modeDense": "Semantic",
+    "modeSparse": "Keyword",
+    "modeHybrid": "Hybrid",
+    "hybridNotSupported": "Hybrid search not enabled for this collection",
+    "ranker": "Fusion Strategy",
+    "rankerRrf": "RRF (Default)",
+    "rankerWeighted": "Weighted",
+    "denseWeight": "Semantic Weight",
+    "sparseWeight": "Keyword Weight",
+    "filterByDataset": "Filter by Dataset",
+    "filterByDatasetPlaceholder": "Select dataset",
+    "filterExpression": "Custom Filter",
+    "filterExprPlaceholder": "e.g. metadata[\"task_id\"] == \"xxx\""
+  }
+}

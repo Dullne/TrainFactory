@@ -1,0 +1,16 @@
+# Usage:
+# docker compose --env-file .env -f docker/docker-compose.yml \
+#   -f docker/docker-compose.cpu.yml up -d
+services:
+  train-factory-api:
+    deploy:
+      resources:
+        reservations:
+          devices: !reset []
+    environment:
+      GPU_PREFLIGHT_MODE: off
+      # Empty is the NVIDIA runtime's documented non-disable state. It safely
+      # replaces a previous compatibility overlay without inheriting host env.
+      NVIDIA_DISABLE_REQUIRE: ""
+      NVIDIA_VISIBLE_DEVICES: void
+      NVIDIA_DRIVER_CAPABILITIES: ""

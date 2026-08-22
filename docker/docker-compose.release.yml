@@ -1,0 +1,17 @@
+# Release deployment overlay. Keep this file last in the Compose file list so
+# local build definitions and privileged deployment-only mounts cannot leak
+# into a verified image deployment.
+services:
+  train-factory-api:
+    profiles: !reset []
+    build: !reset null
+    image: ${API_IMAGE:?API_IMAGE is required}
+    volumes: !override
+      - ../data:/app/data
+      - ../models:/app/models
+      - ../output:/app/output
+      - train_cache:/app/cache
+
+  train-factory-web:
+    build: !reset null
+    image: ${WEB_IMAGE:?WEB_IMAGE is required}

@@ -1,0 +1,42 @@
+{
+  "monitor": {
+    "title.system": "System Info",
+    "title.gpu": "GPU Monitor",
+    "stat.memory": "Memory ({{percent}}%)",
+    "stat.memoryUnlimited": "Memory ({{percent}}%, unlimited)",
+    "stat.memoryUnavailable": "Memory (unavailable)",
+    "stat.cpuUnavailable": "CPU (unavailable)",
+    "stat.diskUnavailable": "Disk (unavailable)",
+    "tip.memoryLimited": "Container memory limit {{total}}G, using {{used}}G",
+    "tip.memoryUnlimited": "No memory limit set; shows available memory of the environment",
+    "tip.memoryUnavailable": "Memory usage could not be collected",
+    "stat.disk": "Disk ({{percent}}%)",
+    "tip.disk": "Data disk mount: {{mount}}",
+    "tip.diskConfigured": "Most constrained configured storage volume",
+    "tip.diskUnavailable": "Storage usage could not be collected",
+    "state.stale": "Automatic refresh failed. Showing the last successful resource data.",
+    "state.unavailable": "Resource monitoring is temporarily unavailable.",
+    "state.partial": "Some resource metrics are temporarily unavailable.",
+    "action.cleanup": "Cleanup Resources",
+    "message.fetchFailed": "Failed to fetch resource status",
+    "message.cleanupSuccess": "Resource cleanup completed",
+    "message.cleanupFailed": "Resource cleanup failed",
+    "empty.noGpu": "No GPU device detected",
+    "empty.noData": "No GPU data available",
+    "empty.unavailable": "GPU monitoring is temporarily unavailable"
+  },
+  "gpuCard": {
+    "status.allocated": "In Use",
+    "status.free": "Free",
+    "label.vram": "VRAM",
+    "label.utilization": "Utilization",
+    "label.temperature": "Temperature",
+    "label.power": "Power",
+    "label.task": "Task: {{task}}",
+    "process.title": "GPU {{id}} Process List",
+    "process.name": "Process",
+    "process.count": "Processes ({{count}})",
+    "process.none": "No compute processes",
+    "process.container": "Container {{name}}"
+  }
+}
