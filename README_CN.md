@@ -487,9 +487,9 @@ docker compose --env-file .env \
 | `DATA_VOLUME` | 数据目录挂载 (host:container) | - |
 | `MODELS_VOLUME` | 模型目录挂载 | - |
 | `OUTPUT_VOLUME` | 输出目录挂载 | - |
-| `VLLM_IMAGE` | vLLM 镜像 | `vllm/vllm-openai:v0.11.0` |
-| `SGLANG_IMAGE` | SGLang 镜像 | `lmsysorg/sglang:...` |
-| `XINFERENCE_IMAGE` | Xinference 镜像 | `xprobe/xinference:v1.13.0` |
+| `VLLM_IMAGE` | vLLM 镜像 | `vllm/vllm-openai:v0.26.0` |
+| `SGLANG_IMAGE` | SGLang 镜像 | `lmsysorg/sglang:v0.5.17` |
+| `XINFERENCE_IMAGE` | Xinference 镜像 | `xprobe/xinference:v3.1.0` |
 | `SWANLAB_API_KEY` | SwanLab 监控密钥（可选） | - |
 
 > 完整配置参见 `.env.example`（项目根目录单一配置模板）

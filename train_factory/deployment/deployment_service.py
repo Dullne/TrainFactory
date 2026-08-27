@@ -23,6 +23,16 @@ from ..storage.services.model_registry_service import model_registry_service
 from ..config.settings import get_settings
 from .xinference_client import XinferenceClient
 from .docker_deployer import docker_deployer
+from .launch_config import (
+    SglangLaunchConfig,
+    VllmLaunchConfig,
+    build_sglang_server_argv,
+    build_vllm_server_argv,
+    is_qwen3_reranker,
+    parse_launch_config,
+    xinference_model_launch_overrides,
+    xinference_model_type,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +42,33 @@ STOPPING_TIMEOUT_MINUTES = 5   # Timeout for "stopping" state
 
 RUNTIME_MANAGED_CONFIG_KEY = "runtime_managed"
 READ_ONLY_CONFIG_KEY = "read_only"
+SGLANG_QWEN3_RERANK_TEMPLATE = (
+    "/opt/trainfactory/sglang-templates/"
+    "qwen3_reranker_no_think.jinja"
+)
+
+
+def _sglang_qwen3_chat_template(
+    model_type: str,
+    model_family: str,
+) -> str | None:
+    if is_qwen3_reranker(model_type, model_family):
+        return SGLANG_QWEN3_RERANK_TEMPLATE
+    return None
+
+
+def _validate_single_gpu_launch_config(
+    launch_config: VllmLaunchConfig | SglangLaunchConfig,
+) -> None:
+    topology_size = (
+        launch_config.tensor_parallel_size
+        * launch_config.pipeline_parallel_size
+        * launch_config.data_parallel_size
+    )
+    if topology_size > 1:
+        raise ValueError(
+            "single-GPU deployment does not support parallel topology"
+        )
 
 
 def get_default_xinference_endpoint() -> str:
@@ -901,19 +938,16 @@ class DeploymentService:
             deployment.xinference_endpoint,
             user_id=deployment.user_id,
         )
-
-        # Convert model path for Xinference container
-        model_path = self._convert_model_path_for_xinference(model['model_path'])
-
-        # Get the model name that Xinference recognizes
+        model_path = self._convert_model_path_for_xinference(model["model_path"])
         xinference_model_name = self._get_xinference_model_name(model)
 
-        # Use vllm backend for embedding models to ensure correct Last Token Pooling
-        model_engine = "vllm" if model['model_type'] == "embedding" else None
-
         extra_kwargs = _trusted_model_launch_kwargs(deployment.config)
-        if model_engine:
-            extra_kwargs["model_engine"] = model_engine
+        extra_kwargs.update(
+            xinference_model_launch_overrides(
+                model_type=model["model_type"],
+                model_family=xinference_model_name,
+            )
+        )
         if deployment.gpu_id is not None:
             extra_kwargs["gpu_idx"] = deployment.gpu_id
 
@@ -921,18 +955,16 @@ class DeploymentService:
             model_uid=model_uid,
             model_name=xinference_model_name,
             model_path=model_path,
-            model_type=model['model_type'],
+            model_type=xinference_model_type(model["model_type"]),
             replica=deployment.replica,
             gpu_memory_utilization=deployment.gpu_memory_utilization,
             **extra_kwargs,
         )
 
-        # Record actual config for display
         config = deployment.config or {}
         deployment.config = {
             **config,
             "dtype": config.get("dtype") or "bfloat16",
-            **({"model_engine": model_engine} if model_engine else {}),
         }
 
     def _start_container_deployment(
@@ -950,7 +982,7 @@ class DeploymentService:
         if framework == "vllm":
             self._start_vllm_container(deployment, model, model_uid)
         elif framework == "sglang":
-            self._start_sglang_container(deployment, model)
+            self._start_sglang_container(deployment, model, model_uid)
         else:
             self._start_xinference_container(deployment, model, model_uid)
 
@@ -963,18 +995,15 @@ class DeploymentService:
         model_uid: str,
     ) -> None:
         """Start Xinference container deployment."""
-        # Get the model name that Xinference recognizes (must be built-in name)
         xinference_model_name = self._get_xinference_model_name(model)
-
-        # Create Docker container
         success, msg, docker_cmd = docker_deployer.create_xinference_container(
             container_name=deployment.container_name,
             port=deployment.port,
             gpu_id=deployment.gpu_id,
             model_name=xinference_model_name,
             model_uid=model_uid,
-            model_path=model['model_path'],
-            model_type=model['model_type'],
+            model_path=model["model_path"],
+            model_type=xinference_model_type(model["model_type"]),
         )
         config = deployment.config or {}
         deployment.config = {
@@ -986,7 +1015,6 @@ class DeploymentService:
         if not success:
             raise RuntimeError(f"Failed to create Xinference container: {msg}")
 
-        # Wait for Xinference to be ready
         if not docker_deployer.wait_for_xinference(
             deployment.xinference_endpoint,
             timeout=180,
@@ -995,7 +1023,6 @@ class DeploymentService:
             logs = docker_deployer.get_container_logs(deployment.container_name, tail=50)
             raise RuntimeError(f"Xinference service did not start. Logs:\n{logs}")
 
-        # Wait for model to be loaded
         if not docker_deployer.wait_for_model(
             deployment.xinference_endpoint,
             model_uid,
@@ -1013,33 +1040,47 @@ class DeploymentService:
     ) -> None:
         """Start vLLM container deployment."""
         config = deployment.config or {}
-        actual_dtype = config.get('dtype') or 'auto'
-        actual_enforce_eager = config.get('enforce_eager', False)
-        success, msg, docker_cmd = docker_deployer.create_vllm_container(
-            container_name=deployment.container_name,
+        if "launch_config" in config:
+            launch_payload = config["launch_config"]
+        else:
+            launch_payload = {
+                "framework": "vllm",
+                "dtype": config.get("dtype") or "auto",
+                "enforce_eager": config.get("enforce_eager", False),
+            }
+        launch_config = parse_launch_config(launch_payload)
+        if not isinstance(launch_config, VllmLaunchConfig):
+            raise ValueError("deployment launch_config is not vLLM")
+        _validate_single_gpu_launch_config(launch_config)
+        server_argv = build_vllm_server_argv(
+            launch_config,
+            model_path=model["model_path"],
+            served_model_name=model_uid,
             port=deployment.port,
-            gpu_id=deployment.gpu_id,
-            model_path=model['model_path'],
-            model_name=model_uid,  # Use model_uid as served-model-name for consistency
-            model_type=model['model_type'],
+            gpu_memory_utilization=deployment.gpu_memory_utilization,
+            model_type=model["model_type"],
             enable_lora=deployment.enable_lora,
             max_loras=deployment.max_loras,
             max_lora_rank=deployment.max_lora_rank,
-            gpu_memory_utilization=deployment.gpu_memory_utilization,
-            dtype=config.get('dtype'),
-            enforce_eager=actual_enforce_eager,
+            trust_remote_code=get_settings().allow_model_remote_code,
+            model_family=self._get_xinference_model_name(model),
+        )
+        success, msg, docker_cmd = docker_deployer.create_vllm_container(
+            container_name=deployment.container_name,
+            port=deployment.port,
+            gpu_ids=(deployment.gpu_id,),
+            server_argv=server_argv,
         )
         deployment.config = {
             **config,
             "docker_cmd": docker_cmd,
-            "dtype": actual_dtype,
-            "enforce_eager": actual_enforce_eager,
+            "dtype": launch_config.dtype,
+            "enforce_eager": launch_config.enforce_eager,
         }
 
         if not success:
             raise RuntimeError(f"Failed to create vLLM container: {msg}")
 
-        # Wait for vLLM to be ready（要求 /v1/models 含已加载模型，而非仅 /health 200）
         if not docker_deployer.wait_for_service(
             deployment.xinference_endpoint,
             timeout=300,
@@ -1053,46 +1094,62 @@ class DeploymentService:
         self,
         deployment: DeploymentDB,
         model: Dict[str, Any],
+        model_uid: str,
     ) -> None:
         """Start SGLang container deployment."""
-        # For reranker, we may need custom chat template
-        chat_template = None
-        if model['model_type'] in ('rerank', 'reranker'):
-            # Use the Qwen3 reranker no-think template
-            chat_template = "/data/code/TrainFactory/docker/sglang-templates/qwen3_reranker_no_think.jinja"
-
-        # Use base model name for trained models so SGLang can identify model type from path
         sglang_model_name = self._get_xinference_model_name(model)
+        chat_template = _sglang_qwen3_chat_template(
+            model["model_type"],
+            sglang_model_name,
+        )
 
         config = deployment.config or {}
-        actual_dtype = config.get('dtype') or 'auto'
-        actual_attention_backend = config.get('attention_backend')
-        success, msg, docker_cmd = docker_deployer.create_sglang_container(
-            container_name=deployment.container_name,
+        if "launch_config" in config:
+            launch_payload = config["launch_config"]
+        else:
+            launch_payload = {
+                "framework": "sglang",
+                "dtype": config.get("dtype") or "auto",
+                "attention_backend": config.get("attention_backend"),
+            }
+        launch_config = parse_launch_config(launch_payload)
+        if not isinstance(launch_config, SglangLaunchConfig):
+            raise ValueError("deployment launch_config is not SGLang")
+        _validate_single_gpu_launch_config(launch_config)
+        server_argv = build_sglang_server_argv(
+            launch_config,
+            model_path=model["model_path"],
+            served_model_name=model_uid,
             port=deployment.port,
-            gpu_id=deployment.gpu_id,
-            model_path=model['model_path'],
-            model_name=sglang_model_name,
-            model_type=model['model_type'],
+            gpu_memory_utilization=deployment.gpu_memory_utilization,
+            model_type=model["model_type"],
             enable_lora=deployment.enable_lora,
             max_loras=deployment.max_loras,
             max_lora_rank=deployment.max_lora_rank,
             chat_template=chat_template,
-            gpu_memory_utilization=deployment.gpu_memory_utilization,
-            dtype=config.get('dtype'),
-            attention_backend=actual_attention_backend,
+            trust_remote_code=get_settings().allow_model_remote_code,
+            model_family=sglang_model_name,
+        )
+        success, msg, docker_cmd = docker_deployer.create_sglang_container(
+            container_name=deployment.container_name,
+            port=deployment.port,
+            gpu_ids=(deployment.gpu_id,),
+            server_argv=server_argv,
         )
         deployment.config = {
             **config,
             "docker_cmd": docker_cmd,
-            "dtype": actual_dtype,
-            **({"attention_backend": actual_attention_backend} if actual_attention_backend else {}),
+            "dtype": launch_config.dtype,
+            **(
+                {"attention_backend": launch_config.attention_backend}
+                if launch_config.attention_backend
+                else {}
+            ),
         }
 
         if not success:
             raise RuntimeError(f"Failed to create SGLang container: {msg}")
 
-        # Wait for SGLang to be ready（要求 /v1/models 含已加载模型）
         if not docker_deployer.wait_for_service(
             deployment.xinference_endpoint,
             timeout=300,
@@ -1422,17 +1479,19 @@ class DeploymentService:
         model_path = self._convert_model_path_for_xinference(model['model_path'])
         xinference_model_name = self._get_xinference_model_name(model)
 
-        # Use vllm backend for embedding models
-        model_engine = "vllm" if model['model_type'] == "embedding" else None
         extra_kwargs = _trusted_model_launch_kwargs(deployment.config)
-        if model_engine:
-            extra_kwargs["model_engine"] = model_engine
+        extra_kwargs.update(
+            xinference_model_launch_overrides(
+                model_type=model["model_type"],
+                model_family=xinference_model_name,
+            )
+        )
 
         client.launch_model(
             model_uid=model_uid,
             model_name=xinference_model_name,
             model_path=model_path,
-            model_type=model['model_type'],
+            model_type=xinference_model_type(model["model_type"]),
             replica=deployment.replica,
             gpu_memory_utilization=deployment.gpu_memory_utilization,
             **extra_kwargs,

@@ -497,9 +497,9 @@ docker compose --env-file .env \
 | `DATA_VOLUME` | Data directory mount (host:container) | - |
 | `MODELS_VOLUME` | Models directory mount | - |
 | `OUTPUT_VOLUME` | Output directory mount | - |
-| `VLLM_IMAGE` | vLLM image | `vllm/vllm-openai:v0.11.0` |
-| `SGLANG_IMAGE` | SGLang image | `lmsysorg/sglang:...` |
-| `XINFERENCE_IMAGE` | Xinference image | `xprobe/xinference:v1.13.0` |
+| `VLLM_IMAGE` | vLLM image | `vllm/vllm-openai:v0.26.0` |
+| `SGLANG_IMAGE` | SGLang image | `lmsysorg/sglang:v0.5.17` |
+| `XINFERENCE_IMAGE` | Xinference image | `xprobe/xinference:v3.1.0` |
 | `SWANLAB_API_KEY` | SwanLab monitoring key (optional) | - |
 
 > See `.env.example` (single root template) for full configuration

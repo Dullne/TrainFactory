@@ -523,7 +523,18 @@ def test_release_policy_rejects_file_secret_direct_value_drift():
 def test_release_policy_accepts_custom_ports_and_rejects_duplicate_endpoint(tmp_path):
     from scripts import compose_release
 
-    compose = _render_production()
+    base = tmp_path / "production.env"
+    base.write_text(
+        "HOST_BIND_ADDRESS=::1\n"
+        "PUBLIC_BASE_URL=http://[::1]:3100\n"
+        "API_PORT=19000\n"
+        "WEB_PORT=3100\n"
+        "XINFERENCE_PATCH_VOLUME=/workspace/train-factory/docker/xinference-patches:/opt/trainfactory/xinference-patches:ro\n"
+        "XINFERENCE_CONTRACT_VOLUME=/workspace/train-factory/docker/inference-contracts:/opt/trainfactory/inference-contracts:ro\n"
+        "SGLANG_TEMPLATE_VOLUME=/workspace/train-factory/docker/sglang-templates:/opt/trainfactory/sglang-templates:ro\n",
+        encoding="utf-8",
+    )
+    compose = _render_production(base)
     api = compose["services"]["train-factory-api"]
     web = compose["services"]["train-factory-web"]
     api["environment"]["HOST_BIND_ADDRESS"] = "::1"
@@ -532,14 +543,6 @@ def test_release_policy_accepts_custom_ports_and_rejects_duplicate_endpoint(tmp_
     web["environment"]["API_PORT"] = "19000"
     api["ports"][0].update({"host_ip": "::1", "target": 19000, "published": "19000"})
     web["ports"][0].update({"host_ip": "::1", "published": "3100"})
-    base = tmp_path / "production.env"
-    base.write_text(
-        "HOST_BIND_ADDRESS=::1\n"
-        "PUBLIC_BASE_URL=http://[::1]:3100\n"
-        "API_PORT=19000\n"
-        "WEB_PORT=3100\n",
-        encoding="utf-8",
-    )
     manifest = {
         **_production_validation_manifest(),
         "env_files": [{"role": "base-environment", "path": os.fspath(base)}],
@@ -551,7 +554,10 @@ def test_release_policy_accepts_custom_ports_and_rejects_duplicate_endpoint(tmp_
         "HOST_BIND_ADDRESS=::1\n"
         "PUBLIC_BASE_URL=http://[::1]:3100\n"
         "API_PORT=19000\n"
-        "WEB_PORT=19000\n",
+        "WEB_PORT=19000\n"
+        "XINFERENCE_PATCH_VOLUME=/workspace/train-factory/docker/xinference-patches:/opt/trainfactory/xinference-patches:ro\n"
+        "XINFERENCE_CONTRACT_VOLUME=/workspace/train-factory/docker/inference-contracts:/opt/trainfactory/inference-contracts:ro\n"
+        "SGLANG_TEMPLATE_VOLUME=/workspace/train-factory/docker/sglang-templates:/opt/trainfactory/sglang-templates:ro\n",
         encoding="utf-8",
     )
     web["ports"][0]["published"] = "19000"
@@ -574,6 +580,9 @@ def test_release_policy_accepts_frozen_nondefault_runtime_values(tmp_path):
         "API_PIDS_LIMIT": "100",
         "NVIDIA_VISIBLE_DEVICES": "0",
         "NVIDIA_DRIVER_CAPABILITIES": "compute,utility,video",
+        "XINFERENCE_PATCH_VOLUME": "/srv/trainfactory/xinference-patches:/opt/trainfactory/xinference-patches:ro",
+        "XINFERENCE_CONTRACT_VOLUME": "/srv/trainfactory/inference-contracts:/opt/trainfactory/inference-contracts:ro",
+        "SGLANG_TEMPLATE_VOLUME": "/srv/trainfactory/sglang-templates:/opt/trainfactory/sglang-templates:ro",
     }
     lines = EXAMPLE_ENV.read_text(encoding="utf-8").splitlines()
     present = set()
@@ -597,6 +606,31 @@ def test_release_policy_accepts_frozen_nondefault_runtime_values(tmp_path):
     }
 
     compose_release._validate_resolved_config(manifest, compose, root=ROOT_DIR)
+
+
+@pytest.mark.host_tools
+@pytest.mark.parametrize(
+    "variable",
+    (
+        "XINFERENCE_PATCH_VOLUME",
+        "XINFERENCE_CONTRACT_VOLUME",
+        "SGLANG_TEMPLATE_VOLUME",
+    ),
+)
+def test_release_policy_rejects_inference_payload_volume_drift(variable):
+    from scripts import compose_release
+
+    compose = _render_production()
+    compose["services"]["train-factory-api"]["environment"][variable] = (
+        "/different/source:/opt/trainfactory/changed:rw"
+    )
+
+    with pytest.raises(compose_release.ReleaseComposeError):
+        compose_release._validate_resolved_config(
+            _production_validation_manifest(),
+            compose,
+            root=ROOT_DIR,
+        )
 
 
 def _manifest_module():
@@ -2278,7 +2312,10 @@ def test_capture_rollback_uses_exact_labels_and_records_immutable_images(
         "COMPOSE_PROJECT_NAME=trainfactory\n"
         "MYSQL_APP_USER=trainfactory_app\n"
         "DEFAULT_ADMIN_USERNAME=admin\n"
-        "DEBUG=false\n",
+        "DEBUG=false\n"
+        "XINFERENCE_PATCH_VOLUME=/workspace/train-factory/docker/xinference-patches:/opt/trainfactory/xinference-patches:ro\n"
+        "XINFERENCE_CONTRACT_VOLUME=/workspace/train-factory/docker/inference-contracts:/opt/trainfactory/inference-contracts:ro\n"
+        "SGLANG_TEMPLATE_VOLUME=/workspace/train-factory/docker/sglang-templates:/opt/trainfactory/sglang-templates:ro\n",
         encoding="utf-8",
     )
     direct_payload = (
@@ -2337,7 +2374,7 @@ def test_capture_rollback_uses_exact_labels_and_records_immutable_images(
     tags = {}
     fail_next_remove = [False]
     remove_attempts = []
-    source_compose = _render_production()
+    source_compose = _render_production(root / ".env")
     source_compose["services"]["mysql"]["image"] = (
         "example/mysql_image:fixed@sha256:" + f"{5:064x}"
     )

@@ -4,3 +4,5 @@ requirements/*.lock text eol=lf
 requirements/*.toml text eol=lf
 requirements/*.in text eol=lf
 docker/images.lock.env text eol=lf
+docker/xinference-patches/sentence_transformers_core.py text eol=lf
+docker/xinference-patches/rerank_sentence_transformers_core.py text eol=lf

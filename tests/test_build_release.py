@@ -45,8 +45,8 @@ def test_check_accepts_dirty_implementation_tree_without_building_or_writing():
     ("remote", "expected"),
     (
         (
-            "git@gitee.com:jiajiwang/train-factory.git",
-            "https://gitee.com/jiajiwang/train-factory",
+            "git@gitee.com:example/train-factory.git",
+            "https://gitee.com/example/train-factory",
         ),
         (
             "https://github.com/example/train-factory.git/",
@@ -133,7 +133,7 @@ def test_build_uses_fixed_argv_identity_and_writes_verified_release_env(
     root = _fake_root(tmp_path)
     revision = "0123456789abcdef0123456789abcdef01234567"
     vcs_date = "2026-08-17T06:07:08+08:00"
-    source = "https://gitee.com/jiajiwang/train-factory"
+    source = "https://gitee.com/example/train-factory"
     version = "0.1.0"
     tag = f"{version}-{revision[:8]}"
     api_image = f"trainfactory-api:{tag}"
@@ -155,7 +155,7 @@ def test_build_uses_fixed_argv_identity_and_writes_verified_release_env(
         if argv[:3] == ["git", "show", "-s"]:
             return vcs_date
         if argv[:4] == ["git", "remote", "get-url", "origin"]:
-            return "git@gitee.com:jiajiwang/train-factory.git"
+            return "git@gitee.com:example/train-factory.git"
         if argv[:2] == ["git", "status"]:
             return ""
         if argv[:2] == ["docker", "build"]:
@@ -440,9 +440,9 @@ def test_api_and_web_dockerfiles_require_and_write_release_identity():
 
 def test_inference_runtime_defaults_use_verified_releases():
     expected = (
-        "vllm/vllm-openai:v0.11.0@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c",
-        "xprobe/xinference:v1.13.0@sha256:b5df50f3d04e5f7290cf0c6765b5a2b06ab29657d721cfaa13389a7c1d666291",
-        "lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0",
+        "vllm/vllm-openai:v0.26.0@sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52",
+        "xprobe/xinference:v3.1.0@sha256:ec41459d15cc1c18842370c267e9c9a12a0001245dea9fe3b939e4075dc18178",
+        "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155",
     )
     deployer = (
         ROOT_DIR / "train_factory" / "deployment" / "docker_deployer.py"

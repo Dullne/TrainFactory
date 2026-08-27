@@ -18,37 +18,6 @@ from ..storage.services.outbound_endpoint_policy import request_user_outbound
 
 logger = logging.getLogger(__name__)
 
-# Qwen3-Reranker chat template constants for vLLM pre-formatting
-_RERANK_PREFIX = (
-    '<|im_start|>system\n'
-    'Judge whether the Document meets the requirements based on the Query '
-    'and the Instruct provided. Note that the answer can only be "yes" or "no".'
-    '<|im_end|>\n<|im_start|>user\n'
-)
-_RERANK_SUFFIX = '<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
-_RERANK_DEFAULT_INSTRUCTION = 'Given a web search query, retrieve relevant passages that answer the query'
-
-
-def _format_rerank_prompt(
-    query: str,
-    documents: List[str],
-    instruction: Optional[str] = None,
-) -> tuple:
-    """
-    Pre-format query and documents with Qwen3-Reranker chat template for vLLM.
-
-    vLLM rerank (--task score) does not apply chat templates automatically,
-    so the client must wrap query/documents in the expected format.
-
-    Returns:
-        (formatted_query, formatted_documents) tuple
-    """
-    inst = instruction or _RERANK_DEFAULT_INSTRUCTION
-    formatted_query = f'{_RERANK_PREFIX}<Instruct>: {inst}\n<Query>: {query}\n'
-    formatted_docs = [f'<Document>: {doc}{_RERANK_SUFFIX}' for doc in documents]
-    return formatted_query, formatted_docs
-
-
 class VLLMClient:
     """vLLM OpenAI-compatible API client with LoRA support."""
 
@@ -272,35 +241,18 @@ class VLLMClient:
         top_n: Optional[int] = None,
         instruction: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Rerank documents by relevance to query.
-
-        vLLM uses --task score with Qwen3ForSequenceClassification, which requires
-        the client to pre-format the prompt with chat template (PREFIX/SUFFIX).
-        Without pre-formatting, scores will be incorrect.
-
-        Args:
-            query: Query text
-            documents: List of documents to rerank
-            model: Optional model/adapter name
-            top_n: Optional limit on number of results
-            instruction: Optional instruction for reranking
-
-        Returns:
-            List of {index, relevance_score} dicts, sorted by score descending
-        """
+        """Rerank documents using the raw Cohere-compatible wire schema."""
         try:
-            formatted_query, formatted_docs = _format_rerank_prompt(
-                query, documents, instruction
-            )
             payload = {
-                "query": formatted_query,
-                "documents": formatted_docs,
+                "query": query,
+                "documents": documents,
             }
             if model:
                 payload["model"] = model
             if top_n:
                 payload["top_n"] = top_n
+            if isinstance(instruction, str) and instruction.strip():
+                payload["instruction"] = instruction
 
             resp = self._request(
                 "POST",
@@ -312,8 +264,8 @@ class VLLMClient:
             data = resp.json()
             return data.get("results", [])
         except Exception as e:
-            logger.error(f"Failed to rerank documents: {e}")
-            raise RuntimeError(f"Rerank failed: {e}")
+            logger.error("Failed to rerank documents (%s)", type(e).__name__)
+            raise RuntimeError("Rerank failed") from e
 
     def score(
         self,

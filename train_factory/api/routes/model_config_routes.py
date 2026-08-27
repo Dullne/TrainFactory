@@ -729,21 +729,6 @@ async def check_connectivity(
 
 # === API Test Proxy ===
 
-def _format_vllm_rerank_request(query: str, documents: List[str], instruction: Optional[str] = None) -> Dict[str, Any]:
-    """
-    格式化 vLLM reranker 请求。
-    vLLM rerank 需要客户端预格式化 prompt，参考 inference-guide.md。
-    """
-    prefix = '<|im_start|>system\nJudge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
-    suffix = '<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
-    inst = instruction or 'Given a web search query, retrieve relevant passages that answer the query'
-
-    formatted_query = f'{prefix}<Instruct>: {inst}\n<Query>: {query}\n'
-    formatted_docs = [f'<Document>: {doc}{suffix}' for doc in documents]
-
-    return {'query': formatted_query, 'documents': formatted_docs}
-
-
 def _normalize_text_list(
     value: Any,
     field_name: str,
@@ -1005,7 +990,7 @@ async def test_api_proxy(
     API 测试代理接口。
 
     通过后端转发 API 请求，自动处理：
-    - vLLM reranker 的预格式化（客户端无需手动格式化）
+    - vLLM reranker 的 Cohere 兼容请求转发
     - 自动添加 model 字段
     - 统一返回格式
 
@@ -1029,17 +1014,24 @@ async def test_api_proxy(
     )
 
     # 获取框架类型（从 deployment 表中查询）
-    inference_framework = ''
+    # Persisted config/deployment metadata is trusted; the request body is not.
+    inference_framework = config.get('inference_framework') or ''
     deployment_id = config.get('deployment_id')
-    if deployment_id:
+    if deployment_id and not inference_framework:
         # 使用缓存
         if deployment_id in _deployment_framework_cache:
-            inference_framework = _deployment_framework_cache[deployment_id] or ''
+            inference_framework = (
+                _deployment_framework_cache[deployment_id]
+                or inference_framework
+            )
         else:
             try:
                 deployment = deployment_service.get_deployment(deployment_id)
                 if deployment:
-                    inference_framework = deployment.get('inference_framework') or ''
+                    inference_framework = (
+                        deployment.get('inference_framework')
+                        or inference_framework
+                    )
                     _deployment_framework_cache[deployment_id] = inference_framework
             except Exception:
                 pass
@@ -1050,6 +1042,8 @@ async def test_api_proxy(
 
     # 构建请求体
     body = request.body.copy()
+    body.pop("framework", None)
+    body.pop("inference_framework", None)
     mode = body.pop("mode", None)
     if not mode and ("sentence1" in body or "sentence2" in body):
         mode = "embedding_similarity"
@@ -1119,19 +1113,16 @@ async def test_api_proxy(
         if model_type == 'llm' or inference_framework == 'vllm' or config.get('provider') == 'xinference':
             body['model'] = model_name
 
-    # vLLM reranker 需要预格式化
-    # Note: model_type can be 'rerank' (new) or 'reranker' (legacy)
-    if inference_framework == 'vllm' and model_type in ('rerank', 'reranker'):
-        if 'query' in body and 'documents' in body:
-            formatted = _format_vllm_rerank_request(
-                body['query'],
-                body['documents'],
-                body.get('instruction')
-            )
-            body['query'] = formatted['query']
-            body['documents'] = formatted['documents']
-            # 移除 instruction，避免发送到 vLLM
-            body.pop('instruction', None)
+    if model_type in ('rerank', 'reranker'):
+        instruction = body.pop('instruction', None)
+        body.pop('instruct', None)
+        if isinstance(instruction, str) and instruction.strip():
+            instruction_field = {
+                'vllm': 'instruction',
+                'sglang': 'instruct',
+            }.get(inference_framework)
+            if instruction_field:
+                body[instruction_field] = instruction
 
     # 构建 URL（避免 /v1 重复）
     endpoint = config['api_endpoint'].rstrip('/')

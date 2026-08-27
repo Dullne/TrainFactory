@@ -57,8 +57,8 @@ def _create_vllm(deployer):
     deployer.create_vllm_container(
         container_name="vllm-test",
         port=10001,
-        gpu_id=0,
-        model_path="/app/models/model-1",
+        gpu_ids=(0,),
+        server_argv=("vllm", "serve", "/app/models/model-1"),
     )
 
 
@@ -66,10 +66,13 @@ def _create_sglang(deployer):
     deployer.create_sglang_container(
         container_name="sglang-test",
         port=10001,
-        gpu_id=0,
-        model_path="/app/models/model-1",
-        model_name="model-1",
-        model_type="reranker",
+        gpu_ids=(0,),
+        server_argv=(
+            "sglang",
+            "serve",
+            "--model-path",
+            "/app/models/model-1",
+        ),
     )
 
 

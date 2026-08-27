@@ -1,6 +1,10 @@
 *
 !pyproject.toml
 !README.md
+!README_CN.md
+!docs/
+docs/*
+!docs/production-web-release.md
 !.dockerignore
 !.gitignore
 !.gitattributes
@@ -37,6 +41,7 @@ scripts/*
 !scripts/check_pytest_partitions.py
 !scripts/validate_test_report.py
 !scripts/run_compose_smoke.py
+!scripts/verify_inference_upstream.py
 !docker/
 docker/*
 !docker/entrypoint.sh
@@ -52,6 +57,10 @@ docker/*
 !docker/docker-compose.verify.yml
 !docker/images.lock.env
 !docker/init.sql
+!docker/inference-contracts/
+!docker/inference-contracts/**
+!docker/sglang-templates/
+!docker/sglang-templates/**
 !docker/xinference-patches/
 !docker/xinference-patches/**
 !web/

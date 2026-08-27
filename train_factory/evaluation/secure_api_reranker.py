@@ -39,16 +39,6 @@ def request_user_outbound(
 class SecureAPIReranker:
     """API reranker compatible with qwen3-rerank-trainer evaluators."""
 
-    VLLM_PREFIX = (
-        '<|im_start|>system\nJudge whether the Document meets the requirements '
-        'based on the Query and the Instruct provided. Note that the answer can '
-        'only be "yes" or "no".<|im_end|>\n<|im_start|>user\n'
-    )
-    VLLM_SUFFIX = '<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n'
-    VLLM_DEFAULT_INSTRUCTION = (
-        "Given a web search query, retrieve relevant passages that answer the query"
-    )
-
     def __init__(
         self,
         endpoint: str,
@@ -68,21 +58,8 @@ class SecureAPIReranker:
         self.batch_size = batch_size
         self.max_concurrency = max_concurrency
         self.inference_framework = inference_framework.lower()
-        self.instruction = instruction or self.VLLM_DEFAULT_INSTRUCTION
+        self.instruction = instruction
         self.user_id = user_id
-
-    def _format_vllm_request(
-        self,
-        query: str,
-        documents: List[str],
-    ) -> Tuple[str, List[str]]:
-        formatted_query = (
-            f"{self.VLLM_PREFIX}<Instruct>: {self.instruction}\n<Query>: {query}\n"
-        )
-        formatted_docs = [
-            f"<Document>: {document}{self.VLLM_SUFFIX}" for document in documents
-        ]
-        return formatted_query, formatted_docs
 
     @staticmethod
     def _extract_results(
@@ -132,16 +109,25 @@ class SecureAPIReranker:
         if not documents:
             return [], {}
 
+        payload = {
+            "model": self.model,
+            "query": query,
+            "documents": documents,
+        }
+        if isinstance(self.instruction, str) and self.instruction.strip():
+            instruction_field = {
+                "vllm": "instruction",
+                "sglang": "instruct",
+            }.get(self.inference_framework)
+            if instruction_field:
+                payload[instruction_field] = self.instruction
+
         response = request_user_outbound(
             "POST",
             self.endpoint,
             self.user_id,
             headers={"Content-Type": "application/json"},
-            json={
-                "model": self.model,
-                "query": query,
-                "documents": documents,
-            },
+            json=payload,
             timeout=self.timeout,
         )
         response.raise_for_status()
@@ -152,9 +138,6 @@ class SecureAPIReranker:
         query: str,
         documents: List[str],
     ) -> Tuple[List[int], Dict[int, float]]:
-        if self.inference_framework == "vllm":
-            query, documents = self._format_vllm_request(query, documents)
-
         if len(documents) <= self.batch_size:
             return self._request_batch(query, documents)
 
@@ -179,9 +162,6 @@ class SecureAPIReranker:
         progress_desc: Optional[str] = None,
     ) -> List[Tuple[List[int], Dict[int, float]]]:
         del show_progress, progress_desc
-        if self.inference_framework == "vllm":
-            items = [self._format_vllm_request(query, docs) for query, docs in items]
-
         expanded_items: List[Tuple[str, List[str]]] = []
         item_mapping: List[Tuple[int, int]] = []
         for item_index, (query, documents) in enumerate(items):
@@ -232,5 +212,5 @@ class SecureAPIReranker:
                 return True
             logger.warning("API returned unexpected result: %s", ranking)
         except Exception as exc:
-            logger.error("API connection test failed: %s", exc)
+            logger.error("API connection test failed (%s)", type(exc).__name__)
         return False

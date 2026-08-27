@@ -1,0 +1,61 @@
+{
+  "schema_version": 2,
+  "xinference": {
+    "image": "xprobe/xinference:v3.1.0@sha256:ec41459d15cc1c18842370c267e9c9a12a0001245dea9fe3b939e4075dc18178",
+    "source_layer": "sha256:6d47bd78842f499ad0595774eb2f59deaf0cb5e549a7b6650f20c0530d61159a",
+    "install_layer": "sha256:77185dfe665db5015827d4a56a7f1b45d2c2baf5eec12955930348950d647117",
+    "installed_version": "3.1.1.dev0+g53c2b5e1c.d20260731",
+    "installed_metadata_sha256": "a78aa6e2a700ede7ee4fab2279863333b0c2f3e59e75d3224ac43bb69f487b19",
+    "repository": {
+      "url": "https://github.com/xorbitsai/inference.git",
+      "tag": "v3.1.0",
+      "tag_kind": "lightweight",
+      "commit": "53c2b5e1c157aa369c20fca7bbf1fb3e9a2e9879"
+    },
+    "sources": {
+      "embedding": {
+        "upstream_path": "xinference/model/embedding/sentence_transformers/core.py",
+        "runtime_path": "model/embedding/sentence_transformers/core.py",
+        "vendored_path": "docker/xinference-patches/sentence_transformers_core.py",
+        "git_blob_sha1": "0fae7ffc445c231ff5396ac8d2adbc4b24c53958",
+        "size": 34372,
+        "sha256": "f9af88270948e5cd2ad108d08fa48215357345c2e3f3b65bcbbf5d0df7bd0b06",
+        "patched_sha256": "034b3f1fa28ab4037c837601f8d9905874e941edc5920944960e9f827eab8921"
+      },
+      "rerank": {
+        "upstream_path": "xinference/model/rerank/sentence_transformers/core.py",
+        "runtime_path": "model/rerank/sentence_transformers/core.py",
+        "vendored_path": "docker/xinference-patches/rerank_sentence_transformers_core.py",
+        "git_blob_sha1": "4e3b6dbd06fecc4c7cfcd721a900b62a819e690a",
+        "size": 31894,
+        "sha256": "ded6772122985699d3c4cd37172f67b80d2a4f138f244c415595dcd7ed6b48cb",
+        "patched_sha256": "bca763d531409fec62e9e4ede6515c16ace7e4c7560cdcff4082f43e3e17dac8"
+      }
+    }
+  },
+  "sglang": {
+    "image": "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155",
+    "linux_amd64_manifest": "sha256:3be8803490a8b899a44f7ab2e22d8f6a1fb877cab52faeb400769a1555317db4",
+    "source_layer": "sha256:a3240c4e46ae106032204eb007dc2d939afcfee6207fe4abd76245ac248127d5",
+    "repository": {
+      "url": "https://github.com/sgl-project/sglang.git",
+      "tag": "v0.5.17",
+      "tag_kind": "annotated",
+      "commit": "29481685462732237d80d86076d6563e1f658102"
+    },
+    "sources": {
+      "rerank_template": {
+        "upstream_path": "examples/chat_template/qwen3_reranker.jinja",
+        "git_blob_sha1": "5ab809eea6a7640eea135c05d01468eb1f931427",
+        "size": 427,
+        "sha256": "c6158004ca0cd90048b78eaa325ab1b7909f469dde556f9f378c79ce81008104"
+      },
+      "rerank_handler": {
+        "upstream_path": "python/sglang/srt/entrypoints/openai/serving_rerank.py",
+        "git_blob_sha1": "7bf410a07ed7f15264e01fd7f1054fa2e7ce7288",
+        "size": 23427,
+        "sha256": "5242cd42c8ccba74fbdf13e2c7eee63b5551e3d6bef09933aba213d690cb3329"
+      }
+    }
+  }
+}

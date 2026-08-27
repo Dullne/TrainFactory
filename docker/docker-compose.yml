@@ -150,9 +150,12 @@ services:
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
       HOST_IP: ${HOST_IP:-172.17.0.1}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
-      VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.11.0@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c}
-      SGLANG_IMAGE: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0}
-      XINFERENCE_IMAGE: ${XINFERENCE_IMAGE:-xprobe/xinference:v1.13.0@sha256:b5df50f3d04e5f7290cf0c6765b5a2b06ab29657d721cfaa13389a7c1d666291}
+      VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.26.0@sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52}
+      SGLANG_IMAGE: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155}
+      XINFERENCE_IMAGE: ${XINFERENCE_IMAGE:-xprobe/xinference:v3.1.0@sha256:ec41459d15cc1c18842370c267e9c9a12a0001245dea9fe3b939e4075dc18178}
+      XINFERENCE_PATCH_VOLUME: ${XINFERENCE_PATCH_VOLUME:-/workspace/train-factory/docker/xinference-patches:/opt/trainfactory/xinference-patches:ro}
+      XINFERENCE_CONTRACT_VOLUME: ${XINFERENCE_CONTRACT_VOLUME:-/workspace/train-factory/docker/inference-contracts:/opt/trainfactory/inference-contracts:ro}
+      SGLANG_TEMPLATE_VOLUME: ${SGLANG_TEMPLATE_VOLUME:-/workspace/train-factory/docker/sglang-templates:/opt/trainfactory/sglang-templates:ro}
       DOCKER_NETWORK_NAME: ${DOCKER_NETWORK_NAME:-trainfactory_network}
       PORT_RANGE_START: ${PORT_RANGE_START:-9997}
       PORT_RANGE_END: ${PORT_RANGE_END:-10100}
@@ -320,9 +323,12 @@ services:
       SWANLAB_API_KEY: ${SWANLAB_API_KEY:-}
       HOST_IP: ${HOST_IP:-172.17.0.1}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
-      VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.11.0@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c}
-      SGLANG_IMAGE: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0}
-      XINFERENCE_IMAGE: ${XINFERENCE_IMAGE:-xprobe/xinference:v1.13.0@sha256:b5df50f3d04e5f7290cf0c6765b5a2b06ab29657d721cfaa13389a7c1d666291}
+      VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.26.0@sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52}
+      SGLANG_IMAGE: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155}
+      XINFERENCE_IMAGE: ${XINFERENCE_IMAGE:-xprobe/xinference:v3.1.0@sha256:ec41459d15cc1c18842370c267e9c9a12a0001245dea9fe3b939e4075dc18178}
+      XINFERENCE_PATCH_VOLUME: ${XINFERENCE_PATCH_VOLUME:-/workspace/train-factory/docker/xinference-patches:/opt/trainfactory/xinference-patches:ro}
+      XINFERENCE_CONTRACT_VOLUME: ${XINFERENCE_CONTRACT_VOLUME:-/workspace/train-factory/docker/inference-contracts:/opt/trainfactory/inference-contracts:ro}
+      SGLANG_TEMPLATE_VOLUME: ${SGLANG_TEMPLATE_VOLUME:-/workspace/train-factory/docker/sglang-templates:/opt/trainfactory/sglang-templates:ro}
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-trainfactory}
       MILVUS_HOST: milvus
       MILVUS_PORT: 19530
@@ -360,7 +366,7 @@ services:
 
   # vLLM 镜像 (用于预拉取)
   vllm-pull:
-    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.11.0@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c}
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.26.0@sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52}
     container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-vllm-pull
     entrypoint: ["echo", "vLLM image ready"]
     profiles:
@@ -369,7 +375,7 @@ services:
 
   # SGLang 镜像 (用于预拉取)
   sglang-pull:
-    image: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0}
+    image: ${SGLANG_IMAGE:-lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155}
     container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-sglang-pull
     entrypoint: ["echo", "SGLang image ready"]
     profiles:
@@ -381,7 +387,7 @@ services:
   # 随基础设施一键启动: docker compose --profile infra up -d
   xinference:
     # Xinference - 镜像版本在 .env 中配置
-    image: ${XINFERENCE_IMAGE:-xprobe/xinference:v1.13.0@sha256:b5df50f3d04e5f7290cf0c6765b5a2b06ab29657d721cfaa13389a7c1d666291}
+    image: ${XINFERENCE_IMAGE:-xprobe/xinference:v3.1.0@sha256:ec41459d15cc1c18842370c267e9c9a12a0001245dea9fe3b939e4075dc18178}
     container_name: ${COMPOSE_PROJECT_NAME:-trainfactory}-xinference
     restart: unless-stopped
     profiles:
@@ -393,10 +399,9 @@ services:
       - ../output:/app/output:ro
       - xinference_cache:/root/.cache
       - xinference_home:/root/.xinference
-      # 修复 Qwen3-Embedding Last Token Pooling 问题
-      - ./xinference-patches/sentence_transformers_core.py:/opt/inference/xinference/model/embedding/sentence_transformers/core.py:ro
-      # 修复 Qwen3-Reranker dtype: flash_attn 下使用 bfloat16 而非 float16
-      - ./xinference-patches/rerank_sentence_transformers_core.py:/opt/inference/xinference/model/rerank/sentence_transformers/core.py:ro
+      # The guarded launcher rejects image source drift before applying these payloads.
+      - ./xinference-patches:/opt/trainfactory/xinference-patches:ro
+      - ./inference-contracts:/opt/trainfactory/inference-contracts:ro
     environment:
       - XINFERENCE_HOME=/root/.xinference
       - ALLOW_MODEL_REMOTE_CODE=${ALLOW_MODEL_REMOTE_CODE:-false}
@@ -405,7 +410,8 @@ services:
         published: "${XINFERENCE_PORT:-9997}"
         host_ip: "${HOST_BIND_ADDRESS:-127.0.0.1}"
         protocol: tcp
-    command: xinference-local -H 0.0.0.0 -p 9997
+    entrypoint: ["python", "/opt/trainfactory/xinference-patches/apply_qwen3_compatibility.py", "--image-ref", "${XINFERENCE_IMAGE:-xprobe/xinference:v3.1.0@sha256:ec41459d15cc1c18842370c267e9c9a12a0001245dea9fe3b939e4075dc18178}", "--contract", "/opt/trainfactory/inference-contracts/qwen3-compatibility.json", "--"]
+    command: ["xinference-local", "-H", "0.0.0.0", "-p", "9997"]
     deploy:
       resources:
         reservations:

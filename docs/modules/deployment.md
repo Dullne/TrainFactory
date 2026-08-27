@@ -12,7 +12,7 @@
 | vLLM | 高性能推理 | LLM, Embedding, Decoder Reranker | 支持（含 Embedding LoRA） |
 | SGLang | 高性能 LLM 推理 | LLM, Decoder Reranker | 支持（仅 decode 模式） |
 
-> **注意**: vLLM 是唯一同时支持 Embedding 模型 + LoRA 热加载的框架（通过 `--task pooling --enable-lora` 参数）。SGLang 的 LoRA 仅支持 decode 模式（LLM 生成），不支持 Embedding/Reranker。
+> **注意**: vLLM 是唯一同时支持 Embedding 模型 + LoRA 热加载的框架（通过 `--runner pooling --enable-lora` 参数）。SGLang 的 LoRA 仅支持 decode 模式（LLM 生成），不支持 Embedding/Reranker。
 
 ## 核心组件
 

@@ -12,31 +12,38 @@ import shlex
 import subprocess
 import threading
 import time
-from typing import Optional, Dict, Any, Tuple, Set, List
+from ipaddress import ip_address
+from typing import Optional, Dict, Any, Tuple, Set, List, Sequence
 import requests
 
+from ..config.public_origin import is_loopback_bind_address
 from ..config.settings import get_settings
 from ..storage.services.outbound_endpoint_policy import request_user_outbound
+from .launch_config import (
+    xinference_model_launch_overrides,
+    xinference_model_type,
+)
 
 logger = logging.getLogger(__name__)
 
 # Default Docker images for different frameworks
 # 镜像版本在根目录 .env 中统一配置，通过环境变量读取
-# Xinference v1.13.0 - 需要 patch 修复 Last Token Pooling
+# Xinference v3.1.0 with digest-bound compatibility payloads.
 DEFAULT_XINFERENCE_IMAGE = os.environ.get(
     "XINFERENCE_IMAGE",
-    "xprobe/xinference:v1.13.0@sha256:b5df50f3d04e5f7290cf0c6765b5a2b06ab29657d721cfaa13389a7c1d666291"
+    "xprobe/xinference:v3.1.0@sha256:ec41459d15cc1c18842370c267e9c9a12a0001245dea9fe3b939e4075dc18178",
 )
-# vLLM v0.11.0 - 支持 --task score (Rerank)，v0.14+ 已移除该参数
+# vLLM v0.26.0 uses the pooling runner for embedding and rerank models.
 DEFAULT_VLLM_IMAGE = os.environ.get(
     "VLLM_IMAGE",
-    "vllm/vllm-openai:v0.11.0@sha256:014a95f21c9edf6abe0aea6b07353f96baa4ec291c427bb1176dc7c93a85845c"
+    "vllm/vllm-openai:v0.26.0@sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52",
 )
-# SGLang v0.5.16 official release - supports embedding and rerank.
+# SGLang v0.5.17 official release.
 DEFAULT_SGLANG_IMAGE = os.environ.get(
     "SGLANG_IMAGE",
-    "lmsysorg/sglang:v0.5.16@sha256:7b6a35df9839fd593a94a1eaee82d7777f472225d9f3ad1f8a2e0cb2bd1785d0"
+    "lmsysorg/sglang:v0.5.17@sha256:16aba8925507e631e1dc1e23d95d026533602591775f6a8db68b74ee99746155",
 )
+INFERENCE_CONTAINER_CREATE_TIMEOUT_SECONDS = 3600
 
 # Port range for auto-assignment
 PORT_RANGE_START = int(os.environ.get("PORT_RANGE_START", "9997"))
@@ -48,6 +55,21 @@ DEFAULT_MODELS_VOLUME = os.environ.get("MODELS_VOLUME", "/workspace/train-factor
 DEFAULT_OUTPUT_VOLUME = os.environ.get("OUTPUT_VOLUME", "/workspace/train-factory/output:/app/output")
 # 额外的 volume 挂载：外部模型目录（如 ModelScope/HuggingFace 下载的原始模型）
 DEFAULT_EXTRA_MODEL_VOLUME = os.environ.get("EXTRA_MODEL_VOLUME", "/data/models:/data/models:ro")
+DEFAULT_XINFERENCE_PATCH_VOLUME = os.environ.get(
+    "XINFERENCE_PATCH_VOLUME",
+    "/workspace/train-factory/docker/xinference-patches:"
+    "/opt/trainfactory/xinference-patches:ro",
+)
+DEFAULT_XINFERENCE_CONTRACT_VOLUME = os.environ.get(
+    "XINFERENCE_CONTRACT_VOLUME",
+    "/workspace/train-factory/docker/inference-contracts:"
+    "/opt/trainfactory/inference-contracts:ro",
+)
+DEFAULT_SGLANG_TEMPLATE_VOLUME = os.environ.get(
+    "SGLANG_TEMPLATE_VOLUME",
+    "/workspace/train-factory/docker/sglang-templates:"
+    "/opt/trainfactory/sglang-templates:ro",
+)
 
 # HuggingFace mirror for China
 DEFAULT_HF_ENDPOINT = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
@@ -71,6 +93,50 @@ def _shm_size_args() -> List[str]:
     return ["--shm-size", raw]
 
 
+def _validated_gpu_ids(gpu_ids: Sequence[int]) -> tuple[int, ...]:
+    normalized = tuple(gpu_ids)
+    if not normalized:
+        raise ValueError("GPU IDs must not be empty")
+    if any(type(gpu_id) is not int or gpu_id < 0 for gpu_id in normalized):
+        raise ValueError("GPU IDs must be non-negative integers")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("GPU IDs must not contain duplicates")
+    return normalized
+
+
+def _validated_server_argv(
+    server_argv: Sequence[str],
+    *,
+    executable: str,
+) -> tuple[str, ...]:
+    normalized = tuple(server_argv)
+    if not normalized or normalized[0] != executable:
+        raise ValueError("server argv executable is invalid")
+    if any(
+        not isinstance(value, str) or not value or "\0" in value
+        for value in normalized
+    ):
+        raise ValueError("server argv contains an invalid value")
+    return normalized
+
+
+def _normalized_host_bind_address() -> tuple[str, bool]:
+    settings = get_settings()
+    raw_address = getattr(settings, "host_bind_address", "127.0.0.1")
+    is_loopback_bind_address(raw_address, "HOST_BIND_ADDRESS")
+    if raw_address.lower() == "localhost":
+        return "127.0.0.1", False
+    parsed_address = ip_address(raw_address)
+    return str(parsed_address), parsed_address.version == 6
+
+
+def _published_container_port(port: int) -> str:
+    host_address, is_ipv6 = _normalized_host_bind_address()
+    if is_ipv6:
+        host_address = f"[{host_address}]"
+    return f"{host_address}:{port}:{port}"
+
+
 class DockerDeployer:
     """Manages Docker containers for inference model deployment."""
 
@@ -82,6 +148,9 @@ class DockerDeployer:
         data_volume: str = DEFAULT_DATA_VOLUME,
         models_volume: str = DEFAULT_MODELS_VOLUME,
         output_volume: str = DEFAULT_OUTPUT_VOLUME,
+        xinference_patch_volume: str = DEFAULT_XINFERENCE_PATCH_VOLUME,
+        xinference_contract_volume: str = DEFAULT_XINFERENCE_CONTRACT_VOLUME,
+        sglang_template_volume: str = DEFAULT_SGLANG_TEMPLATE_VOLUME,
     ):
         """
         Initialize Docker deployer.
@@ -103,6 +172,9 @@ class DockerDeployer:
         self.models_volume = models_volume
         self.output_volume = output_volume
         self.extra_model_volume = DEFAULT_EXTRA_MODEL_VOLUME
+        self.xinference_patch_volume = xinference_patch_volume
+        self.xinference_contract_volume = xinference_contract_volume
+        self.sglang_template_volume = sglang_template_volume
         self.hf_endpoint = DEFAULT_HF_ENDPOINT
         # Lock for thread-safe port allocation
         self._port_lock = threading.Lock()
@@ -134,7 +206,7 @@ class DockerDeployer:
         self,
         cmd: list,
         container_name: str,
-        timeout: int = 180,
+        timeout: int = INFERENCE_CONTAINER_CREATE_TIMEOUT_SECONDS,
     ) -> Tuple[bool, str]:
         """
         Run `docker run -d` for container creation.
@@ -160,20 +232,17 @@ class DockerDeployer:
 
     def _is_port_in_use(self, port: int) -> bool:
         """Check if a port is already in use on the host."""
-        # Check via docker: get all container port mappings on host
-        success, output = self._run_command([
-            "docker", "ps", "--format", "{{.Ports}}"
-        ])
-        if success and output:
-            # Parse port mappings like "0.0.0.0:9997->9997/tcp"
-            import re
-            for line in output.strip().split('\n'):
-                # Match patterns like "0.0.0.0:9997->" or ":::9997->"
-                matches = re.findall(r'(?:0\.0\.0\.0|::):(\d+)->', line)
-                for matched_port in matches:
-                    if int(matched_port) == port:
-                        return True
-        return False
+        success, output = self._run_command(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                f"publish={port}",
+                "--format",
+                "{{.ID}}",
+            ]
+        )
+        return success and bool(output.strip())
 
     def _get_db_reserved_ports(self) -> Set[int]:
         """Get ports reserved by deployments and configs in the database.
@@ -363,14 +432,24 @@ class DockerDeployer:
         Returns:
             (success, message)
         """
-        # Remove existing container if any
-        self.remove_container(container_name)
+        model_type = xinference_model_type(model_type)
+        if model_type not in ("embedding", "rerank", "llm"):
+            raise ValueError("model_type is invalid")
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("container port is invalid")
+        _validated_gpu_ids((gpu_id,))
+        published_port = _published_container_port(port)
 
-        # Build the command that runs inside container
         model_name = model_name or model_uid
-        # Map internal model_type to Xinference CLI model_type
-        if model_type == "reranker":
-            model_type = "rerank"
+        launch_overrides = xinference_model_launch_overrides(
+            model_type=model_type,
+            model_family=model_name,
+        )
+        dtype_arg = (
+            " \\\n                --torch_dtype bfloat16"
+            if launch_overrides
+            else ""
+        )
         inner_cmd = f"""
             xinference-local -H 0.0.0.0 -p {port} &
             until curl -s http://127.0.0.1:{port}/v1/cluster/auth > /dev/null 2>&1; do
@@ -382,18 +461,18 @@ class DockerDeployer:
                 --model-uid {shlex.quote(model_uid)} \
                 --model-path {shlex.quote(model_path)} \
                 --model-format pytorch \
-                --model-type {shlex.quote(model_type)} &&
+                --model-type {shlex.quote(model_type)}{dtype_arg} &&
             tail -f /dev/null
         """
 
         # Build docker run command
         # Join compose network so API container can access this container by name
         cmd = [
-            "docker", "run", "-d",
+            "docker", "run", "--pull=missing", "-d",
             "--name", container_name,
             "--network", DEFAULT_DOCKER_NETWORK,
             "--gpus", f"device={gpu_id}",
-            "-p", f"{port}:{port}",
+            "-p", published_port,
             "-e", f"HF_ENDPOINT={self.hf_endpoint}",
             "-e", (
                 "ALLOW_MODEL_REMOTE_CODE=true"
@@ -404,15 +483,25 @@ class DockerDeployer:
             "-v", self.models_volume,
             "-v", self.output_volume,
             "-v", self.extra_model_volume,
+            "-v", self.xinference_patch_volume,
+            "-v", self.xinference_contract_volume,
             *_shm_size_args(),
             "--log-opt", "max-size=10m",
             "--log-opt", "max-file=3",
+            "--entrypoint", "python",
             self.image,
+            "/opt/trainfactory/xinference-patches/apply_qwen3_compatibility.py",
+            "--image-ref",
+            self.image,
+            "--contract",
+            "/opt/trainfactory/inference-contracts/qwen3-compatibility.json",
+            "--",
             "bash", "-c", inner_cmd,
         ]
 
         docker_cmd = self._cmd_to_string(cmd)
         logger.info(f"Creating container {container_name} on port {port} with GPU {gpu_id}")
+        self.remove_container(container_name)
         success, output = self._run_container_create(cmd, container_name)
 
         if success:
@@ -625,110 +714,67 @@ class DockerDeployer:
         self,
         container_name: str,
         port: int,
-        gpu_id: int = 0,
-        model_path: str = None,
-        model_name: str = None,
-        model_type: str = "embedding",
-        enable_lora: bool = False,
-        max_loras: int = 4,
-        max_lora_rank: int = 64,
-        gpu_memory_utilization: float = 0.9,
-        dtype: Optional[str] = None,
-        enforce_eager: bool = False,
+        gpu_ids: Sequence[int],
+        server_argv: Sequence[str],
     ) -> Tuple[bool, str, str]:
-        """
-        Create and start a vLLM container.
+        """Create vLLM from a validated immutable application argv."""
+        normalized_gpu_ids = _validated_gpu_ids(gpu_ids)
+        normalized_server_argv = _validated_server_argv(
+            server_argv,
+            executable="vllm",
+        )
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("container port is invalid")
+        if not isinstance(container_name, str) or not container_name:
+            raise ValueError("container name is invalid")
 
-        Args:
-            container_name: Name for the container
-            port: Port to expose
-            gpu_id: GPU device ID to use
-            model_path: Path to model files (container path)
-            model_name: Model name for --served-model-name (defaults to path basename)
-            model_type: Model type (embedding, rerank, llm)
-            enable_lora: Enable LoRA hot-loading
-            max_loras: Maximum number of LoRA adapters
-            max_lora_rank: Maximum LoRA rank
-            gpu_memory_utilization: GPU memory utilization (0.0-1.0)
-
-        Returns:
-            (success, message)
-        """
-        # Remove existing container if any
-        self.remove_container(container_name)
-
-        # Build vLLM serve command based on model type
-        # vLLM v0.11.0: embedding 用 --runner pooling，rerank 用 --task score
-        # Use list format to avoid shell quoting issues
-        extra_args: List[str] = []
-        if model_type == "embedding":
-            extra_args = ["--runner", "pooling"]
-        elif model_type == "rerank" or model_type == "reranker":
-            # Rerank 使用 --task score + hf_overrides（vLLM v0.11.0）
-            # 注意：vLLM rerank 需要客户端预格式化 prompt（见 inference-guide.md）
-            hf_overrides = '{"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}'
-            extra_args = ["--task", "score", "--hf-overrides", hf_overrides]
-
-        # 与 SGLang/Xinference 容器一致：allow_model_remote_code 时放行远程代码执行
-        if get_settings().allow_model_remote_code:
-            extra_args.append("--trust-remote-code")
-
-        # LoRA configuration
-        if enable_lora:
-            extra_args.extend(["--enable-lora", "--max-loras", str(max_loras), "--max-lora-rank", str(max_lora_rank)])
-
-        # Build docker run command
         env_vars = ["-e", f"HF_ENDPOINT={self.hf_endpoint}"]
-        if enable_lora:
+        if "--enable-lora" in normalized_server_argv:
             env_vars.extend(["-e", "VLLM_ALLOW_RUNTIME_LORA_UPDATING=1"])
-
-        # dtype and enforce_eager options
-        if dtype:
-            extra_args.extend(["--dtype", dtype])
-        if enforce_eager:
-            extra_args.append("--enforce-eager")
-
-        # Build serve arguments (not using bash -c, direct args to vllm serve)
-        # Use model_name for --served-model-name, or extract from path if not provided
-        served_name = model_name or model_path.rstrip('/').split('/')[-1]
-        serve_args = [
-            model_path,
-            "--host", "0.0.0.0",
-            "--port", str(port),
-            "--gpu-memory-utilization", str(gpu_memory_utilization),
-            "--served-model-name", served_name,
-            "--allowed-origins", '["*"]',  # Enable CORS for frontend API testing
-        ] + extra_args
-
-        cmd = [
-            "docker", "run", "-d",
-            "--name", container_name,
-            "--network", DEFAULT_DOCKER_NETWORK,
-            "--gpus", f"device={gpu_id}",
-            "-p", f"{port}:{port}",
-            "-v", self.data_volume,
-            "-v", self.models_volume,
-            "-v", self.output_volume,
-            "-v", self.extra_model_volume,
+        command = [
+            "docker",
+            "run",
+            "--pull=missing",
+            "-d",
+            "--name",
+            container_name,
+            "--network",
+            DEFAULT_DOCKER_NETWORK,
+            "--gpus",
+            f"device={','.join(map(str, normalized_gpu_ids))}",
+            "-p",
+            _published_container_port(port),
+            "-v",
+            self.data_volume,
+            "-v",
+            self.models_volume,
+            "-v",
+            self.output_volume,
+            "-v",
+            self.extra_model_volume,
             *_shm_size_args(),
-            "--log-opt", "max-size=10m",
-            "--log-opt", "max-file=3",
-            "--entrypoint", "vllm",  # Override entrypoint to use vllm CLI
-        ] + env_vars + [
+            "--log-opt",
+            "max-size=10m",
+            "--log-opt",
+            "max-file=3",
+            "--entrypoint",
+            normalized_server_argv[0],
+            *env_vars,
             self.vllm_image,
-            "serve",
-        ] + serve_args
-
-        docker_cmd = self._cmd_to_string(cmd)
-        logger.info(f"Creating vLLM container {container_name} on port {port} with GPU {gpu_id}")
-        success, output = self._run_container_create(cmd, container_name)
-
+            *normalized_server_argv[1:],
+        ]
+        docker_cmd = self._cmd_to_string(command)
+        logger.info(
+            "Creating vLLM container %s on port %s with GPUs %s",
+            container_name,
+            port,
+            normalized_gpu_ids,
+        )
+        self.remove_container(container_name)
+        success, output = self._run_container_create(command, container_name)
         if success:
-            logger.info(f"vLLM container {container_name} created successfully")
             return True, f"Container {container_name} created on port {port}", docker_cmd
-        else:
-            logger.error(f"Failed to create vLLM container {container_name}: {output}")
-            return False, output, docker_cmd
+        return False, output, docker_cmd
 
     # ==================== SGLang Container ====================
 
@@ -736,131 +782,67 @@ class DockerDeployer:
         self,
         container_name: str,
         port: int,
-        gpu_id: int = 0,
-        model_path: str = None,
-        model_name: str = None,
-        model_type: str = "embedding",
-        enable_lora: bool = False,
-        max_loras: int = 4,
-        max_lora_rank: int = 64,
-        chat_template: Optional[str] = None,
-        gpu_memory_utilization: float = 0.9,
-        dtype: Optional[str] = None,
-        attention_backend: Optional[str] = None,
+        gpu_ids: Sequence[int],
+        server_argv: Sequence[str],
     ) -> Tuple[bool, str, str]:
-        """
-        Create and start a SGLang container.
+        """Create SGLang from a validated immutable application argv."""
+        normalized_gpu_ids = _validated_gpu_ids(gpu_ids)
+        normalized_server_argv = _validated_server_argv(
+            server_argv,
+            executable="sglang",
+        )
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError("container port is invalid")
+        if not isinstance(container_name, str) or not container_name:
+            raise ValueError("container name is invalid")
 
-        Args:
-            container_name: Name for the container
-            port: Port to expose
-            gpu_id: GPU device ID to use
-            model_path: Path to model files (container path)
-            model_name: Model name (used to construct container-internal path
-                        so SGLang can identify model type from path name)
-            model_type: Model type (embedding, rerank, llm)
-            enable_lora: Enable LoRA hot-loading
-            max_loras: Maximum number of LoRA adapters
-            max_lora_rank: Maximum LoRA rank
-            chat_template: Path to custom chat template (for reranker)
-            gpu_memory_utilization: GPU memory utilization (0.0-1.0)
-
-        Returns:
-            (success, message)
-        """
-        # Remove existing container if any
-        self.remove_container(container_name)
-
-        # Build SGLang launch command based on model type
-        if model_type == "embedding":
-            type_args = "--is-embedding"
-            if get_settings().allow_model_remote_code:
-                type_args = f"--trust-remote-code {type_args}"
-        elif model_type == "rerank" or model_type == "reranker":
-            # Qwen3-Reranker needs generation mode (NOT --is-embedding)
-            # with custom chat template for yes/no scoring
-            type_args = "--disable-radix-cache"
-            if get_settings().allow_model_remote_code:
-                type_args = f"--trust-remote-code {type_args}"
-            if chat_template:
-                type_args += f" --chat-template {shlex.quote(chat_template)}"
-        else:
-            type_args = ""
-
-        # dtype and attention backend options
-        if dtype:
-            type_args += f" --dtype {shlex.quote(dtype)}"
-        if attention_backend:
-            type_args += f" --attention-backend {shlex.quote(attention_backend)}"
-
-        # LoRA configuration
-        # SGLang requires --max-lora-rank AND --lora-target-modules when --enable-lora is set without --lora-paths
-        if enable_lora:
-            # Default target modules cover common Qwen LoRA configurations
-            default_modules = "q_proj k_proj v_proj o_proj gate_proj up_proj down_proj"
-            lora_args = f"--enable-lora --max-loras {max_loras} --max-lora-rank {max_lora_rank} --lora-target-modules {default_modules}"
-        else:
-            lora_args = ""
-
-        # SGLang identifies model type from path name (e.g. "Embedding" in path).
-        # Create a symlink inside container so SGLang sees a path containing the model name.
-        # The model is already mounted via models_volume, no extra -v needed.
-        if model_name:
-            effective_path = f"/model/{model_name}"
-            symlink_cmd = f"mkdir -p /model && ln -sfn {shlex.quote(model_path)} {shlex.quote(effective_path)} && "
-        else:
-            effective_path = model_path
-            symlink_cmd = ""
-
-        # Build the launch command
-        # SGLang 模块路径随版本迁移：新版为 sglang.srt.launch_server，旧版为 sglang.launch_server。
-        # 容器内运行时探测，避免固定模块路径在镜像升级后失效；exec 使 python 成为 PID 1，
-        # 保证 docker stop 的 SIGTERM 能正确转发。
-        inner_cmd = f"""{symlink_cmd}if python -c 'import sglang.srt.launch_server' 2>/dev/null; then
-                LAUNCH_MODULE=sglang.srt.launch_server
-            else
-                LAUNCH_MODULE=sglang.launch_server
-            fi
-            exec python -m $LAUNCH_MODULE \
-                --model-path {shlex.quote(effective_path)} \
-                --host 0.0.0.0 \
-                --port {port} \
-                --mem-fraction-static {gpu_memory_utilization} \
-                {type_args} \
-                {lora_args}
-        """
-
-        # Build docker run command
-        cmd = [
-            "docker", "run", "-d",
-            "--name", container_name,
-            "--network", DEFAULT_DOCKER_NETWORK,
-            "--gpus", f"device={gpu_id}",
-            "-p", f"{port}:{port}",
-            "-e", f"HF_ENDPOINT={self.hf_endpoint}",
-            "-v", self.data_volume,
-            "-v", self.models_volume,
-            "-v", self.output_volume,
-            "-v", self.extra_model_volume,
+        command = [
+            "docker",
+            "run",
+            "--pull=missing",
+            "-d",
+            "--name",
+            container_name,
+            "--network",
+            DEFAULT_DOCKER_NETWORK,
+            "--gpus",
+            f"device={','.join(map(str, normalized_gpu_ids))}",
+            "-p",
+            _published_container_port(port),
+            "-e",
+            f"HF_ENDPOINT={self.hf_endpoint}",
+            "-v",
+            self.data_volume,
+            "-v",
+            self.models_volume,
+            "-v",
+            self.output_volume,
+            "-v",
+            self.extra_model_volume,
+            "-v",
+            self.sglang_template_volume,
             *_shm_size_args(),
-        ]
-        cmd.extend([
-            "--log-opt", "max-size=10m",
-            "--log-opt", "max-file=3",
+            "--log-opt",
+            "max-size=10m",
+            "--log-opt",
+            "max-file=3",
+            "--entrypoint",
+            normalized_server_argv[0],
             self.sglang_image,
-            "bash", "-c", inner_cmd,
-        ])
-
-        docker_cmd = self._cmd_to_string(cmd)
-        logger.info(f"Creating SGLang container {container_name} on port {port} with GPU {gpu_id}")
-        success, output = self._run_container_create(cmd, container_name)
-
+            *normalized_server_argv[1:],
+        ]
+        docker_cmd = self._cmd_to_string(command)
+        logger.info(
+            "Creating SGLang container %s on port %s with GPUs %s",
+            container_name,
+            port,
+            normalized_gpu_ids,
+        )
+        self.remove_container(container_name)
+        success, output = self._run_container_create(command, container_name)
         if success:
-            logger.info(f"SGLang container {container_name} created successfully")
             return True, f"Container {container_name} created on port {port}", docker_cmd
-        else:
-            logger.error(f"Failed to create SGLang container {container_name}: {output}")
-            return False, output, docker_cmd
+        return False, output, docker_cmd
 
     # ==================== Generic Wait Methods ====================
 

@@ -79,6 +79,148 @@ def test_secure_reranker_batch_preserves_input_order(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("framework", "instruction_field"),
+    [("vllm", "instruction"), ("sglang", "instruct")],
+)
+def test_secure_reranker_batch_uses_raw_payload_and_framework_instruction(
+    monkeypatch,
+    framework,
+    instruction_field,
+):
+    calls = []
+
+    def request(_method, _url, _user_id, **kwargs):
+        calls.append(kwargs["json"])
+        return _Response({"results": [{"index": 0, "score": 0.5}]})
+
+    monkeypatch.setattr(secure_module, "request_user_outbound", request)
+    reranker = secure_module.SecureAPIReranker(
+        "https://rerank.example.test/v1",
+        model="Qwen3-Reranker-4B",
+        inference_framework=framework,
+        instruction="rank by factual relevance",
+        user_id="user-1",
+    )
+
+    reranker.rerank_batch(
+        [("raw batch query", ["raw batch document"])],
+        show_progress=False,
+    )
+
+    assert calls == [
+        {
+            "model": "Qwen3-Reranker-4B",
+            "query": "raw batch query",
+            "documents": ["raw batch document"],
+            instruction_field: "rank by factual relevance",
+        }
+    ]
+
+
+def test_secure_vllm_reranker_sends_instruction_with_raw_cohere_payload(monkeypatch):
+    calls = []
+
+    def request(method, url, user_id, **kwargs):
+        calls.append((method, url, user_id, kwargs))
+        return _Response({"results": [{"index": 0, "score": 0.5}]})
+
+    monkeypatch.setattr(secure_module, "request_user_outbound", request)
+    reranker = secure_module.SecureAPIReranker(
+        "https://rerank.example.test/v1",
+        model="Qwen3-Reranker-4B",
+        inference_framework="vllm",
+        instruction="do not embed this in the query",
+        user_id="user-1",
+    )
+
+    reranker.rerank("raw query", ["raw document"])
+
+    assert calls[0][3]["json"] == {
+        "model": "Qwen3-Reranker-4B",
+        "query": "raw query",
+        "documents": ["raw document"],
+        "instruction": "do not embed this in the query",
+    }
+
+
+def test_secure_sglang_reranker_uses_instruct_field(monkeypatch):
+    calls = []
+
+    def request(method, url, user_id, **kwargs):
+        calls.append((method, url, user_id, kwargs))
+        return _Response({"results": [{"index": 0, "score": 0.5}]})
+
+    monkeypatch.setattr(secure_module, "request_user_outbound", request)
+    reranker = secure_module.SecureAPIReranker(
+        "https://rerank.example.test/v1",
+        model="Qwen3-Reranker-4B",
+        inference_framework="sglang",
+        instruction="use the fixed SGLang protocol",
+        user_id="user-1",
+    )
+
+    reranker.rerank("raw query", ["raw document"])
+
+    assert calls[0][3]["json"] == {
+        "model": "Qwen3-Reranker-4B",
+        "query": "raw query",
+        "documents": ["raw document"],
+        "instruct": "use the fixed SGLang protocol",
+    }
+
+
+@pytest.mark.parametrize("framework", ["vllm", "sglang"])
+@pytest.mark.parametrize("instruction", ["", "   "])
+def test_secure_reranker_omits_blank_instruction(
+    monkeypatch,
+    framework,
+    instruction,
+):
+    calls = []
+
+    def request(_method, _url, _user_id, **kwargs):
+        calls.append(kwargs)
+        return _Response({"results": []})
+
+    monkeypatch.setattr(secure_module, "request_user_outbound", request)
+    reranker = secure_module.SecureAPIReranker(
+        "https://rerank.example.test/v1",
+        inference_framework=framework,
+        instruction=instruction,
+        user_id="user-1",
+    )
+
+    reranker.rerank("raw query", ["raw document"])
+
+    assert "instruction" not in calls[0]["json"]
+    assert "instruct" not in calls[0]["json"]
+
+
+def test_secure_reranker_does_not_log_instruction_on_connection_failure(
+    monkeypatch,
+    caplog,
+):
+    secret_instruction = "secure-instruction-secret-do-not-log"
+
+    def request(*_args, **_kwargs):
+        raise RuntimeError(f"transport echoed {secret_instruction}")
+
+    monkeypatch.setattr(secure_module, "request_user_outbound", request)
+    reranker = secure_module.SecureAPIReranker(
+        "https://rerank.example.test/v1",
+        inference_framework="vllm",
+        instruction=secret_instruction,
+        user_id="user-1",
+    )
+
+    with caplog.at_level("ERROR", logger=secure_module.__name__):
+        assert reranker.test_connection() is False
+
+    assert secret_instruction not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+@pytest.mark.parametrize(
     ("framework", "endpoint", "expected"),
     [
         ("vllm", "https://rerank.test", "https://rerank.test/rerank"),

@@ -24,7 +24,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         --require-hashes --only-binary=:all: -r requirements/test-cpu.lock \
     && python -c "import importlib.metadata as m; assert m.version('setuptools') == '75.8.0'; assert m.version('wheel') == '0.45.1'; import torch; assert torch.__version__ == '2.6.0+cpu'; assert not torch.cuda.is_available()"
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md README_CN.md ./
+COPY docs/production-web-release.md docs/production-web-release.md
 COPY .env.example .dockerignore .gitignore .gitattributes ./
 COPY train_factory/ train_factory/
 COPY tests/ tests/
@@ -34,7 +35,10 @@ COPY scripts/materialize_compose_secrets.py scripts/scan_tracked_secrets.py scri
 COPY scripts/build_release.py scripts/
 COPY scripts/run_mysql_migration_tests.py scripts/compose_manifest.py scripts/compose_release.py scripts/promote_web_release.py scripts/verify_deployment.py scripts/
 COPY scripts/check_pytest_partitions.py scripts/validate_test_report.py scripts/run_compose_smoke.py scripts/
+COPY scripts/verify_inference_upstream.py scripts/
 COPY docker/Dockerfile docker/Dockerfile.test docker/Dockerfile.test.dockerignore docker/entrypoint.sh docker/docker-compose.yml docker/docker-compose.secrets.yml docker/docker-compose.cpu.yml docker/docker-compose.gpu-compat.yml docker/docker-compose.deployment.yml docker/docker-compose.release.yml docker/docker-compose.verify.yml docker/images.lock.env docker/init.sql docker/
+COPY docker/inference-contracts/ docker/inference-contracts/
+COPY docker/sglang-templates/ docker/sglang-templates/
 COPY docker/xinference-patches/ docker/xinference-patches/
 COPY web/nginx.conf web/vite.config.ts web/Dockerfile web/
 COPY secrets/README.md secrets/README.md

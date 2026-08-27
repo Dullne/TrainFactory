@@ -623,6 +623,7 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
         .splitlines()
     )
     dockerfile = (ROOT_DIR / "docker" / "Dockerfile.test").read_text(encoding="utf-8")
+    assert (ROOT_DIR / "scripts" / "verify_inference_upstream.py").is_file()
     assert ignore_lines[0] == "*"
     assert {
         ".env*",
@@ -650,6 +651,7 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
     for required in (
         "!pyproject.toml",
         "!README.md",
+        "!README_CN.md",
         "!.env.example",
         "!.dockerignore",
         "!.gitignore",
@@ -685,6 +687,7 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
         "!scripts/check_pytest_partitions.py",
         "!scripts/validate_test_report.py",
         "!scripts/run_compose_smoke.py",
+        "!scripts/verify_inference_upstream.py",
         "!docker/",
         "!docker/entrypoint.sh",
         "!docker/Dockerfile",
@@ -699,6 +702,10 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
         "!docker/docker-compose.verify.yml",
         "!docker/images.lock.env",
         "!docker/init.sql",
+        "!docker/inference-contracts/",
+        "!docker/inference-contracts/**",
+        "!docker/sglang-templates/",
+        "!docker/sglang-templates/**",
         "!docker/xinference-patches/",
         "!docker/xinference-patches/**",
         "!web/",
@@ -712,6 +719,7 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
     for source in (
         "pyproject.toml",
         "README.md",
+        "README_CN.md",
         ".env.example",
         ".dockerignore",
         ".gitignore",
@@ -736,6 +744,7 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
         "scripts/check_pytest_partitions.py",
         "scripts/validate_test_report.py",
         "scripts/run_compose_smoke.py",
+        "scripts/verify_inference_upstream.py",
         "docker/entrypoint.sh",
         "docker/Dockerfile",
         "docker/Dockerfile.test",
@@ -749,6 +758,8 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
         "docker/docker-compose.verify.yml",
         "docker/images.lock.env",
         "docker/init.sql",
+        "docker/inference-contracts/",
+        "docker/sglang-templates/",
         "docker/xinference-patches/",
         "web/nginx.conf",
         "web/vite.config.ts",
@@ -756,6 +767,7 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
         "secrets/README.md",
     ):
         assert source in dockerfile
+    assert "COPY scripts/verify_inference_upstream.py scripts/" in dockerfile
 
     def included(path):
         ignored = False
@@ -776,6 +788,7 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
     for source in (
         "pyproject.toml",
         "README.md",
+        "README_CN.md",
         ".env.example",
         ".dockerignore",
         ".gitignore",
@@ -801,6 +814,7 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
         "scripts/check_pytest_partitions.py",
         "scripts/validate_test_report.py",
         "scripts/run_compose_smoke.py",
+        "scripts/verify_inference_upstream.py",
         "docker/entrypoint.sh",
         "docker/Dockerfile",
         "docker/Dockerfile.test",
@@ -814,7 +828,10 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
         "docker/docker-compose.verify.yml",
         "docker/images.lock.env",
         "docker/init.sql",
+        "docker/inference-contracts/qwen3-compatibility.json",
+        "docker/sglang-templates/qwen3_reranker_no_think.jinja",
         "docker/xinference-patches/sentence_transformers_core.py",
+        "docker/xinference-patches/rerank_sentence_transformers_core.py",
         "web/nginx.conf",
         "web/vite.config.ts",
         "web/Dockerfile",

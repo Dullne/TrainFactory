@@ -11,35 +11,43 @@ docker_deployer_module = importlib.import_module(
 deployment_service_module = importlib.import_module(
     "train_factory.deployment.deployment_service"
 )
+launch_config_module = importlib.import_module(
+    "train_factory.deployment.launch_config"
+)
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
-def _capture_sglang_command(monkeypatch, *, allow_remote_code: bool) -> str:
+def _capture_sglang_command(monkeypatch, *, allow_remote_code: bool) -> list[str]:
     deployer = docker_deployer_module.DockerDeployer()
     captured = {}
     monkeypatch.setattr(deployer, "remove_container", lambda name: False)
-    monkeypatch.setattr(
-        docker_deployer_module,
-        "get_settings",
-        lambda: SimpleNamespace(allow_model_remote_code=allow_remote_code),
-        raising=False,
-    )
 
     def fake_run(command, timeout=30):
         captured["command"] = command
         return True, "container-id"
 
     monkeypatch.setattr(deployer, "_run_command", fake_run)
+    server_argv = launch_config_module.build_sglang_server_argv(
+        launch_config_module.parse_launch_config({"framework": "sglang"}),
+        model_path="/app/models/model-1",
+        served_model_name="untrusted/model",
+        port=10001,
+        gpu_memory_utilization=0.9,
+        model_type="reranker",
+        enable_lora=False,
+        max_loras=4,
+        max_lora_rank=64,
+        chat_template=None,
+        trust_remote_code=allow_remote_code,
+    )
     deployer.create_sglang_container(
         container_name="sglang-test",
         port=10001,
-        gpu_id=0,
-        model_path="/app/models/model-1",
-        model_name="untrusted/model",
-        model_type="reranker",
+        gpu_ids=(0,),
+        server_argv=server_argv,
     )
-    return captured["command"][-1]
+    return captured["command"]
 
 
 def test_sglang_remote_code_is_disabled_by_default(monkeypatch):
@@ -93,14 +101,19 @@ def test_trusted_launch_kwargs_force_the_operator_policy(monkeypatch):
     assert kwargs == {"model_kwargs": {}, "trust_remote_code": False}
 
 
-def test_xinference_patches_use_operator_remote_code_policy():
-    for relative_path in (
-        "docker/xinference-patches/sentence_transformers_core.py",
-        "docker/xinference-patches/rerank_sentence_transformers_core.py",
-    ):
-        source = (ROOT_DIR / relative_path).read_text(encoding="utf-8")
-        assert "ALLOW_MODEL_REMOTE_CODE" in source
-        assert "trust_remote_code=True" not in source
+def test_xinference_uses_digest_bound_guarded_compatibility_launcher():
+    compose_source = (ROOT_DIR / "docker/docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert (ROOT_DIR / "docker/inference-contracts/qwen3-compatibility.json").exists()
+    assert (
+        "./xinference-patches:/opt/trainfactory/xinference-patches:ro"
+    ) in compose_source
+    assert (
+        "./inference-contracts:/opt/trainfactory/inference-contracts:ro"
+    ) in compose_source
+    assert "apply_qwen3_compatibility.py" in compose_source
 
 
 def test_shared_xinference_receives_remote_code_policy():
