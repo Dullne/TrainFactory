@@ -8,7 +8,7 @@ from datetime import datetime
 from train_factory.core.time_utils import now_naive
 from typing import Optional, Dict, Any, ClassVar, Set
 from sqlmodel import SQLModel, Field
-from sqlalchemy import Index
+from sqlalchemy import Column, ForeignKey, Index, String
 import uuid
 
 
@@ -25,6 +25,7 @@ class LoadedAdapterDB(SQLModel, table=True):
         Index('idx_adapter_deployment', 'deployment_id'),
         Index('idx_adapter_source_task', 'source_task_id'),
         Index('idx_adapter_status', 'status'),
+        Index('idx_loaded_adapters_deployment_replica_id', 'deployment_replica_id'),
     )
 
     # === Primary Key ===
@@ -33,6 +34,14 @@ class LoadedAdapterDB(SQLModel, table=True):
 
     # === Deployment Reference ===
     deployment_id: str = Field(max_length=36, index=True)  # Related deployment ID
+    deployment_replica_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            String(36),
+            ForeignKey("deployment_replicas.replica_id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
 
     # === Adapter Info ===
     adapter_name: str = Field(max_length=255)  # Name used in vLLM/SGLang API
@@ -102,6 +111,7 @@ class LoadedAdapterDB(SQLModel, table=True):
         return {
             "adapter_id": self.adapter_id,
             "deployment_id": self.deployment_id,
+            "deployment_replica_id": self.deployment_replica_id,
             "adapter_name": self.adapter_name,
             "adapter_path": self.adapter_path,
             "source_task_id": self.source_task_id,

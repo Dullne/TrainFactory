@@ -27,9 +27,17 @@ from pymysql.constants import CLIENT
 ROOT_DIR = Path(__file__).parents[2]
 ALEMBIC_INI = ROOT_DIR / "train_factory" / "storage" / "migrations" / "alembic.ini"
 INIT_SQL = ROOT_DIR / "docker" / "init.sql"
-HEAD = "053_validate_lifecycle_schema"
+HEAD = "058_add_model_artifact_membership_gate"
 REVISION_049 = "049_dataset_lineage_edge_key"
 REVISION_052 = "052_generation_publication_staging"
+REAPPLIED_REVISIONS = (
+    "053_validate_lifecycle_schema",
+    "054_add_deployment_replicas",
+    "055_bind_configs_and_adapters_to_replicas",
+    "056_bind_sync_targets_to_replicas",
+    "057_add_replica_operation_fence",
+    "058_add_model_artifact_membership_gate",
+)
 _MUTATION = re.compile(r"^(ALTER|CREATE|DROP|UPDATE|DELETE|INSERT)\b", re.IGNORECASE)
 
 
@@ -326,7 +334,7 @@ def test_deployed_049_repairs_only_safe_missing_object_without_replaying_048_or_
         engine.dispose()
 
 
-def test_053_reapply_is_idempotent(mysql_url, monkeypatch):
+def test_lifecycle_schema_chain_reapply_is_idempotent(mysql_url, monkeypatch):
     _upgrade(monkeypatch, mysql_url, "head")
     _stamp(monkeypatch, mysql_url, REVISION_052)
     engine = _engine(mysql_url)
@@ -341,7 +349,7 @@ def test_053_reapply_is_idempotent(mysql_url, monkeypatch):
         business_mutations = [
             statement for statement in mutations if statement not in framework_updates
         ]
-        assert len(framework_updates) == 1
+        assert len(framework_updates) == len(REAPPLIED_REVISIONS)
         assert business_mutations == []
         assert _current_revision(engine) == HEAD
     finally:

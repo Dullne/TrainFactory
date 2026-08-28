@@ -7,6 +7,7 @@ Provides endpoints for managing LoRA adapters on deployments.
 import logging
 import posixpath
 from typing import Optional, List, Dict, Any
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
@@ -18,6 +19,11 @@ from ...auth.dependencies import (
 )
 from ...deployment.adapter_service import adapter_service
 from ...deployment.deployment_service import deployment_service
+from ...deployment.deployment_service import (
+    DeploymentReplicaNotFoundError,
+    ReplicaOperationBusyError,
+    ReplicaOperationLostError,
+)
 from ...storage.services.model_registry_service import model_registry_service
 from ...storage.services.training_task_service import training_task_service
 from ...storage.services.background_task_admission_service import (
@@ -30,6 +36,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+_ADAPTER_ROUTE_ERRORS = (
+    DeploymentReplicaNotFoundError,
+    ReplicaOperationBusyError,
+    ReplicaOperationLostError,
+    ValueError,
+)
+
+
+def _adapter_route_http_exception(exc: Exception) -> HTTPException:
+    """Map adapter lifecycle errors without collapsing not-found into 400."""
+    if isinstance(exc, DeploymentReplicaNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, (ReplicaOperationBusyError, ReplicaOperationLostError)):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
 # === Request/Response Models ===
 
 class LoadAdapterRequest(BaseModel):
@@ -38,18 +61,27 @@ class LoadAdapterRequest(BaseModel):
     adapter_path: str = Field(..., description="Path to adapter weights")
     source_task_id: Optional[str] = Field(default=None, description="Training task that created this adapter")
     source_model_id: Optional[str] = Field(default=None, description="Model registry ID if adapter is registered")
+    replica_id: Optional[UUID] = Field(
+        default=None,
+        description="Target deployment replica; required for multi-replica deployments",
+    )
 
 
 class LoadAdapterFromTaskRequest(BaseModel):
     """Load adapter from training task request."""
     task_id: str = Field(..., description="Training task ID")
     adapter_name: Optional[str] = Field(default=None, description="Custom name for the adapter (auto-generated if not specified)")
+    replica_id: Optional[UUID] = Field(
+        default=None,
+        description="Target deployment replica; required for multi-replica deployments",
+    )
 
 
 class AdapterResponse(BaseModel):
     """Adapter response."""
     adapter_id: str
     deployment_id: str
+    deployment_replica_id: Optional[str]
     adapter_name: str
     adapter_path: str
     source_task_id: Optional[str]
@@ -89,6 +121,7 @@ def _adapter_to_response(adapter: Dict[str, Any]) -> AdapterResponse:
     return AdapterResponse(
         adapter_id=adapter['adapter_id'],
         deployment_id=adapter['deployment_id'],
+        deployment_replica_id=adapter.get('deployment_replica_id'),
         adapter_name=adapter['adapter_name'],
         adapter_path=adapter['adapter_path'],
         source_task_id=adapter.get('source_task_id'),
@@ -229,11 +262,14 @@ async def load_adapter(
             adapter_path=adapter_path,
             source_task_id=request.source_task_id,
             source_model_id=request.source_model_id,
+            deployment_replica_id=(
+                str(request.replica_id) if request.replica_id is not None else None
+            ),
             user_id=user_id,
         )
         return _adapter_to_response(adapter)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except _ADAPTER_ROUTE_ERRORS as exc:
+        raise _adapter_route_http_exception(exc) from exc
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -270,11 +306,14 @@ async def load_adapter_from_task(
             adapter_name=adapter_name,
             adapter_path=adapter_path,
             source_task_id=request.task_id,
+            deployment_replica_id=(
+                str(request.replica_id) if request.replica_id is not None else None
+            ),
             user_id=user_id,
         )
         return _adapter_to_response(adapter)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except _ADAPTER_ROUTE_ERRORS as exc:
+        raise _adapter_route_http_exception(exc) from exc
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -286,6 +325,10 @@ async def load_adapter_from_task(
 async def unload_adapter(
     deployment_id: str,
     adapter_name: str,
+    replica_id: Optional[UUID] = Query(
+        default=None,
+        description="Target deployment replica; required for multi-replica deployments",
+    ),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Unload a LoRA adapter from a deployment."""
@@ -294,13 +337,20 @@ async def unload_adapter(
         deployment = deployment_service.get_deployment(deployment_id)
         deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
-        success = adapter_service.unload_adapter(deployment_id, adapter_name)
+        success = adapter_service.unload_adapter(
+            deployment_id,
+            adapter_name,
+            deployment_replica_id=(
+                str(replica_id) if replica_id is not None else None
+            ),
+            user_id=current_user["user_id"],
+        )
         if success:
             return {"message": f"Adapter '{adapter_name}' unloaded successfully"}
         else:
             raise HTTPException(status_code=500, detail="Failed to unload adapter")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except _ADAPTER_ROUTE_ERRORS as exc:
+        raise _adapter_route_http_exception(exc) from exc
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -309,6 +359,10 @@ async def unload_adapter(
 async def list_loaded_adapters(
     deployment_id: str,
     include_unloaded: bool = Query(default=False, description="Include unloaded/failed adapters"),
+    replica_id: Optional[UUID] = Query(
+        default=None,
+        description="Target deployment replica; required for multi-replica deployments",
+    ),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """List adapters loaded on a deployment."""
@@ -316,7 +370,17 @@ async def list_loaded_adapters(
     deployment = deployment_service.get_deployment(deployment_id)
     deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
-    adapters = adapter_service.list_loaded_adapters(deployment_id, include_unloaded)
+    try:
+        adapters = adapter_service.list_loaded_adapters(
+            deployment_id,
+            include_unloaded,
+            deployment_replica_id=(
+                str(replica_id) if replica_id is not None else None
+            ),
+            user_id=current_user["user_id"],
+        )
+    except _ADAPTER_ROUTE_ERRORS as exc:
+        raise _adapter_route_http_exception(exc) from exc
     return AdapterListResponse(
         adapters=[_adapter_to_response(a) for a in adapters]
     )
@@ -325,6 +389,10 @@ async def list_loaded_adapters(
 @router.post("/deployments/{deployment_id}/adapters/sync")
 async def sync_loaded_adapters(
     deployment_id: str,
+    replica_id: Optional[UUID] = Query(
+        default=None,
+        description="Target deployment replica; required for multi-replica deployments",
+    ),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Sync loaded adapters with actual state from inference service."""
@@ -332,7 +400,16 @@ async def sync_loaded_adapters(
     deployment = deployment_service.get_deployment(deployment_id)
     deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
-    updated = adapter_service.sync_loaded_adapters(deployment_id)
+    try:
+        updated = adapter_service.sync_loaded_adapters(
+            deployment_id,
+            deployment_replica_id=(
+                str(replica_id) if replica_id is not None else None
+            ),
+            user_id=current_user["user_id"],
+        )
+    except _ADAPTER_ROUTE_ERRORS as exc:
+        raise _adapter_route_http_exception(exc) from exc
     return {"message": f"Synced adapters, {updated} updated"}
 
 

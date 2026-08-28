@@ -348,9 +348,59 @@ export type DeploymentStatus =
   | 'restarting'
   | 'stopping'
   | 'stopped'
+  | 'degraded'
   | 'failed'
 export type InferenceFramework = 'xinference' | 'vllm' | 'sglang'
 export type HealthStatus = 'HEALTHY' | 'UNHEALTHY' | 'UNKNOWN'
+
+export interface ReplicaGpuOverride {
+  replica_index: number
+  gpu_ids: number[]
+}
+
+export interface CommonLaunchConfig {
+  tensor_parallel_size: number
+  pipeline_parallel_size: number
+  data_parallel_size: number
+  max_context_length?: number | null
+  max_concurrent_requests?: number | null
+  dtype: 'auto' | 'half' | 'float16' | 'bfloat16' | 'float' | 'float32'
+  quantization?: string | null
+  kv_cache_dtype: string
+  gpu_pool: number[]
+  replica_gpu_overrides: ReplicaGpuOverride[]
+  allow_gpu_reuse: boolean
+}
+
+export interface VllmLaunchConfig extends CommonLaunchConfig {
+  framework: 'vllm'
+  enable_expert_parallel: boolean
+  enforce_eager: boolean
+}
+
+export interface SglangLaunchConfig extends CommonLaunchConfig {
+  framework: 'sglang'
+  expert_parallel_size: number
+  attention_backend?: string | null
+}
+
+export type DeploymentLaunchConfig = VllmLaunchConfig | SglangLaunchConfig
+
+export interface DeploymentReplica {
+  replica_id: string
+  deployment_id: string
+  replica_index: number
+  endpoint: string
+  port: number
+  gpu_ids: number[]
+  status: DeploymentStatus
+  health_status: HealthStatus
+  error_message?: string | null
+  created_at?: string
+  updated_at?: string
+  started_at?: string | null
+  stopped_at?: string | null
+}
 
 export interface Deployment {
   deployment_id: string
@@ -359,6 +409,8 @@ export interface Deployment {
   deployment_name?: string
   xinference_endpoint: string
   replica: number
+  replica_instances?: DeploymentReplica[]
+  launch_config?: DeploymentLaunchConfig | null
   gpu_memory_utilization: number // Configured limit
   gpu_memory_used_mb?: number // Real-time usage in MB
   gpu_memory_used_percent?: number // Real-time usage percentage
@@ -401,6 +453,7 @@ export interface CreateDeploymentRequest {
   auto_start?: boolean
   external_api_config_id?: string
   config?: Record<string, unknown>
+  launch_config?: DeploymentLaunchConfig
 }
 
 export interface CreateContainerDeploymentRequest {
@@ -416,6 +469,7 @@ export interface CreateContainerDeploymentRequest {
   max_lora_rank?: number
   external_api_config_id?: string
   config?: Record<string, unknown>
+  launch_config?: DeploymentLaunchConfig
   auto_start?: boolean
 }
 
@@ -432,6 +486,7 @@ export interface UpdateDeploymentConfigRequest {
 export interface LoadedAdapter {
   adapter_id: string
   deployment_id: string
+  deployment_replica_id?: string
   adapter_name: string
   adapter_path: string
   source_task_id?: string
@@ -540,6 +595,8 @@ export type EvaluationTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed
 
 export interface EvaluationModelConfig {
   model_id?: string
+  deployment_id?: string
+  deployment_replica_id?: string
   endpoint: string
   model_name?: string
   name?: string
@@ -806,6 +863,7 @@ export interface SyncConfig {
   training_threshold: number
   training_config: Record<string, unknown> | null
   base_deployment_id: string | null
+  base_deployment_replica_id: string | null
   pending_record_count: number
   pending_training_samples: number
   total_record_count: number
@@ -832,6 +890,7 @@ export interface SyncTrainingTarget {
   training_config: Record<string, unknown>
   base_model_path: string
   base_deployment_id: string | null
+  base_deployment_replica_id: string | null
   training_threshold: number
   pending_training_samples: number
   total_training_samples: number
@@ -845,6 +904,25 @@ export interface SyncTrainingTarget {
   sort_order: number
   created_at: string
   updated_at: string
+}
+
+export interface CreateSyncTrainingTargetRequest {
+  target_name: string
+  model_type: string
+  data_phase: 'qa' | 'final'
+  training_method: string
+  training_config: Record<string, unknown>
+  base_model_path: string
+  base_deployment_id?: string | null
+  base_deployment_replica_id?: string | null
+  training_threshold: number
+  priority: number
+  sort_order: number
+}
+
+export interface ReplaceSyncTrainingTargetRequest
+  extends CreateSyncTrainingTargetRequest {
+  target_id: string
 }
 
 export interface SyncBatch {
@@ -902,11 +980,19 @@ export interface CreateSyncConfigRequest {
   sync_interval_seconds?: number
   generation_threshold?: number
   generation_mode?: string
-  generation_config?: Record<string, unknown>
+  generation_config?: Record<string, unknown> | null
   training_threshold?: number
-  training_config?: Record<string, unknown>
-  base_deployment_id?: string
+  training_config?: Record<string, unknown> | null
+  base_deployment_id?: string | null
+  base_deployment_replica_id?: string | null
+  training_targets?: CreateSyncTrainingTargetRequest[]
   is_active?: boolean
+}
+
+export type UpdateSyncConfigRequest = Partial<
+  Omit<CreateSyncConfigRequest, 'training_targets'>
+> & {
+  training_targets?: ReplaceSyncTrainingTargetRequest[]
 }
 
 export interface SyncStatusInfo {

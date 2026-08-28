@@ -3,15 +3,19 @@ Training task service for database operations.
 """
 
 import logging
-import posixpath
 from typing import Optional, List, Dict, Any, Tuple
 from train_factory.core.time_utils import now_naive
 from train_factory.utils.strict_json import sanitize_json_value
+from train_factory.utils.path_utils import (
+    artifact_path_uses_root,
+    canonicalize_artifact_path,
+)
 
 from sqlalchemy import case, or_, update
 from sqlmodel import select, func
 
 from ..database import get_session
+from ..entities.model_registry_entity import ModelRegistryDB
 from ..entities.training_task_entity import TrainingTaskDB
 from .dataset_service import (
     DatasetConsumptionUnavailableError,
@@ -20,6 +24,8 @@ from .dataset_service import (
     storage_reference_sets_overlap,
 )
 from .background_task_admission_service import background_task_admission_service
+from .model_registry_service import ModelDeletionInProgressError
+from .model_artifact_membership_service import lock_model_artifact_membership
 
 logger = logging.getLogger(__name__)
 
@@ -47,21 +53,108 @@ def _persisted_training_dataset_paths(task: TrainingTaskDB) -> set[str]:
     return paths
 
 
-def _normalize_artifact_path(value: Optional[str]) -> Optional[str]:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = posixpath.normpath(value.strip().replace("\\", "/"))
-    return normalized.rstrip("/") or "/"
-
-
 def _path_uses_artifact_root(candidate: Optional[str], root: Optional[str]) -> bool:
-    normalized_candidate = _normalize_artifact_path(candidate)
-    normalized_root = _normalize_artifact_path(root)
-    if not normalized_candidate or not normalized_root:
-        return False
-    return normalized_candidate == normalized_root or normalized_candidate.startswith(
-        normalized_root + "/"
+    return artifact_path_uses_root(candidate, root)
+
+
+def _persisted_training_model_paths(task: TrainingTaskDB) -> set[str]:
+    """Collect base and guide model artifacts used by one training task."""
+    paths = set()
+
+    def add_path(value: Any) -> None:
+        if isinstance(value, str) and value.strip():
+            paths.add(value.strip())
+
+    add_path(task.base_model_path)
+    if isinstance(task.loss_config, dict):
+        add_path(task.loss_config.get("guide_model"))
+    params = task.training_params or {}
+    if isinstance(params, dict):
+        add_path(params.get("base_model_path"))
+        nested_loss = params.get("loss_config")
+        if isinstance(nested_loss, dict):
+            add_path(nested_loss.get("guide_model"))
+    return paths
+
+
+def _lock_registry_models_for_training(
+    session,
+    task: TrainingTaskDB,
+    *,
+    membership_gate_locked: bool = False,
+) -> List[ModelRegistryDB]:
+    """Lock the membership gate, then matching models in stable ID order."""
+    if not membership_gate_locked:
+        lock_model_artifact_membership(session)
+    paths = _persisted_training_model_paths(task)
+    candidates = list(session.exec(select(ModelRegistryDB)).all())
+    matching_ids = sorted(
+        model.model_id
+        for model in candidates
+        if any(
+            _path_uses_artifact_root(path, model.model_path) for path in paths
+        )
     )
+    if not matching_ids:
+        return []
+    locked = list(
+        session.exec(
+            select(ModelRegistryDB)
+            .where(ModelRegistryDB.model_id.in_(matching_ids))
+            .order_by(ModelRegistryDB.model_id)
+            .with_for_update()
+        ).all()
+    )
+    if {model.model_id for model in locked} != set(matching_ids):
+        raise ModelDeletionInProgressError(
+            "Registry model membership changed while acquiring locks; retry"
+        )
+    if any(
+        not any(
+            _path_uses_artifact_root(path, model.model_path) for path in paths
+        )
+        for model in locked
+    ):
+        raise ModelDeletionInProgressError(
+            "Registry model paths changed while acquiring locks; retry"
+        )
+    return locked
+
+
+def _training_model_reference_signature(task: TrainingTaskDB) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            canonical
+            for path in _persisted_training_model_paths(task)
+            if (canonical := canonicalize_artifact_path(path)) is not None
+        )
+    )
+
+
+def _require_training_reference_signature(
+    task: TrainingTaskDB,
+    expected: tuple[str, ...],
+) -> None:
+    if _training_model_reference_signature(task) != expected:
+        raise ModelDeletionInProgressError(
+            "Training model references changed while acquiring locks; retry"
+        )
+
+
+def _require_training_model_paths_available(
+    models: List[ModelRegistryDB],
+    task: TrainingTaskDB,
+) -> None:
+    paths = _persisted_training_model_paths(task)
+    for model in models:
+        if not any(
+            _path_uses_artifact_root(path, model.model_path) for path in paths
+        ):
+            continue
+        if model.status == "deleting":
+            raise ModelDeletionInProgressError(
+                f"Model is being deleted: {model.model_id}"
+            )
 
 
 class TrainingTaskService:
@@ -119,6 +212,8 @@ class TrainingTaskService:
             )
             if task_id:
                 task.task_id = task_id
+            registry_models = _lock_registry_models_for_training(session, task)
+            _require_training_model_paths_available(registry_models, task)
             lock_datasets_for_consumption(
                 session,
                 storage_refs=_persisted_training_dataset_paths(task),
@@ -327,12 +422,47 @@ class TrainingTaskService:
     ) -> bool:
         """Atomically update task status without overwriting a concurrent transition."""
         with get_session() as session:
-            statement = select(TrainingTaskDB).where(TrainingTaskDB.task_id == task_id)
+            registry_models: List[ModelRegistryDB] = []
+            expected_reference_signature: tuple[str, ...] | None = None
+            if status in {"pending", "preparing", "running", "evaluating"}:
+                lock_model_artifact_membership(session)
+                candidate_statement = select(TrainingTaskDB).where(
+                    TrainingTaskDB.task_id == task_id
+                )
+                if run_token is not None:
+                    candidate_statement = candidate_statement.where(
+                        TrainingTaskDB.run_token == run_token
+                    )
+                candidate_task = session.exec(candidate_statement).first()
+                if candidate_task is None:
+                    return False
+                expected_reference_signature = (
+                    _training_model_reference_signature(candidate_task)
+                )
+                registry_models = _lock_registry_models_for_training(
+                    session,
+                    candidate_task,
+                    membership_gate_locked=True,
+                )
+            statement = (
+                select(TrainingTaskDB)
+                .where(TrainingTaskDB.task_id == task_id)
+                .with_for_update()
+            )
             if run_token is not None:
                 statement = statement.where(TrainingTaskDB.run_token == run_token)
             task = session.exec(statement).first()
             if not task:
                 return False
+            if expected_reference_signature is not None:
+                _require_training_reference_signature(
+                    task,
+                    expected_reference_signature,
+                )
+                _require_training_model_paths_available(
+                    registry_models,
+                    task,
+                )
 
             valid_statuses = set(TrainingTaskDB.VALID_TRANSITIONS)
             if status not in valid_statuses:
@@ -834,16 +964,51 @@ class TrainingTaskService:
     ) -> bool:
         """Update task output directory and optionally refresh training_params."""
         with get_session() as session:
-            statement = select(TrainingTaskDB).where(TrainingTaskDB.task_id == task_id)
+            registry_models: List[ModelRegistryDB] = []
+            expected_reference_signature: tuple[str, ...] | None = None
+            if training_params is not None:
+                lock_model_artifact_membership(session)
+                candidate_task = session.exec(
+                    select(TrainingTaskDB).where(TrainingTaskDB.task_id == task_id)
+                ).first()
+                if candidate_task is None:
+                    return False
+                expected_reference_signature = (
+                    _training_model_reference_signature(candidate_task)
+                )
+                prospective_candidate = TrainingTaskDB(
+                    **candidate_task.model_dump()
+                )
+                prospective_params = dict(training_params)
+                prospective_params["output_dir"] = output_dir
+                prospective_candidate.training_params = prospective_params
+                registry_models = _lock_registry_models_for_training(
+                    session,
+                    prospective_candidate,
+                    membership_gate_locked=True,
+                )
+            statement = (
+                select(TrainingTaskDB)
+                .where(TrainingTaskDB.task_id == task_id)
+                .with_for_update()
+            )
             task = session.exec(statement).first()
             if not task:
                 return False
+            if expected_reference_signature is not None:
+                _require_training_reference_signature(
+                    task,
+                    expected_reference_signature,
+                )
 
             task.output_dir = output_dir
             if training_params is not None:
                 training_params = dict(training_params)
                 training_params["output_dir"] = output_dir
                 task.training_params = training_params
+
+            if expected_reference_signature is not None:
+                _require_training_model_paths_available(registry_models, task)
 
             task.updated_at = now_naive()
             session.add(task)
@@ -884,10 +1049,62 @@ class TrainingTaskService:
                         TrainingTaskDB.status.in_(("preparing", "running")),
                     ]
                 )
-            statement = select(TrainingTaskDB).where(*conditions)
+            registry_models: List[ModelRegistryDB] = []
+            expected_reference_signature: tuple[str, ...] | None = None
+            membership_change = model_path is not None or training_params is not None
+            if membership_change:
+                lock_model_artifact_membership(session)
+                candidate_task = session.exec(
+                    select(TrainingTaskDB).where(*conditions)
+                ).first()
+                if candidate_task is None:
+                    return False
+                expected_reference_signature = (
+                    _training_model_reference_signature(candidate_task)
+                )
+                prospective_candidate = TrainingTaskDB(
+                    **candidate_task.model_dump()
+                )
+                if model_path is not None:
+                    prospective_candidate.base_model_path = model_path
+                if training_params is not None:
+                    prospective_params = dict(training_params)
+                    prospective_params.pop("_run_token", None)
+                    prospective_candidate.training_params = prospective_params
+                registry_models = _lock_registry_models_for_training(
+                    session,
+                    prospective_candidate,
+                    membership_gate_locked=True,
+                )
+            statement = (
+                select(TrainingTaskDB)
+                .where(*conditions)
+                .with_for_update()
+            )
             task = session.exec(statement).first()
             if not task:
                 return False
+            if expected_reference_signature is not None:
+                _require_training_reference_signature(
+                    task,
+                    expected_reference_signature,
+                )
+
+            # Construct a detached value object. ``model_copy`` preserves the
+            # SQLAlchemy instrumentation state of ORM-backed SQLModel rows and
+            # mutating that copy can dereference the attached parent instance.
+            prospective_task = TrainingTaskDB(**task.model_dump())
+            if model_path is not None:
+                prospective_task.base_model_path = model_path
+            if training_params is not None:
+                prospective_params = dict(training_params)
+                prospective_params.pop("_run_token", None)
+                prospective_task.training_params = prospective_params
+            if membership_change:
+                _require_training_model_paths_available(
+                    registry_models,
+                    prospective_task,
+                )
 
             values: Dict[str, Any] = {"updated_at": now_naive()}
             if model_path is not None:
@@ -960,17 +1177,44 @@ class TrainingTaskService:
         if not run_token:
             return False
         with get_session() as session:
-            task = session.exec(
+            lock_model_artifact_membership(session)
+            candidate_task = session.exec(
                 select(TrainingTaskDB).where(TrainingTaskDB.task_id == task_id)
+            ).first()
+            if candidate_task is None:
+                return False
+            expected_reference_signature = _training_model_reference_signature(
+                candidate_task
+            )
+            registry_models = _lock_registry_models_for_training(
+                session,
+                candidate_task,
+                membership_gate_locked=True,
+            )
+            task = session.exec(
+                select(TrainingTaskDB)
+                .where(TrainingTaskDB.task_id == task_id)
+                .with_for_update()
             ).first()
             if not task:
                 return False
             try:
+                _require_training_reference_signature(
+                    task,
+                    expected_reference_signature,
+                )
+                _require_training_model_paths_available(
+                    registry_models,
+                    task,
+                )
                 lock_datasets_for_consumption(
                     session,
                     storage_refs=_persisted_training_dataset_paths(task),
                 )
-            except DatasetDeletionInProgressError:
+            except (
+                DatasetDeletionInProgressError,
+                ModelDeletionInProgressError,
+            ):
                 return False
             result = session.exec(
                 update(TrainingTaskDB)
@@ -1044,18 +1288,45 @@ class TrainingTaskService:
         if not run_token:
             return False
         with get_session() as session:
-            task = session.exec(
+            lock_model_artifact_membership(session)
+            candidate_task = session.exec(
                 select(TrainingTaskDB).where(TrainingTaskDB.task_id == task_id)
+            ).first()
+            if candidate_task is None:
+                return False
+            expected_reference_signature = _training_model_reference_signature(
+                candidate_task
+            )
+            registry_models = _lock_registry_models_for_training(
+                session,
+                candidate_task,
+                membership_gate_locked=True,
+            )
+            task = session.exec(
+                select(TrainingTaskDB)
+                .where(TrainingTaskDB.task_id == task_id)
+                .with_for_update()
             ).first()
             if not task:
                 return False
             try:
+                _require_training_reference_signature(
+                    task,
+                    expected_reference_signature,
+                )
+                _require_training_model_paths_available(
+                    registry_models,
+                    task,
+                )
                 lock_datasets_for_consumption(
                     session,
                     storage_refs=_persisted_training_dataset_paths(task),
                     require_all_storage_refs=require_managed_datasets,
                 )
-            except DatasetConsumptionUnavailableError:
+            except (
+                DatasetConsumptionUnavailableError,
+                ModelDeletionInProgressError,
+            ):
                 return False
             result = session.exec(
                 update(TrainingTaskDB)

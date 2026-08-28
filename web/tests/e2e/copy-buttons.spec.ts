@@ -151,17 +151,30 @@ test.describe('配置页面 - API 测试弹窗复制按钮', () => {
 
 // ==================== 4. 部署页面 ====================
 test.describe('部署页面 - 复制按钮', () => {
-  test('端点复制按钮可见可点击', async ({ page }) => {
+  test('group 和选定副本可复制精确运行端点', async ({ page }) => {
     await page.goto('/deployments')
     await expect(page.getByRole('heading', { name: '部署列表' })).toBeVisible()
 
-    // 限定到容器名称单元格，找到复制按钮
-    const containerCell = page.getByRole('cell', { name: /xinference-dep-001/i })
-    const copyBtn = containerCell.locator('button').filter({ has: page.locator('.anticon-copy') }).first()
-    await expect(copyBtn).toBeVisible()
+    const groupRow = page.getByRole('row').filter({ hasText: 'xinference-deployment' })
+    const groupCopyButton = groupRow.getByRole('button', { name: /复制.*访问端点/ })
+    await expect(groupCopyButton).toBeVisible()
+    await groupCopyButton.click()
+    await expect
+      .poll(async () => page.evaluate(() => (window as Window & { __copiedText?: string }).__copiedText || ''))
+      .toBe('http://localhost:9997')
 
-    await copyBtn.dispatchEvent('click')
-    await expect(page.locator('.ant-message-success')).toBeVisible()
+    const replicaGroupRow = page.getByRole('row').filter({ hasText: 'vllm-lora-deployment' })
+    await replicaGroupRow.getByRole('button', { name: '展开副本' }).click()
+
+    const replicaEndpointCell = page.getByRole('cell', {
+      name: /^http:\/\/127\.0\.0\.1:8002 复制.*访问端点$/,
+    })
+    const replicaCopyButton = replicaEndpointCell.getByRole('button', { name: /复制.*访问端点/ })
+    await expect(replicaCopyButton).toBeVisible()
+    await replicaCopyButton.click()
+    await expect
+      .poll(async () => page.evaluate(() => (window as Window & { __copiedText?: string }).__copiedText || ''))
+      .toBe('http://127.0.0.1:8002')
   })
 
   test('Docker 命令复制按钮可见可点击', async ({ page }) => {

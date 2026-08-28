@@ -30,6 +30,12 @@ from .milvus_collection_service import (
     MilvusCollectionUnavailableError,
     lock_collection_for_consumption,
 )
+from .runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
+    generation_runtime_dependency_references,
+    lock_runtime_dependencies,
+    lock_runtime_task_for_transition,
+)
 
 logger = logging.getLogger(__name__)
 _RUN_TOKEN_UNSET = object()
@@ -121,6 +127,10 @@ class GenerationTaskService:
                 status=GenerationStatus.PENDING,
                 run_token=str(uuid.uuid4()),
                 user_id=user_id,
+            )
+            lock_runtime_dependencies(
+                session,
+                generation_runtime_dependency_references(task),
             )
             session.add(task)
             session.commit()
@@ -369,16 +379,30 @@ class GenerationTaskService:
         """Atomically claim a pending task and return its attempt token."""
         legacy_run_token = str(uuid.uuid4())
         with get_session() as session:
-            query = update(GenerationTaskDB).where(
+            conditions = [
                 GenerationTaskDB.task_id == task_id,
                 GenerationTaskDB.status == GenerationStatus.PENDING,
-            )
+            ]
             if expected_run_token is not _RUN_TOKEN_UNSET:
-                query = query.where(
+                conditions.append(
                     GenerationTaskDB.run_token == expected_run_token
                 )
+            try:
+                task = lock_runtime_task_for_transition(
+                    session,
+                    entity=GenerationTaskDB,
+                    conditions=tuple(conditions),
+                    reference_parser=(
+                        generation_runtime_dependency_references
+                    ),
+                )
+            except RuntimeDependencyUnavailableError:
+                session.rollback()
+                return None
+            if task is None:
+                return None
             result = session.exec(
-                query.values(
+                update(GenerationTaskDB).where(*conditions).values(
                     status=GenerationStatus.RUNNING,
                     run_token=func.coalesce(
                         GenerationTaskDB.run_token,
@@ -508,17 +532,27 @@ class GenerationTaskService:
             GenerationStatus.STOPPED,
         }
         with get_session() as session:
-            task = session.exec(
-                select(GenerationTaskDB)
-                .where(GenerationTaskDB.task_id == task_id)
-                .with_for_update()
-            ).first()
-            if task is None or task.status not in terminal_statuses:
+            conditions = [
+                GenerationTaskDB.task_id == task_id,
+                GenerationTaskDB.status.in_(terminal_statuses),
+            ]
+            if expected_run_token is not _RUN_TOKEN_UNSET:
+                conditions.append(
+                    GenerationTaskDB.run_token == expected_run_token
+                )
+            try:
+                task = lock_runtime_task_for_transition(
+                    session,
+                    entity=GenerationTaskDB,
+                    conditions=tuple(conditions),
+                    reference_parser=(
+                        generation_runtime_dependency_references
+                    ),
+                )
+            except RuntimeDependencyUnavailableError:
+                session.rollback()
                 return None
-            if (
-                expected_run_token is not _RUN_TOKEN_UNSET
-                and task.run_token != expected_run_token
-            ):
+            if task is None:
                 return None
             if task.run_token == new_run_token:
                 return None
@@ -703,14 +737,35 @@ class GenerationTaskService:
             raise ValueError(f"Invalid status: {status}")
 
         with get_session() as session:
-            if status == GenerationStatus.PENDING:
-                task = session.exec(
-                    select(GenerationTaskDB)
-                    .where(GenerationTaskDB.task_id == task_id)
-                    .with_for_update()
-                ).first()
-                if not task:
+            activation_task = None
+            if status in {
+                GenerationStatus.PENDING,
+                GenerationStatus.RUNNING,
+            }:
+                activation_conditions = [
+                    GenerationTaskDB.task_id == task_id,
+                    GenerationTaskDB.status.in_(allowed_sources[status]),
+                ]
+                if expected_run_token is not _RUN_TOKEN_UNSET:
+                    activation_conditions.append(
+                        GenerationTaskDB.run_token == expected_run_token
+                    )
+                try:
+                    activation_task = lock_runtime_task_for_transition(
+                        session,
+                        entity=GenerationTaskDB,
+                        conditions=tuple(activation_conditions),
+                        reference_parser=(
+                            generation_runtime_dependency_references
+                        ),
+                    )
+                except RuntimeDependencyUnavailableError:
+                    session.rollback()
                     return False
+                if activation_task is None:
+                    return False
+            if status == GenerationStatus.PENDING:
+                task = activation_task
                 fenced_output = session.exec(
                     select(DatasetDB.dataset_id)
                     .where(

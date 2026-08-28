@@ -65,6 +65,9 @@ from ...storage.services.milvus_collection_service import (
     MilvusCollectionUnavailableError,
     milvus_collection_service,
 )
+from ...storage.services.runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
+)
 from ...storage.services.dataset_lineage_service import dataset_lineage_service
 from ...storage.services.dataset_asset_service import dataset_asset_service
 from ...storage.services.background_task_admission_service import (
@@ -2173,6 +2176,8 @@ async def create_task(
     except MilvusCollectionUnavailableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DatasetConsumptionUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeDependencyUnavailableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     task_id = task["task_id"]
     created_attempt = generation_task_service.get_task_raw(task_id)

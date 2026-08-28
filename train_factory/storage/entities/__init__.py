@@ -2,7 +2,9 @@
 
 from .training_task_entity import TrainingTaskDB
 from .model_registry_entity import ModelRegistryDB, ModelVersionDB
+from .model_artifact_membership_gate_entity import ModelArtifactMembershipGateDB
 from .deployment_entity import DeploymentDB
+from .deployment_replica_entity import DeploymentReplicaDB
 from .loaded_adapter_entity import LoadedAdapterDB
 from .model_config_entity import ModelConfigDB
 from .dataset_entity import DatasetDB
@@ -34,7 +36,9 @@ __all__ = [
     "TrainingTaskDB",
     "ModelRegistryDB",
     "ModelVersionDB",
+    "ModelArtifactMembershipGateDB",
     "DeploymentDB",
+    "DeploymentReplicaDB",
     "LoadedAdapterDB",
     "ModelConfigDB",
     "DatasetDB",

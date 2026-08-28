@@ -51,6 +51,7 @@ const ACTIVE_STATUSES = new Set([
   'pending',
   'preparing',
   'running',
+  'degraded',
   'stopping',
   'recovering',
   'publishing',
@@ -200,6 +201,8 @@ export function getAntdStatusColor(
     case 'training':
     case 'deploying':
       return 'processing'
+    case 'degraded':
+      return 'warning'
     case 'succeeded':
     case 'completed':
     case 'available':

@@ -17,6 +17,10 @@ from ..entities.milvus_collection_entity import (
     CollectionDatasetLinkDB,
 )
 from .dataset_service import lock_datasets_for_consumption
+from .runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
+    lock_embedding_model_config_for_binding,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,26 @@ class MilvusCollectionUnavailableError(RuntimeError):
 
 class MilvusCollectionDeletionOwnerConflictError(RuntimeError):
     """Raised when another logical operation owns a collection deletion fence."""
+
+
+def _lock_embedding_config_for_collection(
+    session,
+    embedding_config_id: Optional[str],
+    *,
+    user_id: Optional[str],
+):
+    if not embedding_config_id:
+        return None
+    try:
+        return lock_embedding_model_config_for_binding(
+            session,
+            embedding_config_id,
+            expected_user_id=user_id,
+        )
+    except RuntimeDependencyUnavailableError as exc:
+        raise MilvusCollectionUnavailableError(
+            "Embedding config is unavailable"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -77,7 +101,9 @@ def _lock_sync_namespace_tasks(session, collection_name: str):
 
     tasks = list(
         session.exec(
-            select(ExternalSyncTaskDB).with_for_update()
+            select(ExternalSyncTaskDB)
+            .order_by(ExternalSyncTaskDB.task_id)
+            .with_for_update()
         ).all()
     )
     claimants = [
@@ -119,6 +145,11 @@ class MilvusCollectionService:
                 raise ValueError("External sync task ID is too long")
         try:
             with get_session() as session:
+                _lock_embedding_config_for_collection(
+                    session,
+                    embedding_config_id,
+                    user_id=user_id,
+                )
                 sync_tasks, namespace_claimants = _lock_sync_namespace_tasks(
                     session,
                     collection_name,
@@ -218,6 +249,11 @@ class MilvusCollectionService:
             raise ValueError("Manual collection hybrid intent must be boolean")
         try:
             with get_session() as session:
+                _lock_embedding_config_for_collection(
+                    session,
+                    embedding_config_id,
+                    user_id=user_id,
+                )
                 _sync_tasks, namespace_claimants = _lock_sync_namespace_tasks(
                     session,
                     collection_name,

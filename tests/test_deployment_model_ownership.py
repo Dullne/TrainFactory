@@ -40,6 +40,7 @@ def _invoke_create_route(route_name: str, background_tasks: BackgroundTasks):
     return asyncio.run(
         deployment_routes.create_container_deployment(
             request=request,
+            background_tasks=background_tasks,
             current_user=current_user,
             idempotency_key="request-1",
         )

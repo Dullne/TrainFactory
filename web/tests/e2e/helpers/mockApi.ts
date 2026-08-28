@@ -688,6 +688,28 @@ export async function mockApi(
             enable_lora: true,
             max_loras: 4,
             max_lora_rank: 64,
+            replica_instances: [
+              {
+                replica_id: '11111111-1111-4111-8111-111111111111',
+                deployment_id: 'dep-002',
+                replica_index: 0,
+                endpoint: 'http://127.0.0.1:8000',
+                port: 8000,
+                gpu_ids: [0, 1],
+                status: 'running',
+                health_status: 'HEALTHY',
+              },
+              {
+                replica_id: '22222222-2222-4222-8222-222222222222',
+                deployment_id: 'dep-002',
+                replica_index: 1,
+                endpoint: 'http://127.0.0.1:8002',
+                port: 8002,
+                gpu_ids: [2, 3],
+                status: 'running',
+                health_status: 'HEALTHY',
+              },
+            ],
             status: 'running',
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -754,6 +776,25 @@ export async function mockApi(
         status: 'running',
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
+      })
+    }
+
+    const replicaActionMatch = path.match(
+      /\/api\/deployments\/([^/]+)\/replicas\/([^/]+)\/(start|stop|restart|recreate)$/
+    )
+    if (method === 'POST' && replicaActionMatch) {
+      const [, deploymentId, replicaId, action] = replicaActionMatch
+      return jsonResponse(route, {
+        replica_id: replicaId,
+        deployment_id: deploymentId,
+        replica_index: replicaId.startsWith('2222') ? 1 : 0,
+        endpoint: replicaId.startsWith('2222')
+          ? 'http://127.0.0.1:8002'
+          : 'http://127.0.0.1:8000',
+        port: replicaId.startsWith('2222') ? 8002 : 8000,
+        gpu_ids: replicaId.startsWith('2222') ? [2, 3] : [0, 1],
+        status: action === 'stop' ? 'stopped' : 'running',
+        health_status: action === 'stop' ? 'UNKNOWN' : 'HEALTHY',
       })
     }
 

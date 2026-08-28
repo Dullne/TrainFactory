@@ -28,6 +28,8 @@ from .download_storage_quota_service import (
     DownloadStorageReservation,
     download_storage_quota_service,
 )
+from .model_registry_service import ModelDeletionInProgressError
+from .model_artifact_membership_service import lock_model_artifact_membership
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +160,7 @@ class ModelDownloadService:
 
             # Create model registry record
             with get_session() as session:
+                lock_model_artifact_membership(session)
                 model = ModelRegistryDB(
                     model_id=registry_id,
                     model_name=model_name,
@@ -285,8 +288,12 @@ class ModelDownloadService:
             from sqlmodel import select
 
             model = session.exec(
-                select(ModelRegistryDB).where(ModelRegistryDB.model_id == registry_id)
+                select(ModelRegistryDB)
+                .where(ModelRegistryDB.model_id == registry_id)
+                .with_for_update()
             ).first()
+            if model and model.status == "deleting":
+                return
             if model and model.download_status == "pending":
                 session.delete(model)
                 session.commit()
@@ -367,6 +374,12 @@ class ModelDownloadService:
                 f"Model download completed: registry_id={registry_id}, size={file_size} bytes"
             )
 
+        except ModelDeletionInProgressError:
+            logger.info(
+                "Download worker yielded to model deletion for %s; "
+                "downloaded artifacts were left for the delete owner",
+                registry_id,
+            )
         except Exception as e:
             error_msg = str(e)
             logger.error(
@@ -480,14 +493,8 @@ class ModelDownloadService:
         error: Optional[str] = None,
     ):
         """Update download progress tracking in memory and database."""
-        # Update memory cache
-        if registry_id in self._download_progress:
-            self._download_progress[registry_id]["status"] = status
-            self._download_progress[registry_id]["progress"] = progress
-            if error:
-                self._download_progress[registry_id]["error"] = error
-
-        # Also update database for persistence
+        # Persist first so a model delete intent cannot be masked by a stale
+        # in-memory progress update.
         self._update_model_record(
             registry_id,
             status="available" if status == "available" else None,
@@ -495,6 +502,11 @@ class ModelDownloadService:
             download_progress=progress,
             download_error=error if error else None,
         )
+        if registry_id in self._download_progress:
+            self._download_progress[registry_id]["status"] = status
+            self._download_progress[registry_id]["progress"] = progress
+            if error:
+                self._download_progress[registry_id]["error"] = error
 
     def _update_model_record(
         self,
@@ -509,11 +521,17 @@ class ModelDownloadService:
         with get_session() as session:
             from sqlmodel import select
 
-            statement = select(ModelRegistryDB).where(
-                ModelRegistryDB.model_id == registry_id
+            statement = (
+                select(ModelRegistryDB)
+                .where(ModelRegistryDB.model_id == registry_id)
+                .with_for_update()
             )
             model = session.exec(statement).first()
             if model:
+                if model.status == "deleting":
+                    raise ModelDeletionInProgressError(
+                        f"Model is being deleted: {registry_id}"
+                    )
                 if status:
                     model.update_status(status)
                     # Backward compatibility: when caller doesn't explicitly set download_status.
@@ -540,6 +558,7 @@ class ModelDownloadService:
             models = session.exec(
                 select(ModelRegistryDB).where(
                     ModelRegistryDB.source_type == "downloaded",
+                    ModelRegistryDB.status != "deleting",
                     ModelRegistryDB.download_status.in_(["pending", "downloading"]),
                 )
             ).all()

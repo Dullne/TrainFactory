@@ -426,7 +426,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
         body.model = selectedRuntimeModel || config.model_name
       }
 
-      // 使用后端代理 API（自动处理 vLLM reranker 预格式化）
+      // 使用后端代理 API（按 vLLM reranker 的 Cohere 兼容格式转发）
       const result = await configApi.test(config.config_id, apiPath, body)
 
       if (!result.success) {

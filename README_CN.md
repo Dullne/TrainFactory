@@ -160,6 +160,18 @@
 
 </details>
 
+vLLM 和 SGLang 容器部署可直接在创建表单中配置常用启动参数，无需手写命令行：
+
+- 独立实例数量，以及每个实例的端口和 GPU 分配
+- 张量、流水线和数据并行度（`TP`、`PP`、`DP`）
+- 上下文长度、最大并发请求数、数据类型和量化方式
+- KV Cache 数据类型和 GPU 显存利用率
+- vLLM 的专家并行与 Eager 执行
+- SGLang 的专家并行与 Attention Backend
+
+每个副本都是具有独立端点和生命周期操作的推理实例。TrainFactory 不额外内置
+应用层负载均衡；可以通过 Kubernetes、Ingress 或其他负载均衡层发布所选端点。
+
 ### 模型配置
 
 <details>
@@ -429,10 +441,6 @@ Compose manifest 与 `scripts/compose_release.py` 执行，禁止把
 python -I scripts/build_release.py --check
 python -I scripts/build_release.py --build
 ```
-
-仅升级 Web 且保持 API 容器不变时，必须遵循
-[生产 Web-only 发布运行手册](docs/production-web-release.md)。该手册明确了不可变镜像命令、
-事务恢复规则以及 HTTP 验证的准确边界。
 
 迁移 `053_validate_lifecycle_schema` 的 `downgrade()` 特意保持非破坏：回退
 Alembic revision 不会删除已修复的 schema 或数据。它不是生产回滚机制；生产

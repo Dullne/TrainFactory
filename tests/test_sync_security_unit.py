@@ -207,6 +207,149 @@ def test_target_create_rechecks_deleting_parent_inside_operation_lock(monkeypatc
     assert events == [("lock", "sync-target-fence")]
 
 
+@pytest.mark.parametrize("operation", ["start", "stop"])
+def test_sync_worker_control_revalidates_owner_and_forwards_it_to_update(
+    monkeypatch,
+    operation,
+):
+    events = []
+    task_id = f"sync-{operation}-owner"
+    task = {
+        "task_id": task_id,
+        "user_id": "user-1",
+        "status": "idle",
+        "is_active": operation == "stop",
+    }
+
+    def get_task(_task_id):
+        events.append("get")
+        return dict(task)
+
+    def update_task(_task_id, **kwargs):
+        events.append(("update", kwargs))
+        return {**task, **kwargs}
+
+    @asynccontextmanager
+    async def operation_lock(_task_id):
+        events.append("lock-enter")
+        yield
+        events.append("lock-exit")
+
+    async def stop_worker(_task_id):
+        events.append("stop-worker")
+
+    monkeypatch.setattr(external_sync_service, "get_task", get_task)
+    monkeypatch.setattr(external_sync_service, "update_task", update_task)
+    monkeypatch.setattr(
+        sync_manager_module.sync_manager,
+        "task_operation_lock",
+        operation_lock,
+    )
+    monkeypatch.setattr(
+        sync_manager_module.sync_manager,
+        "start_worker",
+        lambda _task_id: events.append("start-worker"),
+    )
+    monkeypatch.setattr(
+        sync_manager_module.sync_manager,
+        "stop_worker",
+        stop_worker,
+    )
+    monkeypatch.setattr(
+        sync_manager_module.sync_manager,
+        "get_worker_status",
+        lambda _task_id: "running" if operation == "start" else "stopped",
+    )
+
+    if operation == "start":
+        asyncio.run(sync_routes.start_sync(task_id, CURRENT_USER))
+        assert events == [
+            "get",
+            "lock-enter",
+            "get",
+            ("update", {"expected_user_id": "user-1", "is_active": True}),
+            "lock-exit",
+            "start-worker",
+        ]
+    else:
+        asyncio.run(sync_routes.stop_sync(task_id, CURRENT_USER))
+        assert events == [
+            "get",
+            "lock-enter",
+            "get",
+            (
+                "update",
+                {
+                    "expected_user_id": "user-1",
+                    "is_active": False,
+                    "status": "idle",
+                },
+            ),
+            "stop-worker",
+            "lock-exit",
+        ]
+
+
+def test_stop_sync_rejects_owner_drift_before_worker_side_effect(monkeypatch):
+    snapshots = iter(
+        (
+            {
+                "task_id": "sync-stop-drift",
+                "user_id": "user-1",
+                "status": "idle",
+                "is_active": True,
+            },
+            {
+                "task_id": "sync-stop-drift",
+                "user_id": "user-2",
+                "status": "idle",
+                "is_active": True,
+            },
+        )
+    )
+    side_effects = []
+
+    @asynccontextmanager
+    async def operation_lock(_task_id):
+        yield
+
+    monkeypatch.setattr(
+        external_sync_service,
+        "get_task",
+        lambda _task_id: next(snapshots),
+    )
+    monkeypatch.setattr(
+        external_sync_service,
+        "update_task",
+        lambda *_args, **_kwargs: side_effects.append("update"),
+    )
+    monkeypatch.setattr(
+        sync_manager_module.sync_manager,
+        "task_operation_lock",
+        operation_lock,
+    )
+
+    async def stop_worker(_task_id):
+        side_effects.append("stop-worker")
+
+    monkeypatch.setattr(
+        sync_manager_module.sync_manager,
+        "stop_worker",
+        stop_worker,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            sync_routes.stop_sync(
+                "sync-stop-drift",
+                CURRENT_USER,
+            )
+        )
+
+    assert exc_info.value.status_code == 403
+    assert side_effects == []
+
+
 def test_authenticated_sync_config_discards_user_controlled_milvus_target(monkeypatch):
     monkeypatch.setattr(
         sync_routes,
@@ -335,9 +478,129 @@ def test_sync_worker_revalidates_persisted_url_before_any_cycle_side_effect(monk
         )
 
 
+def test_create_sync_task_accepts_owned_generation_model_config_and_forwards_it(
+    monkeypatch,
+):
+    service_calls = []
+    generation_config = {
+        "eval_llm_config": {"config_id": "model-config-owned"}
+    }
+    monkeypatch.setattr(
+        model_config_service,
+        "get_config",
+        lambda _config_id: {
+            "config_id": "model-config-owned",
+            "user_id": "user-1",
+            "api_endpoint": "https://models.example.com/v1",
+        },
+    )
+    monkeypatch.setattr(
+        sync_routes,
+        "validate_user_outbound_url",
+        lambda url, _user_id: url,
+    )
+    monkeypatch.setattr(
+        external_sync_service,
+        "create_task",
+        lambda **kwargs: service_calls.append(kwargs)
+        or {"task_id": "sync-owned-create", "is_active": False},
+    )
+
+    response = asyncio.run(
+        sync_routes.create_sync_task(
+            sync_routes.SyncTaskCreateRequest(
+                task_name="owned-generation-config",
+                external_api_url="https://sync.example.com/data",
+                generation_config=generation_config,
+                is_active=False,
+            ),
+            CURRENT_USER,
+        )
+    )
+
+    assert response["task"]["task_id"] == "sync-owned-create"
+    assert service_calls[0]["user_id"] == "user-1"
+    assert service_calls[0]["generation_config"] == generation_config
+
+
+def test_update_sync_task_accepts_owned_generation_model_config_and_forwards_it(
+    monkeypatch,
+):
+    service_calls = []
+    generation_config = {
+        "rerank_config": {"config_id": "model-config-owned"}
+    }
+    persisted_task = {
+        "task_id": "sync-owned-update",
+        "user_id": "user-1",
+        "status": "idle",
+        "is_active": False,
+        "external_api_config_id": None,
+        "base_deployment_id": None,
+        "base_deployment_replica_id": None,
+    }
+
+    @asynccontextmanager
+    async def operation_lock(_task_id):
+        yield
+
+    monkeypatch.setattr(
+        model_config_service,
+        "get_config",
+        lambda _config_id: {
+            "config_id": "model-config-owned",
+            "user_id": "user-1",
+            "api_endpoint": "https://models.example.com/v1",
+        },
+    )
+    monkeypatch.setattr(
+        sync_routes,
+        "validate_user_outbound_url",
+        lambda url, _user_id: url,
+    )
+    monkeypatch.setattr(
+        external_sync_service,
+        "get_task",
+        lambda _task_id: dict(persisted_task),
+    )
+    monkeypatch.setattr(
+        external_sync_service,
+        "update_task",
+        lambda task_id, **kwargs: service_calls.append((task_id, kwargs))
+        or {**persisted_task, **kwargs},
+    )
+    monkeypatch.setattr(
+        sync_manager_module.sync_manager,
+        "task_operation_lock",
+        operation_lock,
+    )
+    monkeypatch.setattr(sync_manager_module.sync_manager, "_running", False)
+
+    response = asyncio.run(
+        sync_routes.update_sync_task(
+            "sync-owned-update",
+            sync_routes.SyncTaskUpdateRequest(
+                generation_config=generation_config,
+            ),
+            CURRENT_USER,
+        )
+    )
+
+    assert response["task"]["generation_config"] == generation_config
+    assert service_calls == [
+        (
+            "sync-owned-update",
+            {
+                "expected_user_id": "user-1",
+                "generation_config": generation_config,
+            },
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     "config_key",
-    ["llm_config", "embedding_config", "rerank_config"],
+    ["llm_config", "eval_llm_config", "embedding_config", "rerank_config"],
 )
 def test_create_sync_task_rejects_foreign_generation_model_config(
     monkeypatch,
@@ -376,9 +639,19 @@ def test_create_sync_task_rejects_foreign_generation_model_config(
         )
 
     assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Not authorized to use this model config"
 
 
-def test_update_sync_task_rejects_ownerless_generation_model_config(monkeypatch):
+@pytest.mark.parametrize(
+    "config_key",
+    ["llm_config", "eval_llm_config", "embedding_config", "rerank_config"],
+)
+@pytest.mark.parametrize("owner_id", [None, "user-2"])
+def test_update_sync_task_rejects_unowned_generation_model_config(
+    monkeypatch,
+    config_key,
+    owner_id,
+):
     monkeypatch.setattr(
         external_sync_service,
         "get_task",
@@ -388,8 +661,8 @@ def test_update_sync_task_rejects_ownerless_generation_model_config(monkeypatch)
         model_config_service,
         "get_config",
         lambda _config_id: {
-            "config_id": "model-config-ownerless",
-            "user_id": None,
+            "config_id": "private-model-config",
+            "user_id": owner_id,
             "api_endpoint": "https://models.example.com/v1",
         },
     )
@@ -397,7 +670,7 @@ def test_update_sync_task_rejects_ownerless_generation_model_config(monkeypatch)
         external_sync_service,
         "update_task",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("ownerless model config must not be persisted")
+            AssertionError("unowned model config must not be persisted")
         ),
     )
 
@@ -407,7 +680,7 @@ def test_update_sync_task_rejects_ownerless_generation_model_config(monkeypatch)
                 "sync-owned",
                 sync_routes.SyncTaskUpdateRequest(
                     generation_config={
-                        "llm_config": {"config_id": "model-config-ownerless"},
+                        config_key: {"config_id": "private-model-config"},
                     },
                 ),
                 CURRENT_USER,
@@ -415,6 +688,8 @@ def test_update_sync_task_rejects_ownerless_generation_model_config(monkeypatch)
         )
 
     assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Not authorized to use this model config"
+    assert "private-model-config" not in exc_info.value.detail
 
 
 def test_create_sync_task_rejects_missing_generation_model_config(monkeypatch):
@@ -649,8 +924,7 @@ def test_target_update_rejects_target_from_different_parent(monkeypatch):
     assert exc_info.value.status_code == 404
 
 
-@pytest.mark.parametrize("operation", ["update", "delete"])
-def test_active_training_target_rejects_user_mutation(monkeypatch, operation):
+def test_active_training_target_rejects_user_delete(monkeypatch):
     monkeypatch.setattr(
         external_sync_service,
         "get_task",
@@ -671,23 +945,13 @@ def test_active_training_target_rejects_user_mutation(monkeypatch, operation):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        if operation == "update":
-            asyncio.run(
-                sync_routes.update_training_target(
-                    "task-owned",
-                    "target-active",
-                    sync_routes.TrainingTargetUpdateRequest(target_name="changed"),
-                    CURRENT_USER,
-                )
+        asyncio.run(
+            sync_routes.delete_training_target(
+                "task-owned",
+                "target-active",
+                CURRENT_USER,
             )
-        else:
-            asyncio.run(
-                sync_routes.delete_training_target(
-                    "task-owned",
-                    "target-active",
-                    CURRENT_USER,
-                )
-            )
+        )
 
     assert exc_info.value.status_code == 409
 
@@ -776,6 +1040,35 @@ def test_post_training_target_resolution_rejects_foreign_deployment(monkeypatch)
             },
             "sync-sec",
         )
+
+
+def test_post_training_explicit_missing_deployment_never_auto_falls_back(
+    monkeypatch,
+):
+    discovered = []
+    monkeypatch.setattr(
+        deployment_service,
+        "get_deployment",
+        lambda _deployment_id: None,
+    )
+    monkeypatch.setattr(
+        post_training_handler,
+        "_find_compatible_deployment",
+        lambda *_args, **_kwargs: discovered.append(True) or "deployment-fallback",
+    )
+
+    resolved = post_training_handler._resolve_deployment_id(
+        {
+            "task_id": "task-explicit",
+            "user_id": "user-1",
+            "base_deployment_id": "deployment-missing",
+            "training_config": {"base_model_path": "/models/base"},
+        },
+        "sync-sec",
+    )
+
+    assert resolved is None
+    assert discovered == []
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
@@ -51,8 +51,17 @@ import type {
   ExternalApiConfig,
   TrainingTask,
   SyncTrainingTarget,
+  CreateSyncConfigRequest,
+  CreateSyncTrainingTargetRequest,
+  UpdateSyncConfigRequest,
 } from '@/types'
 import { TEXT_SECONDARY, BG_ELEVATED } from '@/theme'
+import {
+  getAutomaticHealthyReplicaId,
+  getHealthyDeploymentReplicas,
+  isHealthyDeploymentReplicaBinding,
+  isSelectableSyncDeployment,
+} from './deploymentReplicaPolicy'
 
 const { Title, Text } = Typography
 
@@ -261,13 +270,58 @@ function populateTrainingFields(
   if (trainCfg.loss_config) form.setFieldValue('loss_config', trainCfg.loss_config)
 }
 
+function buildTrainingTargetPayload(
+  target: TrainingTargetFormState,
+): CreateSyncTrainingTargetRequest {
+  const trainingConfig: Record<string, unknown> = {
+    lora_r: target.lora_r,
+    lora_alpha: target.lora_alpha,
+    lora_dropout: target.lora_dropout,
+    num_train_epochs: target.num_train_epochs,
+    per_device_train_batch_size: target.per_device_train_batch_size,
+    learning_rate: target.learning_rate,
+    warmup_ratio: target.warmup_ratio,
+    gradient_accumulation_steps: target.gradient_accumulation_steps,
+  }
+  if (target.mixed_precision === 'bf16') trainingConfig.bf16 = true
+  if (target.mixed_precision === 'fp16') trainingConfig.fp16 = true
+  if (target.max_length) trainingConfig.max_length = target.max_length
+  if (target.gpu_ids?.length) trainingConfig.gpu_ids = target.gpu_ids
+  if (target.embedding_loss_name) trainingConfig.embedding_loss_name = target.embedding_loss_name
+  if (target.reranker_loss_name && target.reranker_loss_name !== 'auto') {
+    trainingConfig.reranker_loss_name = target.reranker_loss_name
+  }
+  if (target.loss_config) trainingConfig.loss_config = target.loss_config
+  if (target.rl_config) trainingConfig.rl_config = target.rl_config
+
+  return {
+    target_name: target.target_name.trim(),
+    model_type: target.model_type,
+    data_phase: target.data_phase,
+    training_method: target.training_method,
+    base_model_path: target.base_model_path.trim(),
+    base_deployment_id: target.base_deployment_id || null,
+    base_deployment_replica_id: target.base_deployment_replica_id || null,
+    training_threshold: target.training_threshold,
+    priority: target.priority,
+    sort_order: target.sort_order,
+    training_config: trainingConfig,
+  }
+}
+
 export default function SyncConfigCreate() {
   const { taskId } = useParams<{ taskId: string }>()
   const isEditMode = !!taskId
   const navigate = useNavigate()
   const { t } = useTranslation(['sync', 'common'])
   const [form] = Form.useForm()
+  const watchedBaseDeploymentId = Form.useWatch('base_deployment_id', form)
+  const watchedBaseDeploymentReplicaId = Form.useWatch(
+    'base_deployment_replica_id',
+    form,
+  )
   const [loading, setLoading] = useState(false)
+  const submitInFlightRef = useRef(false)
   const [initialLoading, setInitialLoading] = useState(false)
   const [deployments, setDeployments] = useState<Deployment[]>([])
   const [baseModelId, setBaseModelId] = useState<string>('')
@@ -301,7 +355,23 @@ export default function SyncConfigCreate() {
   const [baseDataReady, setBaseDataReady] = useState(false)
   // Multi-target training
   const [trainingTargets, setTrainingTargets] = useState<TrainingTargetFormState[]>([])
-  const [initialTargetKeys, setInitialTargetKeys] = useState<string[]>([])
+
+  const clearDeploymentDerivedModelState = () => {
+    setBaseModelId('')
+    setBaseModelName('')
+    setBaseModelPath('')
+    setTrainingModelId('')
+    setTrainingModelName('')
+    setTrainingModelPath('')
+  }
+
+  const clearDeploymentSelection = () => {
+    form.setFieldsValue({
+      base_deployment_id: undefined,
+      base_deployment_replica_id: undefined,
+    })
+    clearDeploymentDerivedModelState()
+  }
 
   // Dependency chain: Generation → Training → Deployment
   const handleToggleGeneration = (checked: boolean) => {
@@ -309,6 +379,13 @@ export default function SyncConfigCreate() {
     if (!checked) {
       setEnableTraining(false)
       setEnableDeployment(false)
+      setTrainingTargets([])
+      clearDeploymentSelection()
+      form.setFieldsValue({
+        llm_config: undefined,
+        embedding_config: undefined,
+        rerank_config: undefined,
+      })
     }
   }
   const handleToggleTraining = (checked: boolean) => {
@@ -317,6 +394,8 @@ export default function SyncConfigCreate() {
       setEnableGeneration(true)
     } else {
       setEnableDeployment(false)
+      setTrainingTargets([])
+      clearDeploymentSelection()
     }
   }
   const handleToggleDeployment = (checked: boolean) => {
@@ -324,6 +403,8 @@ export default function SyncConfigCreate() {
     if (checked) {
       setEnableGeneration(true)
       setEnableTraining(true)
+    } else {
+      clearDeploymentSelection()
     }
   }
 
@@ -390,6 +471,27 @@ export default function SyncConfigCreate() {
       .catch(() => {})
   }, [])
 
+  useEffect(() => {
+    if (!baseDataReady || !watchedBaseDeploymentId) return
+    const selected = deployments.find(
+      (deployment) => deployment.deployment_id === watchedBaseDeploymentId,
+    )
+    const currentIsHealthy = getHealthyDeploymentReplicas(selected).some(
+      (replica) => replica.replica_id === watchedBaseDeploymentReplicaId,
+    )
+    if (currentIsHealthy) return
+    const nextReplicaId = getAutomaticHealthyReplicaId(selected)
+    if (watchedBaseDeploymentReplicaId !== nextReplicaId) {
+      form.setFieldValue('base_deployment_replica_id', nextReplicaId)
+    }
+  }, [
+    baseDataReady,
+    deployments,
+    form,
+    watchedBaseDeploymentId,
+    watchedBaseDeploymentReplicaId,
+  ])
+
   const fetchApiConfigs = () => {
     externalApiConfigApi
       .list()
@@ -455,12 +557,15 @@ export default function SyncConfigCreate() {
           setEnableTraining(true)
           setEnableDeployment(true)
           form.setFieldValue('base_deployment_id', task.base_deployment_id)
+          form.setFieldValue(
+            'base_deployment_replica_id',
+            task.base_deployment_replica_id || undefined
+          )
         }
 
         // Multi-target training targets
         if (task.training_targets?.length) {
           setEnableTraining(true)
-          setInitialTargetKeys(task.training_targets.map((tt: SyncTrainingTarget) => tt.target_id))
           setTrainingTargets(
             task.training_targets.map((tt: SyncTrainingTarget) => ({
               key: tt.target_id,
@@ -472,6 +577,7 @@ export default function SyncConfigCreate() {
               base_model_id: '',
               base_model_name: '',
               base_deployment_id: tt.base_deployment_id || '',
+              base_deployment_replica_id: tt.base_deployment_replica_id || '',
               training_threshold: tt.training_threshold,
               priority: tt.priority,
               sort_order: tt.sort_order,
@@ -504,7 +610,6 @@ export default function SyncConfigCreate() {
             }))
           )
         } else {
-          setInitialTargetKeys([])
           setTrainingTargets([])
         }
       })
@@ -564,16 +669,12 @@ export default function SyncConfigCreate() {
     }
   }
 
-  const clearDeploymentDerivedModelState = () => {
-    setBaseModelId('')
-    setBaseModelName('')
-    setBaseModelPath('')
-    setTrainingModelId('')
-    setTrainingModelName('')
-    setTrainingModelPath('')
-  }
-
   const handleDeploymentChange = (deploymentId: string | undefined) => {
+    const selected = deployments.find((d) => d.deployment_id === deploymentId)
+    form.setFieldValue(
+      'base_deployment_replica_id',
+      getAutomaticHealthyReplicaId(selected),
+    )
     if (!deploymentId) {
       clearDeploymentDerivedModelState()
       return
@@ -713,10 +814,94 @@ export default function SyncConfigCreate() {
       message.error(t('apiConfig.selectPlaceholder'))
       return
     }
+    if (submitInFlightRef.current) return
+
+    submitInFlightRef.current = true
     setLoading(true)
     try {
+      const baseDeploymentId = (values.base_deployment_id as string) || ''
+      const baseDeploymentReplicaId =
+        (values.base_deployment_replica_id as string) || ''
+      let deploymentsForValidation = deployments
+      const hasDeploymentBinding =
+        (enableDeployment && Boolean(baseDeploymentId)) ||
+        trainingTargets.some((target) => Boolean(target.base_deployment_id))
+      if (hasDeploymentBinding) {
+        try {
+          const response = await deploymentApi.list({ page_size: 200 })
+          deploymentsForValidation = (response.items || []).filter((deployment) => {
+            if (!deployment.model_id) return true
+            const model = modelByIdMap.get(deployment.model_id)
+            return model ? !model.is_adapter : true
+          })
+          setDeployments(deploymentsForValidation)
+        } catch {
+          message.error(t('create.fields.deploymentReplicaRefreshFailed'))
+          return
+        }
+      }
       const usesTargetMode = enableTraining && trainingTargets.length > 0
-      const data: Record<string, unknown> = {
+      const targetNames = new Set<string>()
+      const validateReplicaBinding = (
+        deploymentId: string,
+        replicaId: string,
+        targetIndex?: number,
+      ): string | undefined => {
+        if (!deploymentId) {
+          return replicaId
+            ? t('create.fields.deploymentReplicaInvalid', { index: targetIndex })
+            : undefined
+        }
+        if (!replicaId) {
+          return t('create.fields.deploymentReplicaRequired')
+        }
+        if (
+          !isHealthyDeploymentReplicaBinding(
+            deploymentsForValidation,
+            deploymentId,
+            replicaId,
+          )
+        ) {
+          return t('create.fields.deploymentReplicaInvalid', { index: targetIndex })
+        }
+        return undefined
+      }
+
+      for (const [index, target] of trainingTargets.entries()) {
+        const targetName = target.target_name.trim()
+        if (!targetName) {
+          message.error(t('create.fields.targetNameRequired', { index: index + 1 }))
+          return
+        }
+        if (targetNames.has(targetName)) {
+          message.error(t('create.fields.targetNameDuplicate', { name: targetName }))
+          return
+        }
+        targetNames.add(targetName)
+        if (!target.base_model_path.trim()) {
+          message.error(t('create.fields.targetBaseModelRequired', { index: index + 1 }))
+          return
+        }
+        const replicaError = validateReplicaBinding(
+          target.base_deployment_id,
+          target.base_deployment_replica_id,
+          index + 1,
+        )
+        if (replicaError) {
+          message.error(replicaError)
+          return
+        }
+      }
+
+      if (enableDeployment) {
+        const replicaError = validateReplicaBinding(baseDeploymentId, baseDeploymentReplicaId)
+        if (replicaError) {
+          message.error(replicaError)
+          return
+        }
+      }
+
+      const data: CreateSyncConfigRequest = {
         task_name: values.task_name as string,
         external_api_config_id: selectedApiConfigId,
         sync_interval_seconds: values.sync_interval_seconds as number,
@@ -749,12 +934,13 @@ export default function SyncConfigCreate() {
             dedup: { enabled: Boolean(values.dedup_enabled) },
           },
         }
+      } else if (isEditMode) {
+        data.generation_config = null
       }
 
-      if (enableTraining) {
+      if (enableTraining && !usesTargetMode) {
         if (!effectiveModelPath) {
           message.error(t('create.fields.baseModelRequired'))
-          setLoading(false)
           return
         }
 
@@ -794,88 +980,39 @@ export default function SyncConfigCreate() {
           trainCfg.loss_config = values.loss_config
         }
         data.training_config = trainCfg
+      } else if (isEditMode) {
+        data.training_config = null
       }
 
       if (enableDeployment) {
-        data.base_deployment_id = (values.base_deployment_id as string) || undefined
+        data.base_deployment_id = baseDeploymentId || (isEditMode ? null : undefined)
+        data.base_deployment_replica_id =
+          baseDeploymentReplicaId || (isEditMode ? null : undefined)
+      } else if (isEditMode) {
+        data.base_deployment_id = null
+        data.base_deployment_replica_id = null
       }
 
-      const buildTargetPayload = (target: TrainingTargetFormState) => {
-        const targetTrainCfg: Record<string, unknown> = {
-          lora_r: target.lora_r,
-          lora_alpha: target.lora_alpha,
-          lora_dropout: target.lora_dropout,
-          num_train_epochs: target.num_train_epochs,
-          per_device_train_batch_size: target.per_device_train_batch_size,
-          learning_rate: target.learning_rate,
-          warmup_ratio: target.warmup_ratio,
-          gradient_accumulation_steps: target.gradient_accumulation_steps,
-        }
-        if (target.mixed_precision === 'bf16') targetTrainCfg.bf16 = true
-        if (target.mixed_precision === 'fp16') targetTrainCfg.fp16 = true
-        if (target.max_length) targetTrainCfg.max_length = target.max_length
-        if (target.gpu_ids?.length) targetTrainCfg.gpu_ids = target.gpu_ids
-        if (target.embedding_loss_name)
-          targetTrainCfg.embedding_loss_name = target.embedding_loss_name
-        if (target.reranker_loss_name && target.reranker_loss_name !== 'auto') {
-          targetTrainCfg.reranker_loss_name = target.reranker_loss_name
-        }
-        if (target.loss_config) targetTrainCfg.loss_config = target.loss_config
-        if (target.rl_config) targetTrainCfg.rl_config = target.rl_config
-
-        return {
-          target_name: target.target_name,
-          model_type: target.model_type,
-          data_phase: target.data_phase,
-          training_method: target.training_method,
-          base_model_path: target.base_model_path,
-          base_deployment_id: target.base_deployment_id || undefined,
-          training_threshold: target.training_threshold,
-          priority: target.priority,
-          sort_order: target.sort_order,
-          training_config: targetTrainCfg,
-        }
+      if (!isEditMode && usesTargetMode) {
+        data.training_targets = trainingTargets.map(buildTrainingTargetPayload)
       }
 
       if (isEditMode && taskId) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await syncApi.updateTask(taskId, data as any)
-
-        const nextTargetKeys = new Set(
-          enableTraining ? trainingTargets.map((target) => target.key) : []
-        )
-        for (const targetKey of initialTargetKeys) {
-          if (!nextTargetKeys.has(targetKey)) {
-            await syncApi.deleteTarget(taskId, targetKey)
-          }
+        const updateData: UpdateSyncConfigRequest = {
+          ...data,
+          training_targets: enableTraining
+            ? trainingTargets.map((target) => ({
+                target_id: target.key,
+                ...buildTrainingTargetPayload(target),
+              }))
+            : [],
         }
-
-        if (enableTraining) {
-          for (const target of trainingTargets) {
-            const payload = buildTargetPayload(target)
-            if (initialTargetKeys.includes(target.key)) {
-              await syncApi.updateTarget(taskId, target.key, payload)
-            } else {
-              await syncApi.createTarget(taskId, payload)
-            }
-          }
-        }
+        await syncApi.updateTask(taskId, updateData)
 
         message.success(t('create.message.updateSuccess'))
         navigate(`/sync/${taskId}`)
       } else {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const res = await syncApi.createTask(data as any)
-
-        // Create multi-target training targets
-        if (enableTraining && trainingTargets.length > 0) {
-          const newTaskId = res.task?.task_id
-          if (newTaskId) {
-            for (const target of trainingTargets) {
-              await syncApi.createTarget(newTaskId, buildTargetPayload(target))
-            }
-          }
-        }
+        await syncApi.createTask(data)
 
         message.success(t('create.message.createSuccess'))
         navigate('/sync')
@@ -885,6 +1022,7 @@ export default function SyncConfigCreate() {
         isEditMode ? t('create.message.updateFailed') : t('create.message.createFailed')
       )
     } finally {
+      submitInFlightRef.current = false
       setLoading(false)
     }
   }
@@ -915,6 +1053,7 @@ export default function SyncConfigCreate() {
         form={form}
         layout="vertical"
         onFinish={handleSubmit}
+        scrollToFirstError
         initialValues={{
           sync_interval_seconds: 300,
           generation_threshold: 500,
@@ -1883,6 +2022,7 @@ export default function SyncConfigCreate() {
                               model_path: m.base_model_path || m.model_path,
                               display_name: m.display_name,
                             }))}
+                            deployments={deployments}
                             onChange={updateTrainingTarget}
                           />
                         ),
@@ -1925,17 +2065,42 @@ export default function SyncConfigCreate() {
                       placeholder={t('create.fields.baseDeploymentPlaceholder')}
                       onChange={handleDeploymentChange}
                       options={deployments
-                        .filter(
-                          (d) =>
-                            d.inference_framework === 'vllm' || d.inference_framework === 'sglang'
-                        )
+                        .filter(isSelectableSyncDeployment)
                         .map((d) => ({
                           label: `${d.deployment_name || d.deployment_id.slice(0, 8)} [${d.inference_framework}] [${d.status}]${d.enable_lora ? ' LoRA' : ''}`,
                           value: d.deployment_id,
-                          disabled: d.status !== 'running',
                         }))}
                     />
                   </Form.Item>
+                  {(() => {
+                    const replicas =
+                      deployments.find((d) => d.deployment_id === watchedBaseDeploymentId)
+                        ?.replica_instances ?? []
+                    if (!watchedBaseDeploymentId || replicas.length === 0) return null
+                    return (
+                      <Form.Item
+                        name="base_deployment_replica_id"
+                        label={t('create.fields.deploymentReplica')}
+                        rules={[
+                          {
+                            required: true,
+                            message: t('create.fields.deploymentReplicaRequired'),
+                          },
+                        ]}
+                      >
+                        <Select
+                          placeholder={t('create.fields.deploymentReplicaPlaceholder')}
+                          options={replicas.map((replica) => ({
+                            label: `#${replica.replica_index} · ${replica.endpoint} · GPU ${replica.gpu_ids.join(',')}`,
+                            value: replica.replica_id,
+                            disabled:
+                              replica.status !== 'running' ||
+                              replica.health_status !== 'HEALTHY',
+                          }))}
+                        />
+                      </Form.Item>
+                    )
+                  })()}
                   {baseModelPath && (
                     <Form.Item label={t('create.fields.baseModelPath')}>
                       <Input value={baseModelPath} disabled />

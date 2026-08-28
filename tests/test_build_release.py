@@ -465,3 +465,4 @@ def test_operator_guidance_does_not_reference_removed_sglang_release():
         content = path.read_text(encoding="utf-8")
         assert "nightly-dev-20260127-53992403" not in content
         assert "docker.1ms.run/lmsysorg/sglang" not in content
+        assert "docs/production-web-release.md" not in content

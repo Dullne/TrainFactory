@@ -24,6 +24,9 @@ from ..entities.milvus_collection_entity import (
     MilvusCollectionDB,
 )
 from .milvus_collection_service import _lock_sync_namespace_tasks
+from .runtime_dependency_service import (
+    lock_embedding_model_config_for_binding,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +230,16 @@ class GenerationPublicationService:
         expected_dataset_ids = set(normalized_bindings.values())
         try:
             with self._session() as session:
+                if milvus_registration:
+                    embedding_config_id = milvus_registration.get(
+                        "embedding_config_id"
+                    )
+                    if embedding_config_id:
+                        lock_embedding_model_config_for_binding(
+                            session,
+                            embedding_config_id,
+                            expected_user_id=milvus_registration.get("user_id"),
+                        )
                 task = session.exec(
                     select(GenerationTaskDB)
                     .where(

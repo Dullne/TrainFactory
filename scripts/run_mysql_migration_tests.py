@@ -82,6 +82,11 @@ from scripts.materialize_compose_secrets import (  # noqa: E402
 
 ROOT_DIR = Path(_root_entry)
 INTEGRATION_TEST = ROOT_DIR / "tests" / "integration" / "test_mysql_migrations.py"
+APPROVED_INTEGRATION_TESTS = (
+    INTEGRATION_TEST,
+    ROOT_DIR / "tests" / "integration" / "test_mysql_sync_lock_order.py",
+)
+EXPECTED_INTEGRATION_TEST_COUNT = 15
 PROJECT_LABEL = "com.docker.compose.project"
 LOCAL_DOCKER_HOST = (
     "npipe:////./pipe/docker_engine"
@@ -360,6 +365,7 @@ def clean_pytest_environment(
     base: Mapping[str, str],
     *,
     test_url: str,
+    jwt_secret_key: str,
     runtime_root: Path | None = None,
     run_id: str | None = None,
     server_uuid: str | None = None,
@@ -376,6 +382,7 @@ def clean_pytest_environment(
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     environment["TRAINFACTORY_TEST_MYSQL_URL"] = test_url
+    environment["JWT_SECRET_KEY"] = jwt_secret_key
     if run_id is not None:
         environment["TRAINFACTORY_MYSQL_RUN_ID"] = run_id
     if server_uuid is not None:
@@ -395,6 +402,16 @@ def clean_pytest_environment(
             {name: os.fspath(path) for name, path in runtime_paths.items()}
         )
     return environment
+
+
+def _new_child_jwt_secret() -> str:
+    try:
+        entropy = secrets.token_bytes(32)
+    except Exception:
+        raise RunnerError("isolated MySQL child secret generation failed") from None
+    if not isinstance(entropy, bytes) or len(entropy) < 32:
+        raise RunnerError("isolated MySQL child secret generation failed")
+    return entropy.hex()
 
 
 def _docker_result(
@@ -676,7 +693,11 @@ def format_summary(summary: TestSummary) -> str:
 
 
 def require_complete_summary(summary: TestSummary) -> None:
-    if summary.passed != 6 or summary.skipped != 0 or summary.failures != 0:
+    if (
+        summary.passed != EXPECTED_INTEGRATION_TEST_COUNT
+        or summary.skipped != 0
+        or summary.failures != 0
+    ):
         raise RunnerError("MySQL migration test report is incomplete")
 
 
@@ -702,7 +723,7 @@ def pytest_command(report_path: Path, config_path: Path) -> list[str]:
         "-c",
         os.fspath(config_path),
         "-q",
-        os.fspath(INTEGRATION_TEST),
+        *(os.fspath(test_path) for test_path in APPROVED_INTEGRATION_TESTS),
         "--noconftest",
         "--import-mode=importlib",
         f"--rootdir={ROOT_DIR}",
@@ -900,6 +921,7 @@ def run_isolated_mysql(
 
     root_password = token_urlsafe(32)
     app_password = token_urlsafe(32)
+    jwt_secret_key = _new_child_jwt_secret()
     run_directory: Path | None = None
     pytest_runtime: Path | None = None
     created: list[str] = []
@@ -993,6 +1015,7 @@ def run_isolated_mysql(
         environment = clean_pytest_environment(
             os.environ,
             test_url=test_url,
+            jwt_secret_key=jwt_secret_key,
             runtime_root=pytest_runtime,
             run_id=identity.run_id,
             server_uuid=server_uuid,
@@ -1026,6 +1049,7 @@ def run_isolated_mysql(
             root_password.encode("utf-8"),
             app_password.encode("utf-8"),
             test_url.encode("utf-8"),
+            jwt_secret_key.encode("utf-8"),
         ):
             if private_value and (
                 private_value in report_payload

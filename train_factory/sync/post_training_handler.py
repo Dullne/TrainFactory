@@ -102,6 +102,7 @@ def _resolve_deployment_id(config: Dict[str, Any], tag: str) -> Optional[str]:
     external_api_config_id = (config.get("external_api_config_id") or "").strip()
 
     deployment_id = config.get("base_deployment_id")
+    has_explicit_deployment = bool(deployment_id)
     if deployment_id:
         dep = deployment_service.get_deployment(deployment_id)
         if not dep:
@@ -121,7 +122,7 @@ def _resolve_deployment_id(config: Dict[str, Any], tag: str) -> Optional[str]:
                 )
                 deployment_id = None
 
-    if not deployment_id:
+    if not deployment_id and not has_explicit_deployment:
         base_model_path = (config.get("training_config") or {}).get("base_model_path")
         if base_model_path:
             deployment_id = _find_compatible_deployment(
@@ -168,6 +169,337 @@ def _resolve_target_deployment_id(
     return deployment_id
 
 
+def _resolve_target_deployment_binding(
+    config: Dict[str, Any],
+    target: Dict[str, Any],
+    tag: str,
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve deployment and replica as one indivisible binding pair."""
+    deployment_id = _resolve_target_deployment_id(config, target, tag)
+    if target.get("base_deployment_id"):
+        return deployment_id, target.get("base_deployment_replica_id")
+    return deployment_id, config.get("base_deployment_replica_id")
+
+
+def _load_adapter_targets(config_id: str) -> list[Dict[str, Any]]:
+    from ..storage.services.external_sync_service import external_sync_service
+
+    return external_sync_service.list_training_targets_raw(
+        config_id,
+        is_active=None,
+    )
+
+
+def _adapter_reference_matches(
+    owner: Dict[str, Any],
+    adapter_id: Optional[str],
+    adapter_name: Optional[str],
+) -> bool:
+    owner_adapter_id = owner.get("current_adapter_id")
+    if adapter_id and owner_adapter_id:
+        return owner_adapter_id == adapter_id
+    return bool(
+        adapter_name
+        and owner.get("current_adapter_name") == adapter_name
+    )
+
+
+def _has_other_adapter_reference(
+    targets: list[Dict[str, Any]],
+    selected_target: Optional[Dict[str, Any]],
+    adapter_id: Optional[str],
+    adapter_name: Optional[str],
+) -> bool:
+    selected_target_id = (
+        selected_target.get("target_id") if selected_target else None
+    )
+    return any(
+        target.get("target_id") != selected_target_id
+        and _adapter_reference_matches(target, adapter_id, adapter_name)
+        for target in targets
+    )
+
+
+def _validate_adapter_training_owner(
+    config: Dict[str, Any],
+    selected_target: Optional[Dict[str, Any]],
+    training: Dict[str, Any],
+) -> None:
+    """Require adapter source metadata to match the exact task and target."""
+    expected_task_id = config.get("task_id")
+    expected_target_id = (
+        selected_target.get("target_id") if selected_target else None
+    )
+    if training.get("task_id") != expected_task_id:
+        raise ValueError("Loaded adapter training ownership mismatch")
+    if training.get("target_id") != expected_target_id:
+        raise ValueError("Loaded adapter training target ownership mismatch")
+
+    snapshot = training.get("target_config_snapshot") or {}
+    if (
+        "task_id" in snapshot
+        and snapshot.get("task_id") != expected_task_id
+    ):
+        raise ValueError("Loaded adapter snapshot task ownership mismatch")
+    if (
+        "target_id" in snapshot
+        and snapshot.get("target_id") != expected_target_id
+    ):
+        raise ValueError("Loaded adapter snapshot target ownership mismatch")
+
+
+def _get_persisted_adapter_binding(
+    adapter_service: Any,
+    config: Dict[str, Any],
+    selected_target: Optional[Dict[str, Any]],
+) -> Optional[tuple[str, Optional[str]]]:
+    """Read an owner's frozen runtime binding from adapter/training metadata."""
+    from ..storage.services.external_sync_service import external_sync_service
+
+    owner = selected_target or config
+    adapter_id = owner.get("current_adapter_id")
+    if not adapter_id:
+        return None
+    adapter = adapter_service.get_adapter(adapter_id)
+    if not adapter:
+        raise ValueError("Loaded adapter metadata not found")
+    if owner.get("current_adapter_name") and adapter.get(
+        "adapter_name"
+    ) != owner.get("current_adapter_name"):
+        raise ValueError("Loaded adapter name binding mismatch")
+    if adapter.get("user_id") != config.get("user_id"):
+        raise ValueError("Loaded adapter user binding mismatch")
+
+    source_training_id = adapter.get("source_task_id")
+    training = (
+        external_sync_service.get_training_by_task_id(source_training_id)
+        if source_training_id
+        else None
+    )
+    if not training:
+        raise ValueError("Loaded adapter training ownership mismatch")
+    _validate_adapter_training_owner(config, selected_target, training)
+    snapshot = training.get("target_config_snapshot") or {}
+    if {
+        "base_deployment_id",
+        "base_deployment_replica_id",
+    }.issubset(snapshot) and snapshot.get("base_deployment_id"):
+        return (
+            snapshot["base_deployment_id"],
+            snapshot.get("base_deployment_replica_id"),
+        )
+    deployment_id = adapter.get("deployment_id")
+    if not deployment_id:
+        raise ValueError("Loaded adapter deployment binding is missing")
+    return deployment_id, adapter.get("deployment_replica_id")
+
+
+def _resolve_owned_runtime_adapter(
+    *,
+    adapter_service: Any,
+    config: Dict[str, Any],
+    selected_target: Optional[Dict[str, Any]],
+    deployment_id: str,
+    deployment_replica_id: Optional[str],
+    loaded_adapters: list[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Resolve and validate exactly one sync-owned adapter, or fail closed."""
+    from ..storage.services.external_sync_service import external_sync_service
+
+    owner = selected_target or config
+    expected_adapter_id = owner.get("current_adapter_id")
+    expected_adapter_name = owner.get("current_adapter_name")
+    if not expected_adapter_id and not expected_adapter_name:
+        raise ValueError("No adapter currently loaded")
+
+    runtime_matches = [
+        adapter
+        for adapter in loaded_adapters
+        if (
+            adapter.get("adapter_id") == expected_adapter_id
+            if expected_adapter_id
+            else adapter.get("adapter_name") == expected_adapter_name
+        )
+    ]
+    if len(runtime_matches) != 1:
+        raise ValueError("Adapter runtime ownership mismatch")
+    runtime_adapter = runtime_matches[0]
+    adapter_id = runtime_adapter.get("adapter_id")
+    if not adapter_id:
+        raise ValueError("Loaded adapter metadata is missing adapter_id")
+    persisted_adapter = adapter_service.get_adapter(adapter_id)
+    if not persisted_adapter:
+        raise ValueError("Loaded adapter metadata not found")
+
+    expected_values = {
+        "adapter_id": adapter_id,
+        "adapter_name": expected_adapter_name or runtime_adapter.get("adapter_name"),
+        "deployment_id": deployment_id,
+        "deployment_replica_id": deployment_replica_id,
+        "user_id": config.get("user_id"),
+        "status": "loaded",
+    }
+    for field, expected in expected_values.items():
+        if persisted_adapter.get(field) != expected:
+            raise ValueError(f"Loaded adapter {field} binding mismatch")
+        if runtime_adapter.get(field) != expected:
+            raise ValueError(f"Adapter runtime {field} binding mismatch")
+
+    source_training_id = persisted_adapter.get("source_task_id")
+    if not source_training_id:
+        raise ValueError("Loaded adapter ownership metadata is missing")
+    if runtime_adapter.get("source_task_id") != source_training_id:
+        raise ValueError("Adapter runtime training ownership mismatch")
+    training = external_sync_service.get_training_by_task_id(source_training_id)
+    if not training:
+        raise ValueError("Loaded adapter training ownership mismatch")
+    _validate_adapter_training_owner(config, selected_target, training)
+    if training.get("loaded_adapter_id") != adapter_id:
+        raise ValueError("Loaded adapter training id ownership mismatch")
+    if training.get("loaded_adapter_name") != expected_values["adapter_name"]:
+        raise ValueError("Loaded adapter training name ownership mismatch")
+    if training.get("status") != SyncTrainingStatus.ADAPTER_LOADED:
+        raise ValueError("Loaded adapter training status ownership mismatch")
+
+    snapshot = training.get("target_config_snapshot") or {}
+    if {
+        "base_deployment_id",
+        "base_deployment_replica_id",
+    }.issubset(snapshot) and (
+        snapshot.get("base_deployment_id") != deployment_id
+        or snapshot.get("base_deployment_replica_id")
+        != deployment_replica_id
+    ):
+        raise ValueError("Loaded adapter training binding mismatch")
+    return persisted_adapter
+
+
+def _select_unload_target(
+    config: Dict[str, Any],
+    targets: list[Dict[str, Any]],
+    target_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Select an explicit target, with one-target legacy compatibility."""
+    config_id = config.get("task_id")
+    if target_id:
+        target = next(
+            (item for item in targets if item.get("target_id") == target_id),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"Training target not found: {target_id}")
+        if target.get("task_id") != config_id:
+            raise PermissionError("Training target belongs to another sync task")
+        return target
+
+    current_targets = [
+        target
+        for target in targets
+        if target.get("current_adapter_id") or target.get("current_adapter_name")
+    ]
+    if len(current_targets) > 1:
+        raise ValueError(
+            "target_id is required when multiple training targets have adapters"
+        )
+    if current_targets:
+        return current_targets[0]
+    if config.get("current_adapter_id") or config.get("current_adapter_name"):
+        return None
+    raise ValueError("No adapter currently loaded")
+
+
+def _clear_binding_adapter_state(
+    config: Dict[str, Any],
+    targets: list[Dict[str, Any]],
+    scoped_target_ids: tuple[Optional[str], ...],
+    *,
+    exclude_training_task_id: Optional[str] = None,
+    loaded_adapter_id: Optional[str] = None,
+    loaded_adapter_name: Optional[str] = None,
+    adapter_still_referenced: bool = False,
+) -> None:
+    """Release selected owner references and recompute the task summary."""
+    from ..storage.services.external_sync_service import external_sync_service
+
+    scoped_ids = {target_id for target_id in scoped_target_ids if target_id}
+    cleared_adapters = [
+        dict(target)
+        for target in targets
+        if target.get("target_id") in scoped_ids
+        and (target.get("current_adapter_id") or target.get("current_adapter_name"))
+    ]
+    for target in targets:
+        if target.get("target_id") not in scoped_ids:
+            continue
+        target_updates: Dict[str, Any] = {
+            "current_adapter_name": None,
+            "current_adapter_id": None,
+        }
+        if target.get("current_training_id") != exclude_training_task_id:
+            target_updates["current_training_id"] = None
+        external_sync_service.update_training_target(
+            target["target_id"],
+            **target_updates,
+        )
+        target.update(target_updates)
+
+    if not adapter_still_referenced:
+        mark_kwargs: Dict[str, Any] = {
+            "loaded_adapter_id": loaded_adapter_id,
+            "loaded_adapter_name": loaded_adapter_name,
+        }
+        if exclude_training_task_id:
+            mark_kwargs["exclude_training_task_id"] = (
+                exclude_training_task_id
+            )
+        external_sync_service.mark_all_trainings_adapter_unloaded(
+            config["task_id"],
+            **mark_kwargs,
+        )
+
+    summary_was_cleared = None in scoped_target_ids or any(
+        (
+            config.get("current_adapter_id")
+            and target.get("current_adapter_id") == config.get("current_adapter_id")
+        )
+        or (
+            not config.get("current_adapter_id")
+            and config.get("current_adapter_name")
+            and target.get("current_adapter_name")
+            == config.get("current_adapter_name")
+        )
+        for target in cleared_adapters
+    )
+    if not summary_was_cleared and (
+        config.get("current_adapter_id") or config.get("current_adapter_name")
+    ):
+        return
+
+    remaining = next(
+        (
+            target
+            for target in targets
+            if target.get("current_adapter_id") or target.get("current_adapter_name")
+        ),
+        None,
+    )
+    summary = {
+        "current_adapter_name": (
+            remaining.get("current_adapter_name") if remaining else None
+        ),
+        "current_adapter_id": (
+            remaining.get("current_adapter_id") if remaining else None
+        ),
+        "current_training_id": (
+            remaining.get("current_training_id")
+            if remaining
+            else exclude_training_task_id
+        ),
+    }
+    external_sync_service.update_task(config["task_id"], **summary)
+    config.update(summary)
+
+
 def load_adapter_for_training(
     config_id: str,
     training_task_id: str,
@@ -181,8 +513,8 @@ def load_adapter_for_training(
     Shared by both the automatic post-training callback and manual retry.
 
     Args:
-        replace: If True, unload all existing adapters before loading.
-                 If False, load alongside existing adapters.
+        replace: If True, release only this task/target's current adapter
+                 before loading. If False, load alongside it.
     """
     from ..storage.services.external_sync_service import external_sync_service
     from ..deployment.adapter_service import AdapterService
@@ -205,17 +537,60 @@ def load_adapter_for_training(
         sync_training = external_sync_service.get_training_by_task_id(training_task_id)
         if not sync_training or sync_training.get("task_id") != config_id:
             raise ValueError(f"Sync training not found for task: {training_task_id}")
-        target_id = target_id or sync_training.get("target_id")
+        training_target_id = sync_training.get("target_id")
+        if target_id is not None and target_id != training_target_id:
+            raise ValueError("Sync training target ownership mismatch")
+        target_id = training_target_id
+        binding_snapshot = sync_training.get("target_config_snapshot") or {}
+        has_binding_snapshot = {
+            "base_deployment_id",
+            "base_deployment_replica_id",
+        }.issubset(binding_snapshot)
 
-        external_sync_service.update_task(config_id, status=SyncStatus.LOADING_ADAPTER)
+        selected_target = None
         if target_id:
             from ..storage.services.external_sync_service import external_sync_service as _ess
             _target = _ess.get_training_target_raw(target_id)
             if not _target:
                 raise ValueError(f"Training target not found: {target_id}")
-            deployment_id = _resolve_target_deployment_id(config, _target, tag)
+            selected_target = _target
+            binding_target = dict(_target)
+            binding_config = dict(config)
+            if has_binding_snapshot:
+                binding_target["base_deployment_id"] = binding_snapshot.get(
+                    "base_deployment_id"
+                )
+                binding_target["base_deployment_replica_id"] = (
+                    binding_snapshot.get("base_deployment_replica_id")
+                )
+                binding_config["base_deployment_id"] = binding_snapshot.get(
+                    "base_deployment_id"
+                )
+                binding_config["base_deployment_replica_id"] = (
+                    binding_snapshot.get("base_deployment_replica_id")
+                )
+            deployment_id, deployment_replica_id = (
+                _resolve_target_deployment_binding(
+                    binding_config,
+                    binding_target,
+                    tag,
+                )
+            )
         else:
-            deployment_id = _resolve_deployment_id(config, tag)
+            binding_config = dict(config)
+            if has_binding_snapshot:
+                binding_config["base_deployment_id"] = binding_snapshot.get(
+                    "base_deployment_id"
+                )
+                binding_config["base_deployment_replica_id"] = (
+                    binding_snapshot.get("base_deployment_replica_id")
+                )
+            deployment_id = _resolve_deployment_id(binding_config, tag)
+            deployment_replica_id = binding_config.get(
+                "base_deployment_replica_id"
+            )
+        _validate_adapter_training_owner(config, selected_target, sync_training)
+        external_sync_service.update_task(config_id, status=SyncStatus.LOADING_ADAPTER)
         if not deployment_id:
             logger.info(f"[sync:{tag}] No compatible deployment found, skipping adapter loading")
             external_sync_service.update_training_status(
@@ -230,44 +605,73 @@ def load_adapter_for_training(
 
         # 1. Sync DB with actual vLLM state
         try:
-            adapter_service.sync_loaded_adapters(deployment_id)
+            adapter_service.sync_loaded_adapters(
+                deployment_id,
+                deployment_replica_id=deployment_replica_id,
+                user_id=config.get("user_id"),
+            )
         except Exception as e:
             logger.warning(f"[sync:{tag}] Failed to sync adapters: {e}")
+            raise
 
         if replace:
-            # Unload ALL loaded adapters before loading new one
-            loaded_adapters = adapter_service.list_loaded_adapters(deployment_id)
-            failed_unloads = []
-            for loaded in loaded_adapters:
-                adapter_name_to_unload = loaded.get("adapter_name")
-                try:
-                    adapter_service.unload_adapter(deployment_id, adapter_name_to_unload)
-                    logger.info(f"[sync:{tag}] Unloaded adapter: {adapter_name_to_unload}")
-                except Exception as e:
-                    logger.warning(f"[sync:{tag}] Failed to unload adapter '{adapter_name_to_unload}': {e}")
-                    failed_unloads.append(adapter_name_to_unload or "<unknown>")
-
-            # Keep DB/runtime state aligned: if any unload failed, abort replace flow.
-            if failed_unloads:
-                failed_text = ", ".join(failed_unloads)
-                raise RuntimeError(
-                    f"Failed to unload adapter(s): {failed_text}. "
-                    "Please retry after inference service recovers."
+            targets = _load_adapter_targets(config_id)
+            if selected_target and not any(
+                target.get("target_id") == selected_target.get("target_id")
+                for target in targets
+            ):
+                targets.append(selected_target)
+            owner = selected_target or config
+            if owner.get("current_adapter_id") or owner.get(
+                "current_adapter_name"
+            ):
+                loaded_adapters = adapter_service.list_loaded_adapters(
+                    deployment_id,
+                    deployment_replica_id=deployment_replica_id,
+                    user_id=config.get("user_id"),
                 )
-
-            # Clear sync task adapter reference
-            if config.get("current_adapter_name"):
-                external_sync_service.update_task(
-                    config_id,
-                    current_adapter_name=None,
-                    current_adapter_id=None,
+                owned_adapter = _resolve_owned_runtime_adapter(
+                    adapter_service=adapter_service,
+                    config=config,
+                    selected_target=selected_target,
+                    deployment_id=deployment_id,
+                    deployment_replica_id=deployment_replica_id,
+                    loaded_adapters=loaded_adapters,
                 )
-            # Mark ALL adapter_loaded training records as adapter_unloaded
-            # （排除本次要加载的训练，避免 replace 流程与并发加载互相覆盖）
-            external_sync_service.mark_all_trainings_adapter_unloaded(
-                config_id,
-                exclude_training_task_id=training_task_id,
-            )
+                adapter_id_to_release = owned_adapter.get("adapter_id")
+                adapter_name_to_release = owned_adapter.get("adapter_name")
+                still_referenced = _has_other_adapter_reference(
+                    targets,
+                    selected_target,
+                    adapter_id_to_release,
+                    adapter_name_to_release,
+                )
+                if not still_referenced:
+                    adapter_service.unload_adapter(
+                        deployment_id,
+                        adapter_name_to_release,
+                        deployment_replica_id=deployment_replica_id,
+                        user_id=config.get("user_id"),
+                    )
+                    logger.info(
+                        "[sync:%s] Unloaded owned adapter: %s",
+                        tag,
+                        adapter_name_to_release,
+                    )
+                scoped_target_ids = (
+                    (selected_target["target_id"],)
+                    if selected_target
+                    else (None,)
+                )
+                _clear_binding_adapter_state(
+                    config,
+                    targets,
+                    scoped_target_ids,
+                    exclude_training_task_id=training_task_id,
+                    loaded_adapter_id=adapter_id_to_release,
+                    loaded_adapter_name=adapter_name_to_release,
+                    adapter_still_referenced=still_referenced,
+                )
 
         # 2. Load new adapter
         # sync-{config_id[:8]}-{training_task_id[:8]}: traceable to both sync task and training
@@ -286,6 +690,7 @@ def load_adapter_for_training(
             adapter_path=final_model_path,
             source_task_id=training_task_id,
             user_id=user_id,
+            deployment_replica_id=deployment_replica_id,
         )
 
         logger.info(f"[sync:{tag}] Loaded new adapter: {adapter_name} (id={result.get('adapter_id', '')[:8]})")
@@ -311,6 +716,7 @@ def load_adapter_for_training(
                 target_id,
                 current_adapter_name=adapter_name,
                 current_adapter_id=result.get("adapter_id"),
+                current_training_id=training_task_id,
             )
 
         # 4. Update training record
@@ -429,8 +835,8 @@ def on_training_failed(training_task_id: str, error: str = ""):
     return recovery
 
 
-def unload_current_adapter(config_id: str):
-    """Unload all adapters from the sync task's deployment."""
+def unload_current_adapter(config_id: str, target_id: Optional[str] = None):
+    """Unload adapters from one target's deployment and replica binding."""
     from ..storage.services.external_sync_service import external_sync_service
     from ..deployment.adapter_service import AdapterService
 
@@ -447,49 +853,103 @@ def unload_current_adapter(config_id: str):
         )
 
     try:
-        deployment_id = _resolve_deployment_id(config, tag)
+        targets = _load_adapter_targets(config_id)
+        selected_target = _select_unload_target(config, targets, target_id)
+        adapter_service = AdapterService()
+        persisted_binding = _get_persisted_adapter_binding(
+            adapter_service,
+            config,
+            selected_target,
+        )
+        if selected_target is not None:
+            binding_target = dict(selected_target)
+            binding_config = dict(config)
+            if persisted_binding is not None:
+                binding_target["base_deployment_id"] = persisted_binding[0]
+                binding_target["base_deployment_replica_id"] = (
+                    persisted_binding[1]
+                )
+                binding_config["base_deployment_id"] = persisted_binding[0]
+                binding_config["base_deployment_replica_id"] = (
+                    persisted_binding[1]
+                )
+            deployment_id, deployment_replica_id = (
+                _resolve_target_deployment_binding(
+                    binding_config,
+                    binding_target,
+                    tag,
+                )
+            )
+        else:
+            binding_config = dict(config)
+            if persisted_binding is not None:
+                binding_config["base_deployment_id"] = persisted_binding[0]
+                binding_config["base_deployment_replica_id"] = (
+                    persisted_binding[1]
+                )
+            deployment_id = _resolve_deployment_id(binding_config, tag)
+            deployment_replica_id = binding_config.get(
+                "base_deployment_replica_id"
+            )
         if not deployment_id:
             raise ValueError("No compatible deployment found")
 
-        adapter_service = AdapterService()
-
-        # Sync DB with vLLM state first, then unload ALL loaded adapters
+        # Refresh runtime metadata before validating the exact owned adapter.
         try:
-            adapter_service.sync_loaded_adapters(deployment_id)
+            adapter_service.sync_loaded_adapters(
+                deployment_id,
+                deployment_replica_id=deployment_replica_id,
+                user_id=config.get("user_id"),
+            )
         except Exception as e:
             logger.warning(f"[sync:{tag}] Failed to sync adapters: {e}")
+            raise
 
-        loaded_adapters = adapter_service.list_loaded_adapters(deployment_id)
-        if not loaded_adapters and not config.get("current_adapter_name"):
-            raise ValueError("No adapter currently loaded")
-
-        failed_unloads = []
-        for loaded in loaded_adapters:
-            name = loaded.get("adapter_name")
-            try:
-                adapter_service.unload_adapter(deployment_id, name)
-                logger.info(f"[sync:{tag}] Unloaded adapter: {name}")
-            except Exception as e:
-                logger.warning(f"[sync:{tag}] Failed to unload adapter '{name}': {e}")
-                failed_unloads.append(name or "<unknown>")
-
-        # Do not clear DB state unless all unload operations succeed,
-        # otherwise service/runtime and DB state may diverge.
-        if failed_unloads:
-            failed_text = ", ".join(failed_unloads)
-            raise RuntimeError(
-                f"Failed to unload adapter(s): {failed_text}. "
-                "Please retry after inference service recovers."
-            )
-
-        # Clear adapter reference
-        external_sync_service.update_task(
-            config_id,
-            current_adapter_name=None,
-            current_adapter_id=None,
+        loaded_adapters = adapter_service.list_loaded_adapters(
+            deployment_id,
+            deployment_replica_id=deployment_replica_id,
+            user_id=config.get("user_id"),
         )
-
-        # Mark ALL adapter_loaded training records as adapter_unloaded
-        external_sync_service.mark_all_trainings_adapter_unloaded(config_id)
+        owned_adapter = _resolve_owned_runtime_adapter(
+            adapter_service=adapter_service,
+            config=config,
+            selected_target=selected_target,
+            deployment_id=deployment_id,
+            deployment_replica_id=deployment_replica_id,
+            loaded_adapters=loaded_adapters,
+        )
+        adapter_id_to_release = owned_adapter.get("adapter_id")
+        adapter_name_to_release = owned_adapter.get("adapter_name")
+        still_referenced = _has_other_adapter_reference(
+            targets,
+            selected_target,
+            adapter_id_to_release,
+            adapter_name_to_release,
+        )
+        if not still_referenced:
+            adapter_service.unload_adapter(
+                deployment_id,
+                adapter_name_to_release,
+                deployment_replica_id=deployment_replica_id,
+                user_id=config.get("user_id"),
+            )
+            logger.info(
+                "[sync:%s] Unloaded owned adapter: %s",
+                tag,
+                adapter_name_to_release,
+            )
+        scoped_target_ids = (
+            (selected_target["target_id"],)
+            if selected_target
+            else (None,)
+        )
+        _clear_binding_adapter_state(
+            config,
+            targets,
+            scoped_target_ids,
+            loaded_adapter_id=adapter_id_to_release,
+            loaded_adapter_name=adapter_name_to_release,
+            adapter_still_referenced=still_referenced,
+        )
     finally:
         lock.release()

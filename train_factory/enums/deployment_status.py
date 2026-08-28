@@ -9,6 +9,7 @@ class DeploymentStatus(str, Enum):
     PENDING = "pending"       # Waiting to start
     STARTING = "starting"     # Starting up
     RUNNING = "running"       # Running and serving
+    DEGRADED = "degraded"     # Some independent replicas are unavailable
     RESTARTING = "restarting" # Restarting (reload or container restart)
     STOPPING = "stopping"     # Shutting down
     STOPPED = "stopped"       # Stopped

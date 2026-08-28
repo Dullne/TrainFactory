@@ -30,6 +30,12 @@ from .milvus_collection_service import (
     MilvusCollectionUnavailableError,
     lock_collection_for_consumption,
 )
+from .runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
+    evaluation_runtime_dependency_references,
+    lock_runtime_dependencies,
+    lock_runtime_task_for_transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +96,10 @@ class DeepEvaluationTaskService:
                 workers=total_workers or 1,
                 status=EvaluationStatus.PENDING,
                 user_id=user_id,
+            )
+            lock_runtime_dependencies(
+                session,
+                evaluation_runtime_dependency_references(task),
             )
             dataset_ids, dataset_paths = _persisted_evaluation_dataset_references(task)
             lock_datasets_for_consumption(
@@ -203,13 +213,26 @@ class DeepEvaluationTaskService:
         """Atomically claim a pending DeepEval task for worker execution."""
         now = now_naive()
         with get_session() as session:
+            conditions = (
+                EvaluationTaskDB.task_id == task_id,
+                EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
+                EvaluationTaskDB.status == EvaluationStatus.PENDING,
+            )
+            try:
+                task = lock_runtime_task_for_transition(
+                    session,
+                    entity=EvaluationTaskDB,
+                    conditions=conditions,
+                    reference_parser=evaluation_runtime_dependency_references,
+                )
+            except RuntimeDependencyUnavailableError:
+                session.rollback()
+                return False
+            if task is None:
+                return False
             result = session.exec(
                 update(EvaluationTaskDB)
-                .where(
-                    EvaluationTaskDB.task_id == task_id,
-                    EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
-                    EvaluationTaskDB.status == EvaluationStatus.PENDING,
-                )
+                .where(*conditions)
                 .values(
                     status=EvaluationStatus.RUNNING,
                     started_at=func.coalesce(EvaluationTaskDB.started_at, now),
@@ -249,15 +272,31 @@ class DeepEvaluationTaskService:
         with get_session() as session:
             if status == EvaluationStatus.RUNNING:
                 now = now_naive()
-                result = session.exec(
-                    update(EvaluationTaskDB)
-                    .where(
-                        EvaluationTaskDB.task_id == task_id,
-                        EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
-                        EvaluationTaskDB.status.in_(
-                            (EvaluationStatus.PENDING, EvaluationStatus.RUNNING)
+                conditions = (
+                    EvaluationTaskDB.task_id == task_id,
+                    EvaluationTaskDB.eval_framework
+                    == EvaluationFramework.DEEPEVAL,
+                    EvaluationTaskDB.status.in_(
+                        (EvaluationStatus.PENDING, EvaluationStatus.RUNNING)
+                    ),
+                )
+                try:
+                    task = lock_runtime_task_for_transition(
+                        session,
+                        entity=EvaluationTaskDB,
+                        conditions=conditions,
+                        reference_parser=(
+                            evaluation_runtime_dependency_references
                         ),
                     )
+                except RuntimeDependencyUnavailableError:
+                    session.rollback()
+                    return False
+                if task is None:
+                    return False
+                result = session.exec(
+                    update(EvaluationTaskDB)
+                    .where(*conditions)
                     .values(
                         status=EvaluationStatus.RUNNING,
                         started_at=func.coalesce(EvaluationTaskDB.started_at, now),
@@ -433,13 +472,24 @@ class DeepEvaluationTaskService:
         entries so that the runner can skip already-completed model groups.
         """
         with get_session() as session:
-            task = session.exec(
-                select(EvaluationTaskDB).where(
-                    EvaluationTaskDB.task_id == task_id,
-                    EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
+            conditions = (
+                EvaluationTaskDB.task_id == task_id,
+                EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
+                EvaluationTaskDB.status.in_(
+                    (EvaluationStatus.FAILED, EvaluationStatus.CANCELLED)
+                ),
+            )
+            try:
+                task = lock_runtime_task_for_transition(
+                    session,
+                    entity=EvaluationTaskDB,
+                    conditions=conditions,
+                    reference_parser=evaluation_runtime_dependency_references,
                 )
-            ).first()
-            if not task:
+            except RuntimeDependencyUnavailableError:
+                session.rollback()
+                return False
+            if task is None:
                 return False
             dataset_ids, dataset_paths = _persisted_evaluation_dataset_references(task)
             try:

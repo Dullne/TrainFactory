@@ -7,11 +7,11 @@ import logging
 import os
 import hashlib
 import uuid
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 from datetime import datetime
 
 from sqlmodel import Session, select, func
-from sqlalchemy import text, update
+from sqlalchemy import or_, text, update
 
 from ...config.settings import get_settings
 from ..database import get_engine
@@ -30,6 +30,19 @@ from ..entities.external_sync_entity import (
     ExternalSyncTrainingDB,
     ExternalSyncTrainingTargetDB,
 )
+from ..entities.deployment_entity import DeploymentDB
+from ..entities.deployment_replica_entity import DeploymentReplicaDB
+from ..entities.external_api_config_entity import ExternalApiConfigDB
+from .runtime_dependency_service import (
+    LockedRuntimeDependencies,
+    RuntimeDependencyChangedError,
+    RuntimeDependencyReferences,
+    RuntimeDependencyUnavailableError,
+    external_sync_writer_dependency_references,
+    lock_runtime_dependencies,
+    lock_runtime_task_after_dependencies,
+)
+from .model_artifact_membership_service import lock_model_artifact_membership
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +55,30 @@ _UNCONSUMED_BATCH_STATUSES = (
 _SYNC_DELETING_STATUSES = {
     SyncStatus.DELETING,
     SyncStatus.DELETING_CASCADE,
+}
+
+_TRAINING_TARGETS_UNSET = object()
+_TRAINING_TARGET_EDITABLE_FIELDS = (
+    "target_name",
+    "model_type",
+    "data_phase",
+    "training_method",
+    "training_config",
+    "base_model_path",
+    "base_deployment_id",
+    "base_deployment_replica_id",
+    "training_threshold",
+    "priority",
+    "sort_order",
+)
+_BINDING_FIELDS = (
+    "base_deployment_id",
+    "base_deployment_replica_id",
+)
+_BINDING_ACTIVE_TRAINING_STATUSES = {
+    SyncTrainingStatus.PENDING,
+    SyncTrainingStatus.COMPLETED,
+    SyncTrainingStatus.ADAPTER_LOADED,
 }
 
 
@@ -74,6 +111,173 @@ def sync_task_reserves_collection_name(
         f"tf_sync_v3_{task_hash}_",
     )
     return normalized_name == current_name or normalized_name.startswith(prefixes)
+
+
+def _validate_replica_binding_pair(
+    base_deployment_id: Optional[str],
+    base_deployment_replica_id: Optional[str],
+) -> None:
+    if base_deployment_replica_id and not base_deployment_id:
+        raise ValueError("base_deployment_replica_id requires base_deployment_id")
+
+
+def _binding_changed(record: Any, candidate: Dict[str, Any]) -> bool:
+    return any(
+        candidate.get(field, getattr(record, field)) != getattr(record, field)
+        for field in _BINDING_FIELDS
+    )
+
+
+def _binding_is_frozen(
+    task: ExternalSyncTaskDB,
+    targets: Sequence[ExternalSyncTrainingTargetDB],
+    active_trainings: Sequence[ExternalSyncTrainingDB],
+) -> bool:
+    if task.status in {SyncStatus.TRAINING, SyncStatus.LOADING_ADAPTER}:
+        return True
+    if task.current_adapter_id or task.current_adapter_name:
+        return True
+    if active_trainings:
+        return True
+    return any(
+        target.status
+        in {
+            TrainingTargetStatus.TRAINING,
+            TrainingTargetStatus.LOADING_ADAPTER,
+        }
+        or target.current_adapter_id
+        or target.current_adapter_name
+        for target in targets
+    )
+
+
+def _sync_task_dependency_signature(
+    task: ExternalSyncTaskDB,
+) -> RuntimeDependencyReferences:
+    return external_sync_writer_dependency_references(task, ())
+
+
+def _sync_task_writer_signature(
+    task: ExternalSyncTaskDB,
+) -> tuple[RuntimeDependencyReferences, Optional[str], Optional[str]]:
+    return (
+        _sync_task_dependency_signature(task),
+        task.base_deployment_replica_id,
+        task.external_api_config_id,
+    )
+
+
+def _sync_target_binding_signature(
+    targets: Sequence[Any],
+    *,
+    default_task_id: Optional[str] = None,
+) -> tuple[
+    tuple[
+        str,
+        str,
+        Optional[str],
+        Optional[str],
+        str,
+        bool,
+    ],
+    ...,
+]:
+    def field(item: Any, name: str, default: Any = None) -> Any:
+        if isinstance(item, Mapping):
+            return item.get(name, default)
+        return getattr(item, name, default)
+
+    return tuple(
+        sorted(
+            (
+                str(field(target, "target_id") or ""),
+                str(field(target, "task_id", default_task_id) or ""),
+                field(target, "base_deployment_id"),
+                field(target, "base_deployment_replica_id"),
+                str(field(target, "base_model_path") or ""),
+                bool(field(target, "is_active", True)),
+            )
+            for target in targets
+        )
+    )
+
+
+def _prospective_sync_task(
+    task: ExternalSyncTaskDB,
+    overrides: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "is_active": overrides.get("is_active", task.is_active),
+        "generation_config": overrides.get(
+            "generation_config",
+            task.generation_config,
+        ),
+        "training_config": overrides.get(
+            "training_config",
+            task.training_config,
+        ),
+        "base_deployment_id": overrides.get(
+            "base_deployment_id",
+            task.base_deployment_id,
+        ),
+    }
+
+
+def _lock_external_api_configs(
+    session: Session,
+    config_ids: Sequence[Optional[str]],
+    *,
+    expected_user_id: Optional[str],
+) -> tuple[ExternalApiConfigDB, ...]:
+    normalized_ids = tuple(
+        sorted(
+            {
+                config_id.strip()
+                for config_id in config_ids
+                if isinstance(config_id, str) and config_id.strip()
+            }
+        )
+    )
+    if not normalized_ids:
+        return ()
+    configs = tuple(
+        session.exec(
+            select(ExternalApiConfigDB)
+            .where(ExternalApiConfigDB.config_id.in_(normalized_ids))
+            .order_by(ExternalApiConfigDB.config_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        ).all()
+    )
+    actual_ids = {config.config_id for config in configs}
+    missing = next(
+        (config_id for config_id in normalized_ids if config_id not in actual_ids),
+        None,
+    )
+    if missing is not None:
+        raise ValueError(f"External API config not found: {missing}")
+    if expected_user_id is not None:
+        foreign = next(
+            (
+                config
+                for config in configs
+                if config.user_id != expected_user_id
+            ),
+            None,
+        )
+        if foreign is not None:
+            raise ValueError("External API config ownership mismatch")
+    return configs
+
+
+def legacy_training_target_id(task_id: str) -> str:
+    """Return the collision-resistant stable ID for one task's legacy view."""
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"train-factory/sync-legacy-target/{task_id}",
+        )
+    )
 
 
 
@@ -131,6 +335,151 @@ class ExternalSyncService:
         SyncStatus.DELETING: set(),
         SyncStatus.DELETING_CASCADE: set(),
     }
+
+    @staticmethod
+    def _validate_deployment_binding(
+        session: Session,
+        base_deployment_id: Optional[str],
+        base_deployment_replica_id: Optional[str],
+        *,
+        expected_user_id: Optional[str] = None,
+        expected_external_api_config_id: Optional[str] = None,
+        locked_dependencies: Optional[LockedRuntimeDependencies] = None,
+    ) -> None:
+        """Validate and claim a deployment binding in the caller's transaction."""
+        _validate_replica_binding_pair(
+            base_deployment_id,
+            base_deployment_replica_id,
+        )
+        if not base_deployment_id:
+            return
+
+        if locked_dependencies is None:
+            deployment = session.exec(
+                select(DeploymentDB)
+                .where(DeploymentDB.deployment_id == base_deployment_id)
+                .with_for_update()
+            ).first()
+        else:
+            deployment = next(
+                (
+                    item
+                    for item in locked_dependencies.deployments
+                    if item.deployment_id == base_deployment_id
+                ),
+                None,
+            )
+        if deployment is None:
+            raise ValueError(f"Base deployment not found: {base_deployment_id}")
+        if expected_user_id and deployment.user_id != expected_user_id:
+            raise ValueError(
+                f"Deployment owner changed: {base_deployment_id}"
+            )
+        if (
+            deployment.replica_operation_token
+            and deployment.replica_operation_kind == "delete"
+        ):
+            raise ValueError("Deployment deletion is in progress")
+
+        expected_api_config = (expected_external_api_config_id or "").strip()
+        column_api_config = (deployment.external_api_config_id or "").strip()
+        deployment_config = (
+            dict(deployment.config)
+            if isinstance(deployment.config, dict)
+            else {}
+        )
+        config_api_config = str(
+            deployment_config.get("external_api_config_id") or ""
+        ).strip()
+        if (
+            column_api_config
+            and config_api_config
+            and column_api_config != config_api_config
+        ):
+            raise ValueError(
+                f"Deployment api_config state is inconsistent: {base_deployment_id}"
+            )
+        current_api_config = column_api_config or config_api_config
+        if (
+            expected_api_config
+            and current_api_config
+            and current_api_config != expected_api_config
+        ):
+            raise ValueError(
+                "Deployment api_config mismatch: "
+                f"deployment={current_api_config}, "
+                f"sync task={expected_api_config}"
+            )
+        if expected_api_config and (
+            column_api_config != expected_api_config
+            or config_api_config != expected_api_config
+        ):
+            deployment_config["external_api_config_id"] = expected_api_config
+            deployment.external_api_config_id = expected_api_config
+            deployment.config = deployment_config
+            deployment.updated_at = _utcnow_naive()
+            session.add(deployment)
+
+        if not base_deployment_replica_id:
+            return
+        replica = session.exec(
+            select(DeploymentReplicaDB.replica_id)
+            .where(
+                DeploymentReplicaDB.replica_id == base_deployment_replica_id,
+                DeploymentReplicaDB.deployment_id == base_deployment_id,
+            )
+            .with_for_update()
+        ).first()
+        if replica is None:
+            raise ValueError(
+                f"Deployment replica {base_deployment_replica_id} does not "
+                f"belong to deployment {base_deployment_id}"
+            )
+
+    @staticmethod
+    def require_deployment_unreferenced(
+        session: Session,
+        deployment_id: str,
+    ) -> None:
+        """Reject deletion while a sync task or target retains the binding."""
+        child_ids = select(DeploymentReplicaDB.replica_id).where(
+            DeploymentReplicaDB.deployment_id == deployment_id
+        )
+        tasks = list(
+            session.exec(
+                select(ExternalSyncTaskDB.task_id).where(
+                    or_(
+                        ExternalSyncTaskDB.base_deployment_id == deployment_id,
+                        ExternalSyncTaskDB.base_deployment_replica_id.in_(child_ids),
+                    )
+                )
+            ).all()
+        )
+        targets = list(
+            session.exec(
+                select(ExternalSyncTrainingTargetDB.target_id).where(
+                    or_(
+                        ExternalSyncTrainingTargetDB.base_deployment_id
+                        == deployment_id,
+                        ExternalSyncTrainingTargetDB.base_deployment_replica_id.in_(
+                            child_ids
+                        ),
+                    )
+                )
+            ).all()
+        )
+        if not tasks and not targets:
+            return
+
+        references = []
+        if tasks:
+            references.append(f"{len(tasks)} sync task(s)")
+        if targets:
+            references.append(f"{len(targets)} training target(s)")
+        raise ValueError(
+            f"Cannot delete deployment {deployment_id}: referenced by external "
+            f"sync ({', '.join(references)}). Detach those bindings first."
+        )
 
     _BATCH_STATUS_TRANSITIONS: Dict[str, Set[str]] = {
         BatchStatus.REGISTERED: {
@@ -234,6 +583,254 @@ class ExternalSyncService:
         return self.engine
 
     @staticmethod
+    def _lock_writer_scope(
+        session: Session,
+        task_id: str,
+        *,
+        expected_user_id: Optional[str] = None,
+        task_overrides: Optional[Dict[str, Any]] = None,
+        prospective_targets_builder: Optional[
+            Callable[
+                [Sequence[ExternalSyncTrainingTargetDB]],
+                Sequence[Any],
+            ]
+        ] = None,
+        requested_target_ids: Sequence[str] = (),
+        allow_deleting: bool = False,
+        force_dependency_locks: bool = False,
+    ) -> tuple[
+        Optional[ExternalSyncTaskDB],
+        List[ExternalSyncTrainingTargetDB],
+        Optional[LockedRuntimeDependencies],
+        bool,
+    ]:
+        """Lock deps -> task -> sorted targets for one binding writer."""
+        candidate = session.exec(
+            select(ExternalSyncTaskDB).where(
+                ExternalSyncTaskDB.task_id == task_id
+            )
+        ).first()
+        if candidate is None:
+            return None, [], None, False
+
+        dependency_owner_id = candidate.user_id or None
+        if (
+            expected_user_id not in (None, "")
+            and dependency_owner_id != expected_user_id
+        ):
+            raise RuntimeDependencyUnavailableError(
+                "Runtime dependency is unavailable"
+            )
+
+        preliminary_targets = list(
+            session.exec(
+                select(ExternalSyncTrainingTargetDB)
+                .where(ExternalSyncTrainingTargetDB.task_id == task_id)
+            ).all()
+        )
+        expected_task_signature = _sync_task_writer_signature(candidate)
+        expected_target_signature = _sync_target_binding_signature(
+            preliminary_targets
+        )
+        prospective_targets = (
+            prospective_targets_builder(preliminary_targets)
+            if prospective_targets_builder is not None
+            else preliminary_targets
+        )
+        prospective_task = _prospective_sync_task(
+            candidate,
+            task_overrides or {},
+        )
+        current_references = external_sync_writer_dependency_references(
+            candidate,
+            preliminary_targets,
+        )
+        prospective_references = external_sync_writer_dependency_references(
+            prospective_task,
+            prospective_targets,
+        )
+        prospective_target_signature = _sync_target_binding_signature(
+            prospective_targets,
+            default_task_id=task_id,
+        )
+        prospective_replica_id = (task_overrides or {}).get(
+            "base_deployment_replica_id",
+            candidate.base_deployment_replica_id,
+        )
+        dependencies_changed = bool(
+            prospective_references != current_references
+            or prospective_replica_id != candidate.base_deployment_replica_id
+            or prospective_target_signature != expected_target_signature
+            or "external_api_config_id" in (task_overrides or {})
+            or (
+                bool(prospective_task["is_active"])
+                and not bool(candidate.is_active)
+            )
+            or force_dependency_locks
+        )
+        if dependencies_changed:
+            _lock_external_api_configs(
+                session,
+                (
+                    candidate.external_api_config_id,
+                    (task_overrides or {}).get(
+                        "external_api_config_id",
+                        candidate.external_api_config_id,
+                    ),
+                ),
+                expected_user_id=candidate.user_id,
+            )
+            if (
+                current_references.artifact_paths
+                or prospective_references.artifact_paths
+            ):
+                lock_model_artifact_membership(session)
+        locked_dependencies = (
+            lock_runtime_dependencies(
+                session,
+                prospective_references,
+                expected_user_id=dependency_owner_id,
+            )
+            if dependencies_changed
+            else LockedRuntimeDependencies()
+        )
+        task = lock_runtime_task_after_dependencies(
+            session,
+            entity=ExternalSyncTaskDB,
+            conditions=(ExternalSyncTaskDB.task_id == task_id,),
+            reference_parser=_sync_task_dependency_signature,
+            expected_signature=expected_task_signature[0],
+        )
+        if task is None:
+            return None, [], None, dependencies_changed
+        if _sync_task_writer_signature(task) != expected_task_signature:
+            raise RuntimeDependencyChangedError(
+                "Sync task deployment binding changed while acquiring locks; retry"
+            )
+        if expected_user_id is not None and task.user_id != expected_user_id:
+            raise ValueError("Sync task ownership mismatch during update")
+        if not allow_deleting and task.status in _SYNC_DELETING_STATUSES:
+            raise ValueError("Sync task deletion is in progress")
+
+        current_target_ids = tuple(
+            sorted(
+                session.exec(
+                    select(ExternalSyncTrainingTargetDB.target_id).where(
+                        ExternalSyncTrainingTargetDB.task_id == task_id
+                    )
+                ).all()
+            )
+        )
+        preliminary_target_ids = tuple(
+            item[0] for item in expected_target_signature
+        )
+        if current_target_ids != preliminary_target_ids:
+            raise RuntimeDependencyChangedError(
+                "Sync target membership changed while acquiring locks; retry"
+            )
+
+        target_ids_to_lock = sorted(
+            set(current_target_ids) | set(requested_target_ids)
+        )
+        targets: List[ExternalSyncTrainingTargetDB] = []
+        if target_ids_to_lock:
+            targets = list(
+                session.exec(
+                    select(ExternalSyncTrainingTargetDB)
+                    .where(
+                        ExternalSyncTrainingTargetDB.target_id.in_(
+                            target_ids_to_lock
+                        )
+                    )
+                    .order_by(ExternalSyncTrainingTargetDB.target_id)
+                    .execution_options(populate_existing=True)
+                    .with_for_update()
+                ).all()
+            )
+        current_targets = [
+            target for target in targets if target.task_id == task_id
+        ]
+        if (
+            _sync_target_binding_signature(current_targets)
+            != expected_target_signature
+        ):
+            raise RuntimeDependencyChangedError(
+                "Sync target bindings changed while acquiring locks; retry"
+            )
+        foreign_ids = sorted(
+            target.target_id
+            for target in targets
+            if target.task_id != task_id
+        )
+        if foreign_ids:
+            raise ValueError(
+                "Training target belongs to another sync task: "
+                f"{foreign_ids[0]}"
+            )
+        return task, current_targets, locked_dependencies, dependencies_changed
+
+    @staticmethod
+    def _lock_training_claim_scope(
+        session: Session,
+        training_task_id: str,
+    ):
+        """Lock one claim in the global task -> targets -> trainings order."""
+        training_hint = session.exec(
+            select(ExternalSyncTrainingDB.task_id).where(
+                ExternalSyncTrainingDB.training_task_id == training_task_id
+            )
+        ).first()
+        if training_hint is None:
+            return None, None, []
+
+        task = session.exec(
+            select(ExternalSyncTaskDB)
+            .where(ExternalSyncTaskDB.task_id == training_hint)
+            .with_for_update()
+        ).first()
+        targets = list(
+            session.exec(
+                select(ExternalSyncTrainingTargetDB)
+                .where(ExternalSyncTrainingTargetDB.task_id == training_hint)
+                .order_by(ExternalSyncTrainingTargetDB.target_id)
+                .with_for_update()
+            ).all()
+        )
+        active_trainings = list(
+            session.exec(
+                select(ExternalSyncTrainingDB)
+                .where(
+                    ExternalSyncTrainingDB.task_id == training_hint,
+                    ExternalSyncTrainingDB.status.in_(
+                        _BINDING_ACTIVE_TRAINING_STATUSES
+                    ),
+                )
+                .order_by(ExternalSyncTrainingDB.training_task_id)
+                .with_for_update()
+            ).all()
+        )
+        training = next(
+            (
+                item
+                for item in active_trainings
+                if item.training_task_id == training_task_id
+            ),
+            None,
+        )
+        if training is None:
+            training = session.exec(
+                select(ExternalSyncTrainingDB)
+                .where(
+                    ExternalSyncTrainingDB.training_task_id
+                    == training_task_id
+                )
+                .with_for_update()
+            ).first()
+        if training is not None and training.task_id != training_hint:
+            raise RuntimeError("Sync training ownership changed while locking")
+        return task, training, targets
+
+    @staticmethod
     def _lock_generation_scope(session: Session, generation_task_id: str):
         """Lock a generation scope in task -> generation order."""
         generation_hint = session.exec(
@@ -309,8 +906,20 @@ class ExternalSyncService:
         training_threshold: int = 1000,
         training_config: Optional[Dict[str, Any]] = None,
         base_deployment_id: Optional[str] = None,
+        base_deployment_replica_id: Optional[str] = None,
+        training_targets: Optional[Sequence[Dict[str, Any]]] = None,
         is_active: bool = True,
     ) -> Dict[str, Any]:
+        target_values = [dict(target) for target in training_targets or ()]
+        _validate_replica_binding_pair(
+            base_deployment_id,
+            base_deployment_replica_id,
+        )
+        for target in target_values:
+            _validate_replica_binding_pair(
+                target.get("base_deployment_id"),
+                target.get("base_deployment_replica_id"),
+            )
         config = ExternalSyncTaskDB(
             task_name=task_name,
             user_id=user_id,
@@ -324,14 +933,70 @@ class ExternalSyncService:
             training_threshold=training_threshold,
             training_config=training_config,
             base_deployment_id=base_deployment_id,
+            base_deployment_replica_id=base_deployment_replica_id,
             is_active=is_active,
         )
-        with Session(self._get_engine()) as session:
+        engine = self._get_engine()
+        bindings = [
+            (base_deployment_id, base_deployment_replica_id),
+            *[
+                (
+                    target.get("base_deployment_id"),
+                    target.get("base_deployment_replica_id"),
+                )
+                for target in target_values
+            ],
+        ]
+        with Session(engine) as session:
+            if engine.dialect.name == "sqlite":
+                session.exec(text("BEGIN IMMEDIATE"))
+            references = external_sync_writer_dependency_references(
+                config,
+                target_values,
+            )
+            _lock_external_api_configs(
+                session,
+                (external_api_config_id,),
+                expected_user_id=user_id,
+            )
+            if references.artifact_paths:
+                lock_model_artifact_membership(session)
+            locked_dependencies = lock_runtime_dependencies(
+                session,
+                references,
+                expected_user_id=user_id or None,
+            )
+            for deployment_id, replica_id in sorted(
+                bindings,
+                key=lambda binding: (binding[0] or "", binding[1] or ""),
+            ):
+                self._validate_deployment_binding(
+                    session,
+                    deployment_id,
+                    replica_id,
+                    expected_user_id=user_id,
+                    expected_external_api_config_id=external_api_config_id,
+                    locked_dependencies=locked_dependencies,
+                )
             session.add(config)
+            targets = []
+            for target in target_values:
+                values = dict(target)
+                values.pop("task_id", None)
+                target = ExternalSyncTrainingTargetDB(
+                    task_id=config.task_id,
+                    **values,
+                )
+                session.add(target)
+                targets.append(target)
             session.commit()
             session.refresh(config)
+            for target in targets:
+                session.refresh(target)
             logger.info(f"Created sync task: {config.task_id} for user {user_id}")
-            return config.to_dict()
+            result = config.to_dict()
+            result["training_targets"] = [target.to_dict() for target in targets]
+            return result
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         with Session(self._get_engine()) as session:
@@ -457,103 +1122,378 @@ class ExternalSyncService:
                 consumers.append(task_id)
         return sorted(consumers)
 
-    def update_task(self, task_id: str, **kwargs) -> Optional[Dict[str, Any]]:
+    def update_task(
+        self,
+        task_id: str,
+        *,
+        training_targets: Any = _TRAINING_TARGETS_UNSET,
+        expected_user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Update a task and, when supplied, replace its targets atomically."""
+        target_values: Optional[List[Dict[str, Any]]] = None
+        if training_targets is not _TRAINING_TARGETS_UNSET:
+            if not isinstance(training_targets, Sequence) or isinstance(
+                training_targets, (str, bytes, bytearray)
+            ):
+                raise ValueError("training_targets must be a list")
+            target_values = []
+            seen_target_ids: Set[str] = set()
+            defaults = {
+                "model_type": "embedding",
+                "data_phase": "final",
+                "training_method": "sft",
+                "training_config": {},
+                "base_model_path": "",
+                "base_deployment_id": None,
+                "base_deployment_replica_id": None,
+                "training_threshold": 1000,
+                "priority": 0,
+                "sort_order": 0,
+            }
+            for raw_target in training_targets:
+                if not isinstance(raw_target, dict):
+                    raise ValueError("Each training target must be an object")
+                target_id = str(raw_target.get("target_id") or "").strip()
+                if not target_id:
+                    raise ValueError("Each training target requires target_id")
+                if len(target_id) > 36:
+                    raise ValueError("training target_id must be at most 36 characters")
+                if target_id in seen_target_ids:
+                    raise ValueError(f"Duplicate training target_id: {target_id}")
+                seen_target_ids.add(target_id)
+                target_name = str(raw_target.get("target_name") or "").strip()
+                if not target_name:
+                    raise ValueError("Each training target requires target_name")
+                values = dict(defaults)
+                values.update(
+                    {
+                        key: raw_target[key]
+                        for key in _TRAINING_TARGET_EDITABLE_FIELDS
+                        if key in raw_target
+                    }
+                )
+                values["target_id"] = target_id
+                values["target_name"] = target_name
+                values["training_config"] = values.get("training_config") or {}
+                _validate_replica_binding_pair(
+                    values.get("base_deployment_id"),
+                    values.get("base_deployment_replica_id"),
+                )
+                target_values.append(values)
+
         invalidated_batches: List[Dict[str, Any]] = []
-        with Session(self._get_engine()) as session:
-            stmt = (
-                select(ExternalSyncTaskDB)
-                .where(ExternalSyncTaskDB.task_id == task_id)
-                .with_for_update()
-            )
-            config = session.exec(stmt).first()
-            if not config:
-                return None
-            if config.status in {
-                SyncStatus.DELETING,
-                SyncStatus.DELETING_CASCADE,
-            }:
-                raise ValueError("Sync task deletion is in progress")
+        engine = self._get_engine()
+        with Session(engine) as session:
+            try:
+                if engine.dialect.name == "sqlite":
+                    session.exec(text("BEGIN IMMEDIATE"))
 
-            source_identity_changed = False
-            if "external_api_config_id" in kwargs:
-                source_identity_changed = (
-                    (kwargs.get("external_api_config_id") or "").strip()
-                    != (config.external_api_config_id or "").strip()
+                requested_target_ids = (
+                    [item["target_id"] for item in target_values]
+                    if target_values is not None
+                    else []
                 )
-            if "external_api_url" in kwargs:
-                source_identity_changed = source_identity_changed or (
-                    (kwargs.get("external_api_url") or "").strip()
-                    != (config.external_api_url or "").strip()
-                )
-
-            if source_identity_changed:
-                has_persisted_history = bool(
-                    config.last_sync_at
-                    or config.last_sync_boundary_ids
-                    or int(config.pending_record_count or 0)
-                    or int(config.pending_training_samples or 0)
-                    or int(config.total_record_count or 0)
-                    or int(config.total_training_samples or 0)
-                    or int(config.total_trainings or 0)
-                    or config.milvus_collection_name
-                )
-                if not has_persisted_history:
-                    history_entities = (
-                        ExternalSyncBatchDB,
-                        ExternalSyncGenerationDB,
-                        ExternalSyncTrainingDB,
-                    )
-                    has_persisted_history = any(
-                        session.exec(
-                            select(entity.id)
-                            .where(entity.task_id == task_id)
-                            .limit(1)
-                        ).first()
-                        is not None
-                        for entity in history_entities
-                    )
-                if has_persisted_history or config.status not in {
-                    SyncStatus.IDLE,
-                    SyncStatus.ERROR,
-                }:
-                    raise ValueError(
-                        "Cannot change sync source after data ingestion has "
-                        "started; create a new sync task"
-                    )
-
-            # Detect sync position reset: clearing last_sync_at means
-            # "re-fetch from the beginning", so unconsumed (fetched) batches
-            # and their counters must be invalidated to prevent double-counting.
-            sync_position_reset = (
-                "last_sync_at" in kwargs
-                and kwargs["last_sync_at"] is None
-                and config.last_sync_at is not None
-            )
-
-            if "status" in kwargs:
-                self._validate_transition(
-                    config.status,
-                    kwargs.get("status"),
-                    self._TASK_STATUS_TRANSITIONS,
-                    "sync task",
-                )
-
-            for key, value in kwargs.items():
-                if hasattr(config, key):
-                    setattr(config, key, value)
-            config.updated_at = _utcnow_naive()
-
-            if sync_position_reset:
-                invalidated_batches = self._invalidate_fetched_batches(
-                    session,
+                (
                     config,
+                    targets,
+                    locked_dependencies,
+                    dependencies_changed,
+                ) = self._lock_writer_scope(
+                    session,
+                    task_id,
+                    expected_user_id=expected_user_id,
+                    task_overrides=kwargs,
+                    prospective_targets_builder=(
+                        (lambda _current: target_values)
+                        if target_values is not None
+                        else None
+                    ),
+                    requested_target_ids=requested_target_ids,
+                )
+                if not config:
+                    session.rollback()
+                    return None
+                existing_by_id = {target.target_id: target for target in targets}
+                final_values = target_values
+                if final_values is None:
+                    final_values = [
+                        {
+                            "target_id": target.target_id,
+                            **{
+                                key: getattr(target, key)
+                                for key in _TRAINING_TARGET_EDITABLE_FIELDS
+                            },
+                        }
+                        for target in targets
+                    ]
+
+                candidate_by_id = {
+                    values["target_id"]: values for values in final_values
+                }
+                task_binding_changed = _binding_changed(config, kwargs)
+                target_binding_changed = bool(
+                    set(existing_by_id) - set(candidate_by_id)
+                ) or any(
+                    _binding_changed(target, candidate_by_id[target_id])
+                    for target_id, target in existing_by_id.items()
+                    if target_id in candidate_by_id
+                )
+                active_trainings: List[ExternalSyncTrainingDB] = []
+                if task_binding_changed or target_binding_changed:
+                    active_trainings = list(
+                        session.exec(
+                            select(ExternalSyncTrainingDB)
+                            .where(
+                                ExternalSyncTrainingDB.task_id == task_id,
+                                ExternalSyncTrainingDB.status.in_(
+                                    _BINDING_ACTIVE_TRAINING_STATUSES
+                                ),
+                            )
+                            .order_by(ExternalSyncTrainingDB.training_task_id)
+                            .with_for_update()
+                        ).all()
+                    )
+                    if _binding_is_frozen(config, targets, active_trainings):
+                        raise ValueError(
+                            "Deployment binding cannot change while training or an "
+                            "adapter is active"
+                        )
+
+                effective_api_config_id = kwargs.get(
+                    "external_api_config_id",
+                    config.external_api_config_id,
                 )
 
-            session.add(config)
-            session.commit()
-            session.refresh(config)
-            result = config.to_dict()
-            user_id = config.user_id
+                if dependencies_changed:
+                    deployment_bindings = {
+                        (
+                            kwargs.get(
+                                "base_deployment_id",
+                                config.base_deployment_id,
+                            ),
+                            kwargs.get(
+                                "base_deployment_replica_id",
+                                config.base_deployment_replica_id,
+                            ),
+                        )
+                    }
+                    deployment_bindings.update(
+                        (
+                            target.get("base_deployment_id"),
+                            target.get("base_deployment_replica_id"),
+                        )
+                        for target in final_values
+                    )
+                    for deployment_id, replica_id in sorted(
+                        deployment_bindings,
+                        key=lambda binding: (
+                            binding[0] or "",
+                            binding[1] or "",
+                        ),
+                    ):
+                        self._validate_deployment_binding(
+                            session,
+                            deployment_id,
+                            replica_id,
+                            expected_user_id=config.user_id,
+                            expected_external_api_config_id=(
+                                effective_api_config_id
+                            ),
+                            locked_dependencies=locked_dependencies,
+                        )
+
+                source_identity_changed = False
+                if "external_api_config_id" in kwargs:
+                    source_identity_changed = (
+                        (kwargs.get("external_api_config_id") or "").strip()
+                        != (config.external_api_config_id or "").strip()
+                    )
+                if "external_api_url" in kwargs:
+                    source_identity_changed = source_identity_changed or (
+                        (kwargs.get("external_api_url") or "").strip()
+                        != (config.external_api_url or "").strip()
+                    )
+
+                if source_identity_changed:
+                    has_persisted_history = bool(
+                        config.last_sync_at
+                        or config.last_sync_boundary_ids
+                        or int(config.pending_record_count or 0)
+                        or int(config.pending_training_samples or 0)
+                        or int(config.total_record_count or 0)
+                        or int(config.total_training_samples or 0)
+                        or int(config.total_trainings or 0)
+                        or config.milvus_collection_name
+                    )
+                    if not has_persisted_history:
+                        history_entities = (
+                            ExternalSyncBatchDB,
+                            ExternalSyncGenerationDB,
+                            ExternalSyncTrainingDB,
+                        )
+                        has_persisted_history = any(
+                            session.exec(
+                                select(entity.id)
+                                .where(entity.task_id == task_id)
+                                .limit(1)
+                            ).first()
+                            is not None
+                            for entity in history_entities
+                        )
+                    if has_persisted_history or config.status not in {
+                        SyncStatus.IDLE,
+                        SyncStatus.ERROR,
+                    }:
+                        raise ValueError(
+                            "Cannot change sync source after data ingestion has "
+                            "started; create a new sync task"
+                        )
+
+                sync_position_reset = (
+                    "last_sync_at" in kwargs
+                    and kwargs["last_sync_at"] is None
+                    and config.last_sync_at is not None
+                )
+                if "status" in kwargs:
+                    self._validate_transition(
+                        config.status,
+                        kwargs.get("status"),
+                        self._TASK_STATUS_TRANSITIONS,
+                        "sync task",
+                    )
+
+                final_by_id = {
+                    target["target_id"]: target for target in final_values
+                }
+                removed_ids = sorted(set(existing_by_id) - set(final_by_id))
+                if removed_ids:
+                    pending_target_ids = {
+                        training.target_id
+                        for training in active_trainings
+                        if training.status == SyncTrainingStatus.PENDING
+                        and training.target_id in removed_ids
+                    }
+                    for target_id_to_remove in removed_ids:
+                        target = existing_by_id[target_id_to_remove]
+                        if target.status in {
+                            TrainingTargetStatus.TRAINING,
+                            TrainingTargetStatus.LOADING_ADAPTER,
+                        } or target_id_to_remove in pending_target_ids:
+                            raise ValueError(
+                                "Training target has an active training and cannot "
+                                "be deleted"
+                            )
+
+                for target_id_to_keep in sorted(
+                    set(existing_by_id) & set(final_by_id)
+                ):
+                    target = existing_by_id[target_id_to_keep]
+                    values = final_by_id[target_id_to_keep]
+
+                legacy_target_to_create: Optional[str] = None
+                legacy_pending_to_transfer = 0
+                legacy_sources_before_update = (
+                    isinstance(config.training_config, dict)
+                    and int(config.training_threshold or 0) > 0
+                )
+                if (
+                    target_values is not None
+                    and not existing_by_id
+                    and legacy_sources_before_update
+                ):
+                    synthetic_target_id = legacy_training_target_id(task_id)
+                    if synthetic_target_id in final_by_id:
+                        legacy_target_to_create = synthetic_target_id
+                        legacy_pending_to_transfer = int(
+                            config.pending_training_samples or 0
+                        )
+
+                effective_training_config = kwargs.get(
+                    "training_config",
+                    config.training_config,
+                )
+                effective_training_threshold = kwargs.get(
+                    "training_threshold",
+                    config.training_threshold,
+                )
+                legacy_sources_after_update = (
+                    isinstance(effective_training_config, dict)
+                    and int(effective_training_threshold or 0) > 0
+                )
+                deletes_all_legacy_targets = (
+                    target_values is not None
+                    and not final_by_id
+                    and (
+                        legacy_sources_before_update
+                        or legacy_sources_after_update
+                    )
+                )
+
+                # Apply only after the complete candidate state has passed validation.
+                for key, value in kwargs.items():
+                    if hasattr(config, key):
+                        setattr(config, key, value)
+                if (
+                    legacy_target_to_create is not None
+                    or deletes_all_legacy_targets
+                ):
+                    self._clear_legacy_training_sources(config)
+                config.updated_at = _utcnow_naive()
+                if sync_position_reset:
+                    invalidated_batches = self._invalidate_fetched_batches(
+                        session,
+                        config,
+                    )
+                session.add(config)
+
+                updated_target_rows: List[ExternalSyncTrainingTargetDB] = []
+                if target_values is not None:
+                    for target_id_to_remove in removed_ids:
+                        session.delete(existing_by_id[target_id_to_remove])
+                    for target_id_to_keep in sorted(final_by_id):
+                        values = final_by_id[target_id_to_keep]
+                        target = existing_by_id.get(target_id_to_keep)
+                        if target is None:
+                            counter_values: Dict[str, int] = {}
+                            if target_id_to_keep == legacy_target_to_create:
+                                counter_values = {
+                                    "pending_training_samples": (
+                                        legacy_pending_to_transfer
+                                    ),
+                                    "total_training_samples": (
+                                        legacy_pending_to_transfer
+                                    ),
+                                }
+                            target = ExternalSyncTrainingTargetDB(
+                                task_id=task_id,
+                                target_id=target_id_to_keep,
+                                **counter_values,
+                                **{
+                                    key: values[key]
+                                    for key in _TRAINING_TARGET_EDITABLE_FIELDS
+                                },
+                            )
+                        else:
+                            for key in _TRAINING_TARGET_EDITABLE_FIELDS:
+                                setattr(target, key, values[key])
+                            target.updated_at = _utcnow_naive()
+                        session.add(target)
+                        updated_target_rows.append(target)
+
+                session.commit()
+                session.refresh(config)
+                result = config.to_dict()
+                if target_values is not None:
+                    for target in updated_target_rows:
+                        session.refresh(target)
+                    result["training_targets"] = [
+                        target.to_dict() for target in updated_target_rows
+                    ]
+                user_id = config.user_id
+            except Exception:
+                session.rollback()
+                raise
 
         if invalidated_batches:
             self._cleanup_managed_batch_files(
@@ -645,11 +1585,27 @@ class ExternalSyncService:
         }:
             raise ValueError("Invalid expected sync task deleting status")
         with Session(self._get_engine()) as session:
-            config = session.exec(
-                select(ExternalSyncTaskDB)
-                .where(ExternalSyncTaskDB.task_id == task_id)
-                .with_for_update()
-            ).first()
+            targets: Sequence[ExternalSyncTrainingTargetDB] = ()
+            locked_dependencies: Optional[LockedRuntimeDependencies] = None
+            if is_active:
+                (
+                    config,
+                    targets,
+                    locked_dependencies,
+                    _dependencies_changed,
+                ) = self._lock_writer_scope(
+                    session,
+                    task_id,
+                    task_overrides={"is_active": True},
+                    allow_deleting=True,
+                    force_dependency_locks=True,
+                )
+            else:
+                config = session.exec(
+                    select(ExternalSyncTaskDB)
+                    .where(ExternalSyncTaskDB.task_id == task_id)
+                    .with_for_update()
+                ).first()
             if not config:
                 return False
             if config.user_id != expected_user_id:
@@ -658,6 +1614,37 @@ class ExternalSyncService:
                 raise ValueError("Sync task deletion mode changed during rollback")
             if status not in self._TASK_STATUS_TRANSITIONS:
                 raise ValueError(f"Invalid restored sync task status: {status}")
+            if is_active:
+                deployment_bindings = {
+                    (
+                        config.base_deployment_id,
+                        config.base_deployment_replica_id,
+                    ),
+                    *{
+                        (
+                            target.base_deployment_id,
+                            target.base_deployment_replica_id,
+                        )
+                        for target in targets
+                    },
+                }
+                for deployment_id, replica_id in sorted(
+                    deployment_bindings,
+                    key=lambda binding: (
+                        binding[0] or "",
+                        binding[1] or "",
+                    ),
+                ):
+                    self._validate_deployment_binding(
+                        session,
+                        deployment_id,
+                        replica_id,
+                        expected_user_id=config.user_id,
+                        expected_external_api_config_id=(
+                            config.external_api_config_id
+                        ),
+                        locked_dependencies=locked_dependencies,
+                    )
             config.status = status
             config.is_active = is_active
             config.updated_at = _utcnow_naive()
@@ -2517,7 +3504,14 @@ class ExternalSyncService:
                 previous_parent_status = task.status
                 previous_training_task_id = task.current_training_id
                 previous_target_status = None
-                target_config_snapshot: Dict[str, Any] = {}
+                target_config_snapshot: Dict[str, Any] = {
+                    "target_id": None,
+                    "task_id": task.task_id,
+                    "base_deployment_id": task.base_deployment_id,
+                    "base_deployment_replica_id": (
+                        task.base_deployment_replica_id
+                    ),
+                }
 
                 if target_id:
                     targets = list(
@@ -2573,6 +3567,12 @@ class ExternalSyncService:
 
                     previous_target_status = target.status
                     previous_training_task_id = target.current_training_id
+                    if target.base_deployment_id:
+                        effective_deployment_id = target.base_deployment_id
+                        effective_replica_id = target.base_deployment_replica_id
+                    else:
+                        effective_deployment_id = task.base_deployment_id
+                        effective_replica_id = task.base_deployment_replica_id
                     target_config_snapshot = {
                         "target_id": target.target_id,
                         "task_id": target.task_id,
@@ -2582,7 +3582,8 @@ class ExternalSyncService:
                         "training_method": target.training_method,
                         "training_config": dict(target.training_config or {}),
                         "base_model_path": target.base_model_path,
-                        "base_deployment_id": target.base_deployment_id,
+                        "base_deployment_id": effective_deployment_id,
+                        "base_deployment_replica_id": effective_replica_id,
                     }
                     target.status = TrainingTargetStatus.TRAINING
                     target.pending_training_samples = 0
@@ -2642,21 +3643,15 @@ class ExternalSyncService:
         training_task_id: str,
     ) -> Dict[str, Any]:
         """Consume a training claim once and enter adapter-loading state."""
-        from ..entities.external_sync_entity import ExternalSyncTrainingTargetDB
-
         engine = self._get_engine()
         with Session(engine) as session:
             try:
                 if engine.dialect.name == "sqlite":
                     session.exec(text("BEGIN IMMEDIATE"))
-                training = session.exec(
-                    select(ExternalSyncTrainingDB)
-                    .where(
-                        ExternalSyncTrainingDB.training_task_id
-                        == training_task_id
-                    )
-                    .with_for_update()
-                ).first()
+                task, training, targets = self._lock_training_claim_scope(
+                    session,
+                    training_task_id,
+                )
                 if not training:
                     session.rollback()
                     return {"tracking_found": False, "completed": False}
@@ -2672,37 +3667,47 @@ class ExternalSyncService:
                     session.rollback()
                     return {"tracking_found": True, "completed": False}
 
-                task = session.exec(
-                    select(ExternalSyncTaskDB)
-                    .where(ExternalSyncTaskDB.task_id == training.task_id)
-                    .with_for_update()
-                ).first()
                 deletion_pending = bool(
                     task and task.status in _SYNC_DELETING_STATUSES
                 )
-                if (
+                target = next(
+                    (
+                        item
+                        for item in targets
+                        if item.target_id == training.target_id
+                    ),
+                    None,
+                )
+                claim_owned = bool(
                     task
-                    and not deletion_pending
                     and task.current_training_id == training_task_id
-                ):
+                    and (
+                        not training.target_id
+                        or (
+                            target is not None
+                            and target.task_id == training.task_id
+                            and target.current_training_id == training_task_id
+                        )
+                    )
+                )
+                if not claim_owned:
+                    session.rollback()
+                    return {
+                        "tracking_found": True,
+                        "completed": False,
+                        "claim_owner_mismatch": True,
+                    }
+
+                if not deletion_pending:
                     task.status = SyncStatus.LOADING_ADAPTER
                     task.error_message = None
                     task.updated_at = _utcnow_naive()
                     session.add(task)
 
                 if training.target_id and not deletion_pending:
-                    target = session.exec(
-                        select(ExternalSyncTrainingTargetDB)
-                        .where(
-                            ExternalSyncTrainingTargetDB.target_id
-                            == training.target_id
-                        )
-                        .with_for_update()
-                    ).first()
-                    if target and target.current_training_id == training_task_id:
-                        target.status = TrainingTargetStatus.LOADING_ADAPTER
-                        target.updated_at = _utcnow_naive()
-                        session.add(target)
+                    target.status = TrainingTargetStatus.LOADING_ADAPTER
+                    target.updated_at = _utcnow_naive()
+                    session.add(target)
 
                 training.status = SyncTrainingStatus.COMPLETED
                 training.claim_reconciled = True
@@ -2724,21 +3729,15 @@ class ExternalSyncService:
         reason: str,
     ) -> Dict[str, Any]:
         """Fail a pending sync training and restore its claimed samples once."""
-        from ..entities.external_sync_entity import ExternalSyncTrainingTargetDB
-
         engine = self._get_engine()
         with Session(engine) as session:
             try:
                 if engine.dialect.name == "sqlite":
                     session.exec(text("BEGIN IMMEDIATE"))
-                training = session.exec(
-                    select(ExternalSyncTrainingDB)
-                    .where(
-                        ExternalSyncTrainingDB.training_task_id
-                        == training_task_id
-                    )
-                    .with_for_update()
-                ).first()
+                task, training, targets = self._lock_training_claim_scope(
+                    session,
+                    training_task_id,
+                )
                 if not training:
                     session.rollback()
                     return {"tracking_found": False, "recovered": False}
@@ -2758,40 +3757,50 @@ class ExternalSyncService:
                     int(training.claimed_sample_count or 0),
                     0,
                 )
-                task = session.exec(
-                    select(ExternalSyncTaskDB)
-                    .where(ExternalSyncTaskDB.task_id == training.task_id)
-                    .with_for_update()
-                ).first()
                 deletion_pending = bool(
                     task and task.status in _SYNC_DELETING_STATUSES
                 )
 
+                target = next(
+                    (
+                        item
+                        for item in targets
+                        if item.target_id == training.target_id
+                    ),
+                    None,
+                )
+                claim_owned = bool(
+                    task
+                    and task.current_training_id == training_task_id
+                    and (
+                        not training.target_id
+                        or (
+                            target is not None
+                            and target.task_id == training.task_id
+                            and target.current_training_id == training_task_id
+                        )
+                    )
+                )
+                if not claim_owned:
+                    session.rollback()
+                    return {
+                        "tracking_found": True,
+                        "recovered": False,
+                        "claim_owner_mismatch": True,
+                    }
+
                 if training.target_id:
-                    target = session.exec(
-                        select(ExternalSyncTrainingTargetDB)
-                        .where(
-                            ExternalSyncTrainingTargetDB.target_id
-                            == training.target_id
-                        )
-                        .with_for_update()
-                    ).first()
-                    if not target:
-                        raise RuntimeError(
-                            "Training target disappeared before claim recovery"
-                        )
                     target.pending_training_samples = max(
                         int(target.pending_training_samples or 0),
                         0,
                     ) + restored_sample_count
-                    if target.current_training_id == training_task_id:
-                        target.status = (
-                            training.previous_target_status
-                            or TrainingTargetStatus.IDLE
-                        )
-                        target.current_training_id = (
-                            training.previous_training_task_id
-                        )
+                    target.status = (
+                        training.previous_target_status
+                        or TrainingTargetStatus.IDLE
+                    )
+                    target.current_training_id = (
+                        training.previous_training_task_id
+                    )
                     target.updated_at = _utcnow_naive()
                     session.add(target)
                 elif task:
@@ -2800,13 +3809,12 @@ class ExternalSyncService:
                         0,
                     ) + restored_sample_count
 
-                if task and task.current_training_id == training_task_id:
-                    task.current_training_id = training.previous_training_task_id
-                    if not deletion_pending:
-                        task.status = SyncStatus.ERROR
-                        task.error_message = reason
-                    task.updated_at = _utcnow_naive()
-                    session.add(task)
+                task.current_training_id = training.previous_training_task_id
+                if not deletion_pending:
+                    task.status = SyncStatus.ERROR
+                    task.error_message = reason
+                task.updated_at = _utcnow_naive()
+                session.add(task)
 
                 training.status = SyncTrainingStatus.FAILED
                 training.claim_reconciled = True
@@ -2872,11 +3880,16 @@ class ExternalSyncService:
                 session.commit()
 
     def mark_all_trainings_adapter_unloaded(
-        self, task_id: str, exclude_training_task_id: Optional[str] = None
+        self,
+        task_id: str,
+        exclude_training_task_id: Optional[str] = None,
+        target_ids: Optional[Sequence[Optional[str]]] = None,
+        loaded_adapter_id: Optional[str] = None,
+        loaded_adapter_name: Optional[str] = None,
     ) -> int:
-        """Mark ALL training records with adapter_loaded status as adapter_unloaded.
+        """Mark matching loaded training records as adapter_unloaded.
 
-        Used when replacing adapters or unloading all adapters for a sync task.
+        Used when replacing or releasing one exact sync-owned adapter.
 
         Args:
             task_id: Sync task id.
@@ -2887,6 +3900,12 @@ class ExternalSyncService:
         Returns:
             Number of records updated.
         """
+        normalized_target_ids = (
+            tuple(dict.fromkeys(target_ids)) if target_ids is not None else None
+        )
+        if normalized_target_ids == ():
+            return 0
+
         with Session(self._get_engine()) as session:
             # 原子 UPDATE（条件 status=ADAPTER_LOADED）：并发 replace/加载流程
             # 不会因读-改-写窗口互相覆盖（LOADED -> UNLOADED 是唯一合法转移，
@@ -2904,6 +3923,32 @@ class ExternalSyncService:
                     ExternalSyncTrainingDB.training_task_id
                     != exclude_training_task_id
                 )
+            if loaded_adapter_id:
+                stmt = stmt.where(
+                    ExternalSyncTrainingDB.loaded_adapter_id
+                    == loaded_adapter_id
+                )
+            if loaded_adapter_name:
+                stmt = stmt.where(
+                    ExternalSyncTrainingDB.loaded_adapter_name
+                    == loaded_adapter_name
+                )
+            if normalized_target_ids is not None:
+                concrete_target_ids = tuple(
+                    target_id
+                    for target_id in normalized_target_ids
+                    if target_id is not None
+                )
+                target_conditions = []
+                if concrete_target_ids:
+                    target_conditions.append(
+                        ExternalSyncTrainingDB.target_id.in_(concrete_target_ids)
+                    )
+                if None in normalized_target_ids:
+                    target_conditions.append(
+                        ExternalSyncTrainingDB.target_id.is_(None)
+                    )
+                stmt = stmt.where(or_(*target_conditions))
             result = session.exec(stmt)
             session.commit()
             count = result.rowcount or 0
@@ -3017,6 +4062,127 @@ class ExternalSyncService:
             raise ValueError("Sync task deletion is in progress")
         return parent
 
+    @staticmethod
+    def _clear_legacy_training_sources(parent: ExternalSyncTaskDB) -> None:
+        """Disable legacy synthesis after its target is materialized or deleted."""
+        parent.training_config = None
+        parent.training_threshold = 0
+        parent.pending_training_samples = 0
+
+    def migrate_legacy_training_target(
+        self,
+        task_id: str,
+        target_name: str,
+        target_id: str,
+        model_type: str = "embedding",
+        data_phase: str = "final",
+        training_method: str = "sft",
+        training_config: Optional[Dict[str, Any]] = None,
+        base_model_path: str = "",
+        base_deployment_id: Optional[str] = None,
+        base_deployment_replica_id: Optional[str] = None,
+        training_threshold: int = 1000,
+        expected_user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create the one legacy target and transfer parent pending counts once."""
+        _validate_replica_binding_pair(
+            base_deployment_id,
+            base_deployment_replica_id,
+        )
+        engine = self._get_engine()
+        with Session(engine) as session:
+            try:
+                if engine.dialect.name == "sqlite":
+                    session.exec(text("BEGIN IMMEDIATE"))
+                prospective_target = {
+                    "target_id": target_id,
+                    "base_model_path": base_model_path,
+                    "base_deployment_id": base_deployment_id,
+                    "base_deployment_replica_id": (
+                        base_deployment_replica_id
+                    ),
+                    "is_active": True,
+                }
+                (
+                    parent,
+                    targets,
+                    locked_dependencies,
+                    _dependencies_changed,
+                ) = self._lock_writer_scope(
+                    session,
+                    task_id,
+                    expected_user_id=expected_user_id,
+                    prospective_targets_builder=(
+                        lambda current: [*current, prospective_target]
+                    ),
+                    requested_target_ids=(target_id,),
+                )
+                if parent is None:
+                    raise ValueError(
+                        "Sync task not found during target mutation"
+                    )
+                existing = min(
+                    targets,
+                    key=lambda item: item.id or 0,
+                    default=None,
+                )
+                if existing is not None:
+                    if existing.target_id == target_id:
+                        pending = int(parent.pending_training_samples or 0)
+                        if pending:
+                            existing.pending_training_samples = int(
+                                existing.pending_training_samples or 0
+                            ) + pending
+                            existing.total_training_samples = int(
+                                existing.total_training_samples or 0
+                            ) + pending
+                            existing.updated_at = _utcnow_naive()
+                            session.add(existing)
+                        self._clear_legacy_training_sources(parent)
+                        parent.updated_at = _utcnow_naive()
+                        session.add(parent)
+                        session.commit()
+                        session.refresh(existing)
+                    else:
+                        session.rollback()
+                    result = existing.to_dict()
+                    return result
+
+                self._validate_deployment_binding(
+                    session,
+                    base_deployment_id,
+                    base_deployment_replica_id,
+                    expected_user_id=parent.user_id,
+                    expected_external_api_config_id=parent.external_api_config_id,
+                    locked_dependencies=locked_dependencies,
+                )
+                pending = int(parent.pending_training_samples or 0)
+                target = ExternalSyncTrainingTargetDB(
+                    task_id=task_id,
+                    target_id=target_id,
+                    target_name=target_name,
+                    model_type=model_type,
+                    data_phase=data_phase,
+                    training_method=training_method,
+                    training_config=training_config or {},
+                    base_model_path=base_model_path,
+                    base_deployment_id=base_deployment_id,
+                    base_deployment_replica_id=base_deployment_replica_id,
+                    training_threshold=training_threshold,
+                    pending_training_samples=pending,
+                    total_training_samples=pending,
+                )
+                self._clear_legacy_training_sources(parent)
+                parent.updated_at = _utcnow_naive()
+                session.add(parent)
+                session.add(target)
+                session.commit()
+                session.refresh(target)
+                return target.to_dict()
+            except Exception:
+                session.rollback()
+                raise
+
     def create_training_target(
         self,
         task_id: str,
@@ -3028,6 +4194,7 @@ class ExternalSyncService:
         training_config: Optional[Dict[str, Any]] = None,
         base_model_path: str = "",
         base_deployment_id: Optional[str] = None,
+        base_deployment_replica_id: Optional[str] = None,
         training_threshold: int = 1000,
         priority: int = 0,
         sort_order: int = 0,
@@ -3036,13 +4203,49 @@ class ExternalSyncService:
         """Create a training target for a sync task."""
         from ..entities.external_sync_entity import ExternalSyncTrainingTargetDB
 
+        _validate_replica_binding_pair(
+            base_deployment_id,
+            base_deployment_replica_id,
+        )
+        new_target_id = target_id or str(uuid.uuid4())
+
         engine = self._get_engine()
         with Session(engine) as session:
             if engine.dialect.name == "sqlite":
                 session.exec(text("BEGIN IMMEDIATE"))
-            self._lock_mutable_sync_parent(session, task_id, expected_user_id)
+            prospective_target = {
+                "target_id": new_target_id,
+                "base_model_path": base_model_path,
+                "base_deployment_id": base_deployment_id,
+                "base_deployment_replica_id": base_deployment_replica_id,
+                "is_active": True,
+            }
+            (
+                parent,
+                _targets,
+                locked_dependencies,
+                _dependencies_changed,
+            ) = self._lock_writer_scope(
+                session,
+                task_id,
+                expected_user_id=expected_user_id,
+                prospective_targets_builder=(
+                    lambda current: [*current, prospective_target]
+                ),
+                requested_target_ids=(new_target_id,),
+            )
+            if parent is None:
+                raise ValueError("Sync task not found during target mutation")
+            self._validate_deployment_binding(
+                session,
+                base_deployment_id,
+                base_deployment_replica_id,
+                expected_user_id=parent.user_id,
+                expected_external_api_config_id=parent.external_api_config_id,
+                locked_dependencies=locked_dependencies,
+            )
             target = ExternalSyncTrainingTargetDB(
-                target_id=target_id or str(uuid.uuid4()),
+                target_id=new_target_id,
                 task_id=task_id,
                 target_name=target_name,
                 model_type=model_type,
@@ -3051,6 +4254,7 @@ class ExternalSyncService:
                 training_config=training_config or {},
                 base_model_path=base_model_path,
                 base_deployment_id=base_deployment_id,
+                base_deployment_replica_id=base_deployment_replica_id,
                 training_threshold=training_threshold,
                 priority=priority,
                 sort_order=sort_order,
@@ -3160,22 +4364,95 @@ class ExternalSyncService:
                 ).first()
                 if resolved_task_id is None:
                     return None
-            self._lock_mutable_sync_parent(
+            def prospective_targets(
+                current: Sequence[ExternalSyncTrainingTargetDB],
+            ) -> Sequence[Any]:
+                return [
+                    (
+                        {
+                            "target_id": item.target_id,
+                            "task_id": item.task_id,
+                            "base_deployment_id": kwargs.get(
+                                "base_deployment_id",
+                                item.base_deployment_id,
+                            ),
+                            "base_deployment_replica_id": kwargs.get(
+                                "base_deployment_replica_id",
+                                item.base_deployment_replica_id,
+                            ),
+                            "base_model_path": kwargs.get(
+                                "base_model_path",
+                                item.base_model_path,
+                            ),
+                            "is_active": kwargs.get(
+                                "is_active",
+                                item.is_active,
+                            ),
+                        }
+                        if item.target_id == target_id
+                        else item
+                    )
+                    for item in current
+                ]
+
+            (
+                parent,
+                targets,
+                locked_dependencies,
+                dependencies_changed,
+            ) = self._lock_writer_scope(
                 session,
                 resolved_task_id,
-                expected_user_id,
+                expected_user_id=expected_user_id,
+                prospective_targets_builder=prospective_targets,
+                requested_target_ids=(target_id,),
             )
-            stmt = (
-                select(ExternalSyncTrainingTargetDB)
-                .where(
-                    ExternalSyncTrainingTargetDB.target_id == target_id,
-                    ExternalSyncTrainingTargetDB.task_id == resolved_task_id,
-                )
-                .with_for_update()
+            if parent is None:
+                raise ValueError("Sync task not found during target mutation")
+            target = next(
+                (item for item in targets if item.target_id == target_id),
+                None,
             )
-            target = session.exec(stmt).first()
             if not target:
                 return None
+
+            if _binding_changed(target, kwargs):
+                active_trainings = list(
+                    session.exec(
+                        select(ExternalSyncTrainingDB)
+                        .where(
+                            ExternalSyncTrainingDB.task_id == resolved_task_id,
+                            ExternalSyncTrainingDB.status.in_(
+                                _BINDING_ACTIVE_TRAINING_STATUSES
+                            ),
+                        )
+                        .order_by(ExternalSyncTrainingDB.training_task_id)
+                        .with_for_update()
+                    ).all()
+                )
+                if _binding_is_frozen(parent, targets, active_trainings):
+                    raise ValueError(
+                        "Deployment binding cannot change while training or an "
+                        "adapter is active"
+                    )
+
+            if dependencies_changed:
+                self._validate_deployment_binding(
+                    session,
+                    kwargs.get(
+                        "base_deployment_id",
+                        target.base_deployment_id,
+                    ),
+                    kwargs.get(
+                        "base_deployment_replica_id",
+                        target.base_deployment_replica_id,
+                    ),
+                    expected_user_id=parent.user_id,
+                    expected_external_api_config_id=(
+                        parent.external_api_config_id
+                    ),
+                    locked_dependencies=locked_dependencies,
+                )
 
             new_status = kwargs.get("status")
             if new_status and new_status != target.status:
@@ -3353,7 +4630,7 @@ class ExternalSyncService:
                 ).first()
                 if resolved_task_id is None:
                     return False
-            self._lock_mutable_sync_parent(
+            parent = self._lock_mutable_sync_parent(
                 session,
                 resolved_task_id,
                 expected_user_id,
@@ -3382,6 +4659,10 @@ class ExternalSyncService:
                 raise ValueError(
                     "Training target has an active training and cannot be deleted"
                 )
+            if target.target_id == legacy_training_target_id(resolved_task_id):
+                self._clear_legacy_training_sources(parent)
+                parent.updated_at = _utcnow_naive()
+                session.add(parent)
             session.delete(target)
             session.commit()
             return True

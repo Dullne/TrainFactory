@@ -21,6 +21,7 @@ from ...core.ssrf import (
 )
 from ..database import get_session
 from ..entities.deployment_entity import DeploymentDB
+from ..entities.deployment_replica_entity import DeploymentReplicaDB
 from ..entities.model_config_entity import ModelConfigDB
 
 logger = logging.getLogger(__name__)
@@ -276,21 +277,42 @@ def _collect_user_policy(
         allowed_hosts,
     )
 
-    if not user_id or user_id == "anonymous":
+    if user_id == "anonymous" or user_id == "":
         return allowed_hosts, trusted_destinations
 
     try:
         with get_session() as session:
+            owner_filter = (
+                DeploymentDB.user_id.is_(None)
+                if user_id is None
+                else DeploymentDB.user_id == user_id
+            )
             statement = select(DeploymentDB).where(
-                DeploymentDB.user_id == user_id,
+                owner_filter,
                 DeploymentDB.deploy_mode == "container",
-                DeploymentDB.status == "running",
             )
             deployments = session.exec(statement).all()
-            deployment_ids = []
+            running_deployment_ids = []
+            replica_deployment_ids = []
             host_ip = _extract_hostname(os.getenv("HOST_IP", ""))
 
             for deployment in deployments:
+                status = getattr(deployment, "status", "running")
+                config = getattr(deployment, "config", None)
+                uses_replica_lifecycle = (
+                    isinstance(config, dict)
+                    and type(config.get("replica_schema_version")) is int
+                    and config.get("replica_schema_version") == 1
+                    and status in DeploymentDB.VALID_TRANSITIONS
+                )
+                if uses_replica_lifecycle:
+                    replica_deployment_ids.append(deployment.deployment_id)
+                    if user_id is not None and status == "running":
+                        running_deployment_ids.append(deployment.deployment_id)
+                    continue
+                if user_id is None or status != "running":
+                    continue
+
                 destination = _extract_destination(
                     deployment.xinference_endpoint
                 )
@@ -302,13 +324,22 @@ def _collect_user_policy(
                     deployment_port = destination[1]
                 if host_ip and deployment_port is not None:
                     trusted_destinations.add((host_ip, deployment_port))
-                deployment_ids.append(deployment.deployment_id)
+                running_deployment_ids.append(deployment.deployment_id)
 
-            if deployment_ids:
+            if replica_deployment_ids:
+                replica_statement = select(DeploymentReplicaDB.endpoint).where(
+                    DeploymentReplicaDB.deployment_id.in_(replica_deployment_ids)
+                )
+                for endpoint in session.exec(replica_statement).all():
+                    destination = _extract_destination(endpoint)
+                    if destination:
+                        trusted_destinations.add(destination)
+
+            if running_deployment_ids:
                 config_statement = select(ModelConfigDB.api_endpoint).where(
                     ModelConfigDB.user_id == user_id,
                     ModelConfigDB.source_type == "local_deployed",
-                    ModelConfigDB.deployment_id.in_(deployment_ids),
+                    ModelConfigDB.deployment_id.in_(running_deployment_ids),
                 )
                 for endpoint in session.exec(config_statement).all():
                     destination = _extract_destination(endpoint)

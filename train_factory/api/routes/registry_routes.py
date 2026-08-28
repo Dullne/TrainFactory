@@ -26,6 +26,7 @@ from ...core.remote_download_security import (
     DownloadStorageQuotaExceeded,
     validate_remote_repo_id,
 )
+from ...deployment.deployment_service import ReplicaOperationBusyError
 from ...storage.services.model_registry_service import model_registry_service
 from ...storage.services.training_task_service import training_task_service
 from ...storage.services.background_task_admission_service import (
@@ -632,7 +633,7 @@ async def delete_model(
         if not success:
             raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
         return {"message": f"Model {model_id} deleted"}
-    except ValueError as e:
+    except (ValueError, ReplicaOperationBusyError) as e:
         raise HTTPException(status_code=409, detail=str(e))
     except RuntimeError as e:
         logger.error(

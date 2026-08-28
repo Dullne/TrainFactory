@@ -414,8 +414,7 @@ def test_dynamic_xinference_applies_guarded_compatibility_payloads(
         xinference_contract_volume=contract_volume,
     )
     captured: dict[str, list[str]] = {}
-    removed_names: list[str] = []
-    monkeypatch.setattr(deployer, "remove_container", removed_names.append)
+    monkeypatch.setattr(deployer, "remove_container", lambda _name: False)
     monkeypatch.setattr(
         deployer,
         "_run_container_create",
@@ -449,7 +448,6 @@ def test_dynamic_xinference_applies_guarded_compatibility_payloads(
         "--",
         "bash",
     ]
-    assert removed_names == ["qwen3-embedding"]
 
 
 def test_xinference_runtime_patch_rejects_unknown_preimage(tmp_path: Path) -> None:
@@ -946,27 +944,13 @@ def test_xinference_qwen3_embedding_uses_upstream_default_engine(
 
 
 @pytest.mark.parametrize(
-    (
-        "persisted_framework",
-        "expected_framework",
-        "expected_instruction_key",
-        "cached_framework",
-    ),
-    [
-        ("vllm", "vllm", "instruction", None),
-        ("sglang", "sglang", "instruct", None),
-        ("vllm", "vllm", "instruction", "sglang"),
-        ("sglang", "sglang", "instruct", "vllm"),
-        (None, "vllm", "instruction", "vllm"),
-        ("", "sglang", "instruct", "sglang"),
-    ],
+    ("trusted_framework", "expected_instruction_key"),
+    [("vllm", "instruction"), ("sglang", "instruct")],
 )
 def test_model_config_rerank_proxy_uses_trusted_framework_instruction_field(
     monkeypatch: pytest.MonkeyPatch,
-    persisted_framework: str | None,
-    expected_framework: str,
+    trusted_framework: str,
     expected_instruction_key: str,
-    cached_framework: str | None,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -989,15 +973,14 @@ def test_model_config_rerank_proxy_uses_trusted_framework_instruction_field(
     config = {
         "config_id": "config-1",
         "user_id": "user-1",
-        "deployment_id": "deployment-1",
+        "deployment_id": None,
         "api_endpoint": "https://rerank.example.test/v1",
         "api_key": None,
         "model_type": "reranker",
         "model_name": "Qwen3-Reranker-4B",
         "provider": "local",
+        "inference_framework": trusted_framework,
     }
-    if persisted_framework is not None:
-        config["inference_framework"] = persisted_framework
     monkeypatch.setattr(
         model_config_routes_module.model_config_service,
         "get_config",
@@ -1017,7 +1000,7 @@ def test_model_config_rerank_proxy_uses_trusted_framework_instruction_field(
         model_config_routes_module.deployment_service,
         "get_deployment",
         lambda _deployment_id: (_ for _ in ()).throw(
-            AssertionError("persisted config framework must remain authoritative")
+            AssertionError("unbound config must use its trusted framework")
         ),
     )
     monkeypatch.setattr(
@@ -1026,11 +1009,6 @@ def test_model_config_rerank_proxy_uses_trusted_framework_instruction_field(
         request,
     )
     model_config_routes_module._deployment_framework_cache.clear()
-    monkeypatch.setitem(
-        model_config_routes_module._deployment_framework_cache,
-        "deployment-1",
-        cached_framework,
-    )
 
     result = asyncio.run(
         model_config_routes_module.test_api_proxy(
@@ -1043,7 +1021,7 @@ def test_model_config_rerank_proxy_uses_trusted_framework_instruction_field(
                     "instruction": "framework-owned instruction",
                     "instruct": "request-forged-instruct",
                     "inference_framework": (
-                        "sglang" if expected_framework == "vllm" else "vllm"
+                        "sglang" if trusted_framework == "vllm" else "vllm"
                     ),
                 },
             ),
@@ -1057,9 +1035,161 @@ def test_model_config_rerank_proxy_uses_trusted_framework_instruction_field(
         "documents": ["raw document"],
         expected_instruction_key: "framework-owned instruction",
     }
-    if expected_framework == "vllm":
+    if trusted_framework == "vllm":
         expected_body["model"] = "Qwen3-Reranker-4B"
     assert captured["json"] == expected_body
+
+
+def test_model_config_rerank_proxy_persisted_framework_wins_over_stale_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _ProxyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, object]:
+            return {"results": []}
+
+    async def request(_method, _url, _user_id, **kwargs):
+        captured.update(kwargs)
+        return _ProxyResponse()
+
+    monkeypatch.setattr(
+        model_config_routes_module.model_config_service,
+        "get_config",
+        lambda _config_id: {
+            "config_id": "config-1",
+            "user_id": "user-1",
+            "deployment_id": "deployment-1",
+            "api_endpoint": "https://rerank.example.test/v1",
+            "api_key": None,
+            "model_type": "reranker",
+            "model_name": "Qwen3-Reranker-4B",
+            "provider": "local",
+            "inference_framework": "vllm",
+        },
+    )
+    monkeypatch.setattr(
+        model_config_routes_module.model_config_service,
+        "update_check_status",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        model_config_routes_module,
+        "validate_user_outbound_url",
+        lambda endpoint, _user_id: endpoint,
+    )
+    monkeypatch.setattr(
+        model_config_routes_module,
+        "async_request_user_outbound",
+        request,
+    )
+    model_config_routes_module._deployment_framework_cache.clear()
+    model_config_routes_module._deployment_framework_cache["deployment-1"] = "sglang"
+
+    result = asyncio.run(
+        model_config_routes_module.test_api_proxy(
+            "config-1",
+            model_config_routes_module.TestProxyRequest(
+                path="/v1/rerank",
+                body={
+                    "query": "raw query",
+                    "documents": ["raw document"],
+                    "instruction": "trusted instruction",
+                },
+            ),
+            current_user={"user_id": "user-1"},
+        )
+    )
+
+    assert result.success is True
+    assert captured["json"] == {
+        "model": "Qwen3-Reranker-4B",
+        "query": "raw query",
+        "documents": ["raw document"],
+        "instruction": "trusted instruction",
+    }
+
+
+def test_model_config_rerank_proxy_falls_back_to_deployment_framework(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _ProxyResponse:
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, object]:
+            return {"results": []}
+
+    async def request(_method, _url, _user_id, **kwargs):
+        captured.update(kwargs)
+        return _ProxyResponse()
+
+    monkeypatch.setattr(
+        model_config_routes_module.model_config_service,
+        "get_config",
+        lambda _config_id: {
+            "config_id": "config-1",
+            "user_id": "user-1",
+            "deployment_id": "deployment-1",
+            "api_endpoint": "https://rerank.example.test/v1",
+            "api_key": None,
+            "model_type": "reranker",
+            "model_name": "Qwen3-Reranker-4B",
+            "provider": "local",
+            "inference_framework": None,
+        },
+    )
+    monkeypatch.setattr(
+        model_config_routes_module.model_config_service,
+        "update_check_status",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        model_config_routes_module.deployment_service,
+        "get_deployment",
+        lambda _deployment_id: {"inference_framework": "sglang"},
+    )
+    monkeypatch.setattr(
+        model_config_routes_module,
+        "validate_user_outbound_url",
+        lambda endpoint, _user_id: endpoint,
+    )
+    monkeypatch.setattr(
+        model_config_routes_module,
+        "async_request_user_outbound",
+        request,
+    )
+    model_config_routes_module._deployment_framework_cache.clear()
+
+    result = asyncio.run(
+        model_config_routes_module.test_api_proxy(
+            "config-1",
+            model_config_routes_module.TestProxyRequest(
+                path="/v1/rerank",
+                body={
+                    "query": "raw query",
+                    "documents": ["raw document"],
+                    "instruction": "trusted instruction",
+                },
+            ),
+            current_user={"user_id": "user-1"},
+        )
+    )
+
+    assert result.success is True
+    assert captured["json"] == {
+        "query": "raw query",
+        "documents": ["raw document"],
+        "instruct": "trusted instruction",
+    }
+    assert model_config_routes_module._deployment_framework_cache == {
+        "deployment-1": "sglang"
+    }
 
 
 @pytest.mark.parametrize("trusted_framework", ["vllm", "sglang"])

@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine
 
+from train_factory.storage.entities.deployment_entity import DeploymentDB
 from train_factory.storage.entities.external_api_config_entity import (
     ExternalApiConfigDB,
 )
@@ -33,6 +34,7 @@ def _services():
     )
     for table in (
         ExternalApiConfigDB.__table__,
+        DeploymentDB.__table__,
         ExternalSyncTaskDB.__table__,
         ExternalSyncBatchDB.__table__,
         ExternalSyncGenerationDB.__table__,

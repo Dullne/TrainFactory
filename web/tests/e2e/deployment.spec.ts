@@ -20,14 +20,12 @@ test.describe('Deployment List Page', () => {
     await page.goto('/deployments')
 
     // 检查表格列头 - 与实际 UI 一致
-    await expect(page.locator('th:has-text("容器名称")')).toBeVisible()
-    await expect(page.locator('th:has-text("框架")')).toBeVisible()
-    await expect(page.locator('th:has-text("端口")')).toBeVisible()
-    await expect(page.locator('th:has-text("状态")')).toBeVisible()
-    await expect(page.locator('th:has-text("模型数")')).toBeVisible()
-    await expect(page.locator('th:has-text("GPU")')).toBeVisible()
-    await expect(page.locator('th:has-text("显存使用")')).toBeVisible()
-    await expect(page.locator('th:has-text("操作")')).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '部署组', exact: true })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '框架', exact: true })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '状态', exact: true })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '健康副本', exact: true })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: 'GPU', exact: true })).toBeVisible()
+    await expect(page.getByRole('columnheader', { name: '操作', exact: true })).toBeVisible()
   })
 
   test('displays multiple deployments with different frameworks', async ({ page }) => {
@@ -43,13 +41,13 @@ test.describe('Deployment List Page', () => {
     await expect(page.getByRole('cell', { name: 'SGLANG', exact: true })).toBeVisible()
   })
 
-  test('displays container names correctly', async ({ page }) => {
+  test('displays deployment group names correctly', async ({ page }) => {
     await page.goto('/deployments')
 
-    // 检查容器名称
-    await expect(page.getByText('xinference-dep-001')).toBeVisible()
-    await expect(page.getByText('vllm-dep-002')).toBeVisible()
-    await expect(page.getByText('sglang-dep-003')).toBeVisible()
+    // 父行显示稳定的部署组名称，实例细节在展开行中显示。
+    await expect(page.getByText('xinference-deployment')).toBeVisible()
+    await expect(page.getByText('vllm-lora-deployment')).toBeVisible()
+    await expect(page.getByText('sglang-deployment')).toBeVisible()
   })
 
   test('displays service endpoints', async ({ page }) => {
@@ -92,9 +90,422 @@ test.describe('Deployment List Page', () => {
     // 验证刷新后表格仍然存在
     await expect(page.locator('table')).toBeVisible()
   })
+
+  test('edits nested launch config without discarding topology fields', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    let patchBody: Record<string, unknown> | undefined
+    const launchConfig = {
+      framework: 'vllm',
+      tensor_parallel_size: 2,
+      pipeline_parallel_size: 1,
+      data_parallel_size: 1,
+      max_context_length: 32768,
+      max_concurrent_requests: 64,
+      dtype: 'bfloat16',
+      quantization: 'awq',
+      kv_cache_dtype: 'fp8',
+      gpu_pool: [0, 1],
+      replica_gpu_overrides: [{ replica_index: 0, gpu_ids: [0, 1] }],
+      allow_gpu_reuse: false,
+      enable_expert_parallel: true,
+      enforce_eager: true,
+    }
+    const deployment = {
+      deployment_id: 'nested-config-deployment',
+      model_id: 'model-001',
+      model_uid: 'nested-config-model',
+      deployment_name: 'nested-config-vllm',
+      xinference_endpoint: 'http://127.0.0.1:8200',
+      replica: 1,
+      replica_instances: [
+        {
+          replica_id: 'nested-config-replica',
+          deployment_id: 'nested-config-deployment',
+          replica_index: 0,
+          endpoint: 'http://127.0.0.1:8200',
+          port: 8200,
+          gpu_ids: [0, 1],
+          status: 'running',
+          health_status: 'HEALTHY',
+        },
+      ],
+      gpu_memory_utilization: 0.8,
+      deploy_mode: 'container',
+      container_name: 'nested-config-vllm-r0',
+      port: 8200,
+      inference_framework: 'vllm',
+      enable_lora: false,
+      max_loras: 4,
+      max_lora_rank: 64,
+      status: 'running',
+      health_status: 'HEALTHY',
+      config: {
+        dtype: 'float16',
+        enforce_eager: false,
+        docker_cmd: 'docker run preserved',
+        launch_config: launchConfig,
+        custom: { keep: true },
+      },
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }
+
+    await page.route('**/api/deployments**', async (route) => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      if (request.method() === 'GET' && path === '/api/deployments') {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ deployments: [deployment], total: 1 }),
+        })
+      }
+      if (
+        request.method() === 'PATCH' &&
+        path === '/api/deployments/nested-config-deployment/config'
+      ) {
+        patchBody = request.postDataJSON() as Record<string, unknown>
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(deployment),
+        })
+      }
+      return route.fallback()
+    })
+
+    await page.goto('/deployments')
+    const row = page.locator('tr').filter({ hasText: 'nested-config-vllm' })
+    await row.getByRole('button', { name: 'View Parameters' }).click()
+    const paramsModal = page.locator('.ant-modal').filter({
+      hasText: 'Deployment Configuration Details',
+    })
+    await expect(
+      paramsModal.locator('.ant-descriptions-row').filter({ hasText: 'Precision (dtype)' }),
+    ).toContainText('bfloat16')
+    await paramsModal
+      .locator('.ant-modal-footer')
+      .getByRole('button', { name: 'Close' })
+      .click()
+
+    await row.getByRole('button', { name: 'Edit Parameters' }).click()
+    const editModal = page.locator('.ant-modal').filter({ hasText: 'Edit Deployment Config' })
+    await expect(
+      editModal
+        .locator('.ant-form-item')
+        .filter({ hasText: 'Compute Precision' })
+        .locator('.ant-select-selection-item'),
+    ).toContainText('bfloat16')
+    const otherConfig = editModal.locator('textarea')
+    await expect(otherConfig).toHaveValue(/"custom"/)
+    await expect(otherConfig).not.toHaveValue(/launch_config/)
+
+    const dtypeSelect = editModal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Compute Precision' })
+      .locator('.ant-select')
+    await dtypeSelect.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^float32$/ })
+      .click()
+    await editModal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Enforce Eager' })
+      .locator('.ant-switch')
+      .click()
+    await editModal.getByRole('button', { name: 'Save' }).click()
+
+    await expect.poll(() => patchBody).toBeTruthy()
+    expect(patchBody).toEqual({
+      config: {
+        custom: { keep: true },
+        docker_cmd: 'docker run preserved',
+        external_api_config_id: null,
+        launch_config: {
+          ...launchConfig,
+          dtype: 'float32',
+          enforce_eager: false,
+        },
+      },
+    })
+  })
 })
 
 test.describe('Create Deployment Modal - Multi-Framework', () => {
+  test('uses a fixed modal footer and clears hidden framework fields', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    await page.goto('/deployments')
+    await page.getByRole('button', { name: 'Create Deployment' }).click()
+
+    const modal = page.locator('.ant-modal-content')
+    await expect(modal.locator('.ant-modal-footer')).toBeVisible()
+    await expect(modal.locator('.ant-modal-body')).toHaveCSS('overflow-y', 'auto')
+
+    const framework = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Inference Framework' })
+      .locator('.ant-select')
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^SGLang -/ })
+      .click()
+
+    const attention = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Attention Backend' })
+      .locator('.ant-select')
+    await attention.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option-content')
+      .filter({ hasText: /^triton$/ })
+      .click()
+
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^vLLM -/ })
+      .click()
+    await modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Enforce Eager' })
+      .locator('.ant-switch')
+      .click()
+
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^SGLang -/ })
+      .click()
+    await expect(attention.locator('.ant-select-selection-placeholder')).toBeVisible()
+
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^vLLM -/ })
+      .click()
+    await expect(
+      modal.locator('.ant-form-item').filter({ hasText: 'Enforce Eager' }).locator('.ant-switch')
+    ).not.toHaveClass(/ant-switch-checked/)
+  })
+
+  test('shows the version-pinned vLLM and SGLang runtime options', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    await page.goto('/deployments')
+    await page.getByRole('button', { name: 'Create Deployment' }).click()
+
+    const modal = page.locator('.ant-modal-content')
+    const framework = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Inference Framework' })
+      .locator('.ant-select')
+
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^vLLM -/ })
+      .click()
+    const quantization = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: /^Quantization/ })
+      .locator('.ant-select')
+    await quantization.click()
+    await quantization.locator('input').fill('deepseek_v4_fp8')
+    await expect(
+      page
+        .locator('.ant-select-dropdown:visible .ant-select-item-option-content')
+        .filter({ hasText: /^deepseek_v4_fp8$/ }),
+    ).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    const kvCache = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'KV Cache Data Type' })
+      .locator('.ant-select')
+    await kvCache.click()
+    await expect(
+      page
+        .locator('.ant-select-dropdown:visible .ant-select-item-option-content')
+        .filter({ hasText: /^float16$/ }),
+    ).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^SGLang -/ })
+      .click()
+    const attention = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Attention Backend' })
+      .locator('.ant-select')
+    await attention.click()
+    await attention.locator('input').fill('hpc_ops')
+    await expect(
+      page
+        .locator('.ant-select-dropdown:visible .ant-select-item-option-content')
+        .filter({ hasText: /^hpc_ops$/ }),
+    ).toBeVisible()
+  })
+
+  test('blocks invalid SGLang expert parallel size and submits EP equal to TP', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    let createBody: Record<string, unknown> | undefined
+    let createCount = 0
+    await page.route('**/api/deployments/container', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      createCount += 1
+      createBody = route.request().postDataJSON() as Record<string, unknown>
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ deployment_id: 'created-sglang' }),
+      })
+    })
+
+    await page.goto('/deployments')
+    await page.getByRole('button', { name: 'Create Deployment' }).click()
+    const modal = page.locator('.ant-modal-content')
+    await modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Deployment Name' })
+      .locator('input')
+      .fill('sglang-ep-validation')
+
+    const modelSelect = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Select Model' })
+      .locator('.ant-select')
+      .nth(1)
+    await modelSelect.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: 'bge-base-zh' })
+      .click()
+
+    const framework = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Inference Framework' })
+      .locator('.ant-select')
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^SGLang -/ })
+      .click()
+
+    const tensorParallel = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Tensor Parallelism (TP)' })
+      .locator('input')
+    const expertParallel = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Expert Parallelism (EP)' })
+      .locator('input')
+    await tensorParallel.fill('2')
+    await expertParallel.fill('3')
+    await modal.getByRole('button', { name: 'Create' }).click()
+
+    await expect(
+      modal.getByText('Expert parallelism must be 1 or equal tensor parallelism'),
+    ).toBeVisible()
+    expect(createCount).toBe(0)
+
+    await expertParallel.fill('2')
+    await modal.getByRole('button', { name: 'Create' }).click()
+    await expect.poll(() => createBody).toBeTruthy()
+    expect(createCount).toBe(1)
+    expect(createBody?.launch_config).toMatchObject({
+      framework: 'sglang',
+      tensor_parallel_size: 2,
+      expert_parallel_size: 2,
+    })
+  })
+
+  test('keeps parallel size controls inside the modal on a narrow viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    await page.goto('/deployments')
+    await page.getByRole('button', { name: 'Create Deployment' }).click()
+
+    const modal = page.locator('.ant-modal-content')
+    const framework = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Inference Framework' })
+      .locator('.ant-select')
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^vLLM -/ })
+      .click()
+
+    const grid = modal.getByTestId('parallel-size-grid')
+    await expect(grid).toHaveCSS('display', 'grid')
+    await grid.scrollIntoViewIfNeeded()
+    const gridBox = await grid.boundingBox()
+    expect(gridBox).not.toBeNull()
+
+    const controls = [
+      modal.locator('.ant-form-item').filter({ hasText: 'Tensor Parallelism (TP)' }),
+      modal.locator('.ant-form-item').filter({ hasText: 'Pipeline Parallelism (PP)' }),
+      modal.locator('.ant-form-item').filter({ hasText: 'Data Parallelism (DP)' }),
+    ]
+    const boxes = await Promise.all(controls.map((control) => control.boundingBox()))
+    for (const box of boxes) {
+      expect(box).not.toBeNull()
+      expect(box!.x).toBeGreaterThanOrEqual(gridBox!.x - 1)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(gridBox!.x + gridBox!.width + 1)
+    }
+    expect(boxes[1]!.y).toBeGreaterThan(boxes[0]!.y)
+    expect(boxes[2]!.y).toBeGreaterThan(boxes[1]!.y)
+  })
+
+  test('keeps replica GPU overrides inside the modal on a narrow viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    await page.goto('/deployments')
+    await page.getByRole('button', { name: 'Create Deployment' }).click()
+
+    const modal = page.locator('.ant-modal-content')
+    const framework = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Inference Framework' })
+      .locator('.ant-select')
+    await framework.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^vLLM -/ })
+      .click()
+
+    const gpuAllocation = modal.getByRole('button', { name: /GPU Allocation/ })
+    if ((await gpuAllocation.getAttribute('aria-expanded')) !== 'true') {
+      await gpuAllocation.focus()
+      await page.keyboard.press('Enter')
+    }
+    await expect(gpuAllocation).toHaveAttribute('aria-expanded', 'true')
+    await modal.getByRole('button', { name: 'Add Replica GPU Override' }).click()
+
+    const override = modal.getByTestId('replica-gpu-override-0')
+    await override.scrollIntoViewIfNeeded()
+    const overrideBox = await override.boundingBox()
+    expect(overrideBox).not.toBeNull()
+    for (const control of [
+      override.locator('.ant-input-number'),
+      override.locator('.ant-select'),
+      override.getByRole('button', { name: 'Remove replica GPU override' }),
+    ]) {
+      const box = await control.boundingBox()
+      expect(box).not.toBeNull()
+      expect(box!.x).toBeGreaterThanOrEqual(overrideBox!.x - 1)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(
+        overrideBox!.x + overrideBox!.width + 1,
+      )
+    }
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(390)
+  })
+
   test('opens and closes correctly', async ({ page }) => {
     await page.goto('/deployments')
 
@@ -157,7 +568,7 @@ test.describe('Create Deployment Modal - Multi-Framework', () => {
     await expect(modal.locator('.ant-form-item').filter({ hasText: '启用 LoRA 热加载' })).toBeVisible()
   })
 
-  test('LoRA options appear when selecting SGLang framework', async ({ page }) => {
+  test('LoRA options stay hidden for a non-LLM SGLang model', async ({ page }) => {
     await page.goto('/deployments')
     await page.getByRole('button', { name: '创建部署' }).click()
 
@@ -170,8 +581,62 @@ test.describe('Create Deployment Modal - Multi-Framework', () => {
     await frameworkSelect.click()
     await page.locator('.ant-select-dropdown:visible').locator('.ant-select-item-option').filter({ hasText: 'SGLang' }).click()
 
-    // 检查 LoRA 热加载选项出现
-    await expect(modal.locator('.ant-form-item').filter({ hasText: '启用 LoRA 热加载' })).toBeVisible()
+    await expect(modal.locator('.ant-form-item').filter({ hasText: '启用 LoRA 热加载' })).not.toBeVisible()
+  })
+
+  test('LoRA options appear for an LLM SGLang model', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    await page.route('**/api/models**', async (route) => {
+      const path = new URL(route.request().url()).pathname
+      if (route.request().method() !== 'GET' || path !== '/api/models') {
+        return route.fallback()
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          models: [
+            {
+              model_id: 'llm-model',
+              model_name: 'qwen-llm',
+              model_type: 'llm',
+              model_path: '/models/qwen-llm',
+              status: 'available',
+              is_adapter: false,
+            },
+          ],
+          total: 1,
+        }),
+      })
+    })
+
+    await page.goto('/deployments')
+    await page.getByRole('button', { name: 'Create Deployment' }).click()
+    const modal = page.locator('.ant-modal-content')
+    const modelSelect = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Select Model' })
+      .locator('.ant-select')
+      .nth(1)
+    await modelSelect.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: 'qwen-llm' })
+      .click()
+
+    const frameworkSelect = modal
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Inference Framework' })
+      .locator('.ant-select')
+    await frameworkSelect.click()
+    await page
+      .locator('.ant-select-dropdown:visible .ant-select-item-option')
+      .filter({ hasText: /^SGLang -/ })
+      .click()
+
+    await expect(
+      modal.locator('.ant-form-item').filter({ hasText: 'Enable LoRA Hot-Loading' }),
+    ).toBeVisible()
   })
 
   test('LoRA options hidden when selecting Xinference framework', async ({ page }) => {
@@ -311,11 +776,113 @@ test.describe('Create Deployment Modal - Multi-Framework', () => {
 })
 
 test.describe('Deployment Actions', () => {
+  test('replica groups can be expanded from the keyboard', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    await page.goto('/deployments')
+
+    const groupRow = page.locator('tr').filter({ hasText: 'vllm-lora-deployment' })
+    const expandButton = groupRow.getByRole('button', { name: 'Expand replicas' })
+    await expandButton.focus()
+    await page.keyboard.press('Enter')
+    await expect(page.getByText('http://127.0.0.1:8002', { exact: true })).toBeVisible()
+    await expect(groupRow.getByRole('button', { name: 'Collapse replicas' })).toBeVisible()
+  })
+
+  test('degraded deployments remain visible and manage adapters on a healthy replica', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    await page.route('**/api/deployments**', async (route) => {
+      const url = new URL(route.request().url())
+      if (route.request().method() !== 'GET' || url.pathname !== '/api/deployments') {
+        return route.fallback()
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          deployments: [
+            {
+              deployment_id: 'degraded-deployment',
+              deployment_name: 'degraded-vllm',
+              model_id: 'model-001',
+              model_uid: 'bge-base-zh',
+              xinference_endpoint: 'http://127.0.0.1:8100',
+              inference_framework: 'vllm',
+              deploy_mode: 'container',
+              replica: 2,
+              enable_lora: true,
+              max_loras: 4,
+              gpu_memory_utilization: 0.8,
+              status: 'degraded',
+              health_status: 'UNHEALTHY',
+              replica_instances: [
+                {
+                  replica_id: 'healthy-replica',
+                  deployment_id: 'degraded-deployment',
+                  replica_index: 0,
+                  endpoint: 'http://127.0.0.1:8100',
+                  port: 8100,
+                  gpu_ids: [0],
+                  status: 'running',
+                  health_status: 'HEALTHY',
+                },
+                {
+                  replica_id: 'failed-replica',
+                  deployment_id: 'degraded-deployment',
+                  replica_index: 1,
+                  endpoint: 'http://127.0.0.1:8101',
+                  port: 8101,
+                  gpu_ids: [1],
+                  status: 'failed',
+                  health_status: 'UNHEALTHY',
+                },
+              ],
+            },
+          ],
+          total: 1,
+        }),
+      })
+    })
+
+    await page.goto('/deployments')
+    await expect(page.getByText('Degraded', { exact: true }).first()).toBeVisible()
+    const row = page.locator('tr').filter({ hasText: 'degraded-vllm' })
+    await row.getByRole('button', { name: 'Adapter Management' }).click()
+
+    const modal = page.locator('.ant-modal').filter({ hasText: 'LoRA Adapter Management' })
+    await expect(modal.getByText('Target Replica')).toBeVisible()
+    await modal.locator('.ant-select-selector').click()
+    await page.locator('.ant-select-dropdown:visible .ant-select-item-option').filter({ hasText: '#0' }).click()
+    await expect(modal.locator('.ant-select-selection-item')).toContainText('#0')
+    await expect(modal.getByText('Deployment not running')).toHaveCount(0)
+  })
+
+  test('expands an independent replica group and targets one replica', async ({ page }) => {
+    let requestedPath = ''
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().includes('/replicas/')) {
+        requestedPath = new URL(request.url()).pathname
+      }
+    })
+    await page.goto('/deployments')
+
+    const groupRow = page.locator('tr').filter({ hasText: 'vllm-lora-deployment' })
+    await groupRow.locator('.anticon-right').click()
+    await expect(page.getByText('http://127.0.0.1:8000', { exact: true })).toBeVisible()
+    await expect(page.getByText('http://127.0.0.1:8002', { exact: true })).toBeVisible()
+
+    await page.getByRole('button', { name: '重启副本' }).nth(1).click()
+    await expect.poll(() => requestedPath).toBe(
+      '/api/deployments/dep-002/replicas/22222222-2222-4222-8222-222222222222/restart'
+    )
+  })
+
   test('can start a stopped deployment', async ({ page }) => {
     await page.goto('/deployments')
 
     // 找到已停止的部署行（sglang 容器）
-    const stoppedRow = page.locator('tr').filter({ hasText: 'sglang-dep-003' })
+    const stoppedRow = page.locator('tr').filter({ hasText: 'sglang-deployment' })
     await expect(stoppedRow).toBeVisible()
 
     // 检查启动按钮存在
@@ -327,7 +894,7 @@ test.describe('Deployment Actions', () => {
     await page.goto('/deployments')
 
     // 找到运行中的部署行（vllm 容器）
-    const runningRow = page.locator('tr').filter({ hasText: 'vllm-dep-002' })
+    const runningRow = page.locator('tr').filter({ hasText: 'vllm-lora-deployment' })
     await expect(runningRow).toBeVisible()
 
     // 检查停止按钮存在
@@ -339,14 +906,14 @@ test.describe('Deployment Actions', () => {
     await page.goto('/deployments')
 
     // 运行中的部署应显示重启按钮
-    const xinferenceRow = page.locator('tr').filter({ hasText: 'xinference-dep-001' })
+    const xinferenceRow = page.locator('tr').filter({ hasText: 'xinference-deployment' })
     await expect(xinferenceRow.getByRole('button', { name: '重启' })).toBeVisible()
 
-    const vllmRow = page.locator('tr').filter({ hasText: 'vllm-dep-002' })
+    const vllmRow = page.locator('tr').filter({ hasText: 'vllm-lora-deployment' })
     await expect(vllmRow.getByRole('button', { name: '重启' })).toBeVisible()
 
     // 已停止的部署不应显示重启按钮
-    const stoppedRow = page.locator('tr').filter({ hasText: 'sglang-dep-003' })
+    const stoppedRow = page.locator('tr').filter({ hasText: 'sglang-deployment' })
     await expect(stoppedRow.getByRole('button', { name: '重启' })).not.toBeVisible()
   })
 
@@ -354,7 +921,7 @@ test.describe('Deployment Actions', () => {
     await page.goto('/deployments')
 
     // Xinference 容器部署 → 应显示三个模式：自动、仅重载模型、重启容器
-    const row = page.locator('tr').filter({ hasText: 'xinference-dep-001' })
+    const row = page.locator('tr').filter({ hasText: 'xinference-deployment' })
     await row.getByRole('button', { name: '重启' }).click()
 
     const modal = page.locator('.ant-modal-content')
@@ -378,7 +945,7 @@ test.describe('Deployment Actions', () => {
     await page.goto('/deployments')
 
     // vLLM 容器部署 → 不应显示"仅重载模型"选项
-    const row = page.locator('tr').filter({ hasText: 'vllm-dep-002' })
+    const row = page.locator('tr').filter({ hasText: 'vllm-lora-deployment' })
     await row.getByRole('button', { name: '重启' }).click()
 
     const modal = page.locator('.ant-modal-content')
@@ -394,7 +961,7 @@ test.describe('Deployment Actions', () => {
   test('selecting container mode reveals GPU reset checkbox', async ({ page }) => {
     await page.goto('/deployments')
 
-    const row = page.locator('tr').filter({ hasText: 'xinference-dep-001' })
+    const row = page.locator('tr').filter({ hasText: 'xinference-deployment' })
     await row.getByRole('button', { name: '重启' }).click()
 
     const modal = page.locator('.ant-modal-content')
@@ -418,7 +985,7 @@ test.describe('Deployment Actions', () => {
   test('restart modal can be cancelled', async ({ page }) => {
     await page.goto('/deployments')
 
-    const row = page.locator('tr').filter({ hasText: 'xinference-dep-001' })
+    const row = page.locator('tr').filter({ hasText: 'xinference-deployment' })
     await row.getByRole('button', { name: '重启' }).click()
 
     const modal = page.locator('.ant-modal-content')
@@ -442,7 +1009,7 @@ test.describe('Deployment Actions', () => {
     })
 
     await page.goto('/deployments')
-    const row = page.locator('tr').filter({ hasText: 'xinference-dep-001' })
+    const row = page.locator('tr').filter({ hasText: 'xinference-deployment' })
     await row.getByRole('button', { name: '重启' }).click()
 
     const modal = page.locator('.ant-modal-content')
@@ -468,7 +1035,7 @@ test.describe('Deployment Actions', () => {
     })
 
     await page.goto('/deployments')
-    const row = page.locator('tr').filter({ hasText: 'xinference-dep-001' })
+    const row = page.locator('tr').filter({ hasText: 'xinference-deployment' })
     await row.getByRole('button', { name: '重启' }).click()
 
     const modal = page.locator('.ant-modal-content')
@@ -498,7 +1065,7 @@ test.describe('Deployment Actions', () => {
     })
 
     await page.goto('/deployments')
-    const row = page.locator('tr').filter({ hasText: 'vllm-dep-002' })
+    const row = page.locator('tr').filter({ hasText: 'vllm-lora-deployment' })
     await row.getByRole('button', { name: '重启' }).click()
 
     const modal = page.locator('.ant-modal-content')

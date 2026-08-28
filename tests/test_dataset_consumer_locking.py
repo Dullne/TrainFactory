@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 import importlib
+import os
 
 import pytest
 from sqlmodel import Session, SQLModel, create_engine, select
@@ -9,6 +10,9 @@ from train_factory.storage.entities.evaluation_task_entity import EvaluationTask
 from train_factory.storage.entities.generation_task_entity import (
     GenerationStatus,
     GenerationTaskDB,
+)
+from train_factory.storage.entities.model_artifact_membership_gate_entity import (
+    ModelArtifactMembershipGateDB,
 )
 from train_factory.storage.entities.training_task_entity import TrainingTaskDB
 from train_factory.storage.services.deep_evaluation_task_service import (
@@ -24,6 +28,9 @@ from train_factory.utils.path_utils import hash_path
 def isolated_task_database(monkeypatch, tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'dataset-consumers.db'}")
     SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        session.add(ModelArtifactMembershipGateDB(gate_id=1))
+        session.commit()
 
     @contextmanager
     def test_session():
@@ -251,13 +258,14 @@ def test_training_resume_cannot_race_dataset_deletion(isolated_task_database):
 def test_training_artifact_consumers_include_parent_and_checkpoint_links(
     isolated_task_database,
 ):
+    artifact_root = os.path.join(os.sep, "app", "output", "parent")
     with Session(isolated_task_database) as session:
         session.add_all(
             [
                 TrainingTaskDB(
                     task_id="parent",
                     task_name="parent",
-                    output_dir="/app/output/parent",
+                    output_dir=artifact_root,
                     user_id="user-1",
                 ),
                 TrainingTaskDB(
@@ -269,15 +277,20 @@ def test_training_artifact_consumers_include_parent_and_checkpoint_links(
                 TrainingTaskDB(
                     task_id="child-by-path",
                     task_name="child-by-path",
-                    sft_checkpoint_path=(
-                        r"\app\output\parent\.\checkpoint-10"
+                    sft_checkpoint_path=os.path.join(
+                        artifact_root,
+                        ".",
+                        "checkpoint-10",
                     ),
                     user_id="user-1",
                 ),
                 TrainingTaskDB(
                     task_id="unrelated",
                     task_name="unrelated",
-                    sft_checkpoint_path="/app/output/parent-other/checkpoint-10",
+                    sft_checkpoint_path=os.path.join(
+                        f"{artifact_root}-other",
+                        "checkpoint-10",
+                    ),
                     user_id="user-1",
                 ),
             ]
@@ -286,7 +299,7 @@ def test_training_artifact_consumers_include_parent_and_checkpoint_links(
 
     consumers = TrainingTaskService().list_artifact_consumers(
         "parent",
-        "/app/output/parent/",
+        artifact_root + os.sep,
     )
 
     assert {consumer["task_id"] for consumer in consumers} == {

@@ -562,7 +562,7 @@ def test_init_sql_adds_only_attempt_metadata_to_existing_dataset_table():
     assert "create table if not exists generation_tasks" not in sql
 
 
-def test_generation_publication_migration_is_the_single_head():
+def test_generation_publication_migration_descends_from_the_single_head():
     pytest.importorskip("alembic")
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -581,7 +581,7 @@ def test_generation_publication_migration_is_the_single_head():
         )
     )
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "053_validate_lifecycle_schema"
+    assert script.get_current_head() == "058_add_model_artifact_membership_gate"
 
 
 def test_generation_publication_migration_round_trips_idempotently_on_sqlite(

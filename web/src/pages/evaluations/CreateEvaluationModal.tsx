@@ -10,7 +10,6 @@ import {
   Collapse,
   Tag,
   message,
-  Divider,
   Card,
   Typography,
 } from 'antd'
@@ -27,6 +26,7 @@ interface ModelConfigItem {
   key: string
   source: 'deployment' | 'custom'
   deployment_id?: string
+  deployment_replica_id?: string
   endpoint: string
   model_name?: string
   name: string
@@ -47,6 +47,33 @@ interface CreateEvaluationModalProps {
   onSuccess: () => void
 }
 
+const getHealthyEvaluationReplicas = (deployment: Deployment) =>
+  (deployment.replica_instances ?? []).filter(
+    (replica) =>
+      replica.deployment_id === deployment.deployment_id &&
+      replica.status === 'running' &&
+      replica.health_status === 'HEALTHY'
+  )
+
+const hasReplicaLifecycleMarker = (deployment: Deployment) => {
+  const version = deployment.config?.replica_schema_version
+  return (
+    (deployment.inference_framework === 'vllm' || deployment.inference_framework === 'sglang') &&
+    typeof version === 'number' &&
+    Number.isInteger(version) &&
+    version === 1
+  )
+}
+
+const usesReplicaLifecycle = (deployment: Deployment) =>
+  hasReplicaLifecycleMarker(deployment) || (deployment.replica_instances?.length ?? 0) > 0
+
+const isEvaluationDeploymentEligible = (deployment: Deployment) => {
+  if (deployment.status !== 'running' && deployment.status !== 'degraded') return false
+  if (!usesReplicaLifecycle(deployment)) return deployment.status === 'running'
+  return getHealthyEvaluationReplicas(deployment).length > 0
+}
+
 export function CreateEvaluationModal({
   visible,
   onCancel,
@@ -62,27 +89,40 @@ export function CreateEvaluationModal({
   const [modelConfigs, setModelConfigs] = useState<ModelConfigItem[]>([])
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfigItem[]>([])
   const [loading, setLoading] = useState(false)
+  const [deploymentListLoaded, setDeploymentListLoaded] = useState(false)
 
   // Fetch deployments, available datasets, and registered eval datasets
   useEffect(() => {
-    if (visible) {
-      setLoading(true)
-      Promise.all([
-        deploymentApi.list({ status: 'running' }),
-        evaluationApi.getAvailableDatasets(),
-        datasetApi.list({ usage: 'eval', page_size: 100 }),
-      ])
-        .then(([deployRes, datasetsRes, registeredRes]) => {
-          setDeployments(deployRes.items.filter((d: Deployment) => d.status === 'running'))
-          setAvailableDatasets(datasetsRes)
-          setRegisteredDatasets(registeredRes.items || [])
-        })
-        .catch(() => {
-          message.error(t('create.loadDataFailed'))
-        })
-        .finally(() => {
-          setLoading(false)
-        })
+    setDeployments([])
+    setDeploymentListLoaded(false)
+    if (!visible) {
+      setLoading(false)
+      return
+    }
+
+    let ignore = false
+    setLoading(true)
+    Promise.all([
+      deploymentApi.list({ page_size: 100 }),
+      evaluationApi.getAvailableDatasets(),
+      datasetApi.list({ usage: 'eval', page_size: 100 }),
+    ])
+      .then(([deployRes, datasetsRes, registeredRes]) => {
+        if (ignore) return
+        setDeployments(deployRes.items.filter(isEvaluationDeploymentEligible))
+        setDeploymentListLoaded(true)
+        setAvailableDatasets(datasetsRes)
+        setRegisteredDatasets(registeredRes.items || [])
+      })
+      .catch(() => {
+        if (!ignore) message.error(t('create.loadDataFailed'))
+      })
+      .finally(() => {
+        if (!ignore) setLoading(false)
+      })
+
+    return () => {
+      ignore = true
     }
   }, [visible, t])
 
@@ -103,18 +143,49 @@ export function CreateEvaluationModal({
   }
 
   const handleModelChange = (key: string, field: keyof ModelConfigItem, value: unknown) => {
-    setModelConfigs(
-      modelConfigs.map((m) => {
+    setModelConfigs((current) =>
+      current.map((m) => {
         if (m.key === key) {
+          if (field === 'source') {
+            return {
+              key: m.key,
+              source: value as ModelConfigItem['source'],
+              endpoint: '',
+              name: '',
+            }
+          }
           const updated = { ...m, [field]: value }
           // Auto-fill from deployment
-          if (field === 'deployment_id' && value) {
+          if (field === 'deployment_id') {
+            updated.deployment_replica_id = undefined
+            updated.endpoint = ''
+            updated.model_name = undefined
+            updated.inference_framework = undefined
             const deployment = deployments.find((d) => d.deployment_id === value)
             if (deployment) {
-              updated.endpoint = deployment.xinference_endpoint
+              const healthyReplicas = getHealthyEvaluationReplicas(deployment)
+              const selectedReplica = healthyReplicas.length === 1 ? healthyReplicas[0] : undefined
+              updated.deployment_replica_id = selectedReplica?.replica_id
+              updated.endpoint = selectedReplica?.endpoint ?? (
+                !usesReplicaLifecycle(deployment) ? deployment.xinference_endpoint : ''
+              )
               updated.name = deployment.deployment_name || deployment.model_uid || ''
               updated.model_name = deployment.model_uid || 'reranker'
               updated.inference_framework = deployment.inference_framework
+            }
+          }
+          if (field === 'deployment_replica_id') {
+            const deployment = deployments.find(
+              (item) => item.deployment_id === updated.deployment_id,
+            )
+            const replica = deployment && getHealthyEvaluationReplicas(deployment).find(
+              (item) => item.replica_id === value,
+            )
+            updated.deployment_replica_id = replica?.replica_id
+            if (replica) {
+              updated.endpoint = replica.endpoint
+            } else if (deployment && usesReplicaLifecycle(deployment)) {
+              updated.endpoint = ''
             }
           }
           return updated
@@ -199,16 +270,57 @@ export function CreateEvaluationModal({
       return
     }
 
-    // Validate model configs
+    // Validate model configs and rebuild deployment bindings from trusted list data.
+    const trustedModelConfigs: CreateEvaluationRequest['model_configs'] = []
     for (const mc of modelConfigs) {
-      if (!mc.endpoint || !mc.name) {
+      if (mc.source === 'custom') {
+        if (!mc.endpoint || !mc.name) {
+          message.error(t('create.completeModelConfig'))
+          return
+        }
+        trustedModelConfigs.push({ endpoint: mc.endpoint, name: mc.name })
+        continue
+      }
+
+      if (!deploymentListLoaded) {
         message.error(t('create.completeModelConfig'))
         return
       }
+
+      const deployment = deployments.find(
+        (item) => item.deployment_id === mc.deployment_id
+      )
+      if (!deployment) {
+        message.error(t('create.completeModelConfig'))
+        return
+      }
+
+      const replica = getHealthyEvaluationReplicas(deployment).find(
+        (item) => item.replica_id === mc.deployment_replica_id
+      )
+      if (usesReplicaLifecycle(deployment) && !replica) {
+        message.error(t('create.completeModelConfig'))
+        return
+      }
+
+      const endpoint = replica?.endpoint ?? deployment.xinference_endpoint
+      const name = deployment.deployment_name || deployment.model_uid || ''
+      if (!endpoint || !name) {
+        message.error(t('create.completeModelConfig'))
+        return
+      }
+      trustedModelConfigs.push({
+        endpoint,
+        name,
+        deployment_id: deployment.deployment_id,
+        ...(replica ? { deployment_replica_id: replica.replica_id } : {}),
+        model_name: deployment.model_uid || 'reranker',
+        inference_framework: deployment.inference_framework,
+      })
     }
 
     // Check for duplicate model names
-    const modelNames = modelConfigs.map((mc) => mc.name)
+    const modelNames = trustedModelConfigs.map((mc) => mc.name)
     const uniqueNames = new Set(modelNames)
     if (uniqueNames.size < modelNames.length) {
       message.error(t('create.duplicateModelName'))
@@ -229,12 +341,7 @@ export function CreateEvaluationModal({
 
     const request: CreateEvaluationRequest = {
       task_name: values.task_name,
-      model_configs: modelConfigs.map((m) => ({
-        endpoint: m.endpoint,
-        model_name: m.model_name,
-        name: m.name,
-        inference_framework: m.inference_framework,
-      })),
+      model_configs: trustedModelConfigs,
       dataset_configs: datasetConfigs.map((d) => ({
         type: d.type,
         name: d.name,
@@ -279,14 +386,20 @@ export function CreateEvaluationModal({
       title={t('create.title')}
       open={visible}
       onCancel={handleCancel}
-      footer={null}
+      onOk={() => form.submit()}
+      okText={t('create.createEvalTask')}
+      cancelText={t('common:action.cancel')}
+      confirmLoading={creating}
+      okButtonProps={{ disabled: creating }}
       destroyOnClose
       width={800}
+      styles={{ body: { maxHeight: 'calc(100vh - 220px)', overflowY: 'auto' } }}
     >
       <Form
         form={form}
         layout="vertical"
         onFinish={handleFinish}
+        scrollToFirstError
         initialValues={{
           batch_size: 50,
           workers: 8,
@@ -351,17 +464,52 @@ export function CreateEvaluationModal({
                     </Space>
 
                     {mc.source === 'deployment' ? (
-                      <Select
-                        placeholder={t('create.selectDeployment')}
-                        value={mc.deployment_id}
-                        onChange={(v) => handleModelChange(mc.key, 'deployment_id', v)}
-                        style={{ width: '100%' }}
-                        loading={loading}
-                        options={deployments.map((d) => ({
-                          label: `${d.deployment_name || d.model_uid} (${d.xinference_endpoint})`,
-                          value: d.deployment_id,
-                        }))}
-                      />
+                      <Space direction="vertical" style={{ width: '100%' }}>
+                        <Select
+                          placeholder={t('create.selectDeployment')}
+                          value={mc.deployment_id}
+                          onChange={(v) => handleModelChange(mc.key, 'deployment_id', v)}
+                          style={{ width: '100%' }}
+                          loading={loading}
+                          disabled={!deploymentListLoaded}
+                          options={deployments.map((d) => ({
+                            label: `${d.deployment_name || d.model_uid} (${d.replica_instances?.length || 1} ${t('create.replicas')})`,
+                            value: d.deployment_id,
+                          }))}
+                        />
+                        {(() => {
+                          const deployment = deployments.find(
+                            (item) => item.deployment_id === mc.deployment_id,
+                          )
+                          const replicas = deployment?.replica_instances ?? []
+                          if (replicas.length === 0) return null
+                          const healthyReplicaIds = new Set(
+                            deployment
+                              ? getHealthyEvaluationReplicas(deployment).map(
+                                  (replica) => replica.replica_id
+                                )
+                              : []
+                          )
+                          return (
+                            <Select
+                              placeholder={t('create.selectReplica')}
+                              value={mc.deployment_replica_id}
+                              onChange={(value) =>
+                                handleModelChange(
+                                  mc.key,
+                                  'deployment_replica_id',
+                                  value,
+                                )
+                              }
+                              options={replicas.map((replica) => ({
+                                label: `#${replica.replica_index} · ${replica.endpoint} · GPU ${replica.gpu_ids.join(', ')}`,
+                                value: replica.replica_id,
+                                disabled: !healthyReplicaIds.has(replica.replica_id),
+                              }))}
+                            />
+                          )
+                        })()}
+                      </Space>
                     ) : (
                       <Space.Compact style={{ width: '100%' }}>
                         <Input
@@ -568,16 +716,6 @@ export function CreateEvaluationModal({
           ]}
         />
 
-        <Divider />
-
-        <Form.Item>
-          <Space>
-            <Button onClick={handleCancel}>{t('common:action.cancel')}</Button>
-            <Button type="primary" htmlType="submit" loading={creating} disabled={creating}>
-              {t('create.createEvalTask')}
-            </Button>
-          </Space>
-        </Form.Item>
       </Form>
     </Modal>
   )

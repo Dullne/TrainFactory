@@ -213,6 +213,143 @@ def test_create_persists_canonical_model_name(monkeypatch):
     ]
 
 
+def test_create_maps_invalid_deployment_replica_to_bad_request(monkeypatch):
+    request = _request(
+        [
+            evaluation_routes.ModelConfig(
+                deployment_id="deployment-1",
+                deployment_replica_id="missing-replica",
+                endpoint="http://placeholder.invalid",
+                name="missing replica",
+                model_name="served-model",
+            )
+        ]
+    )
+
+    monkeypatch.setattr(
+        evaluation_routes.deployment_service,
+        "resolve_replica_selection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("deployment replica not found")
+        ),
+    )
+    monkeypatch.setattr(
+        evaluation_routes.background_task_admission_service,
+        "admit_execution",
+        lambda *_args, **_kwargs: pytest.fail("invalid binding reached admission"),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            evaluation_routes.create_evaluation_task(
+                request,
+                BackgroundTasks(),
+                USER,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "deployment replica not found"
+
+
+def test_create_rejects_canonical_zero_child_deployment_before_admission(
+    monkeypatch,
+):
+    request = _request(
+        [
+            evaluation_routes.ModelConfig(
+                deployment_id="deployment-1",
+                endpoint="http://placeholder.invalid",
+                name="empty canonical deployment",
+                model_name="served-model",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        evaluation_routes.deployment_service,
+        "get_deployment",
+        lambda _deployment_id: {
+            "deployment_id": "deployment-1",
+            "user_id": "user-1",
+            "xinference_endpoint": "http://127.0.0.1:11000",
+            "model_uid": "served-model",
+            "inference_framework": "vllm",
+            "config": {"replica_schema_version": 1},
+            "replica_instances": [],
+            "status": "running",
+        },
+    )
+    monkeypatch.setattr(
+        evaluation_routes.background_task_admission_service,
+        "admit_execution",
+        lambda *_args, **_kwargs: pytest.fail(
+            "zero-child canonical deployment reached admission"
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            evaluation_routes.create_evaluation_task(
+                request,
+                BackgroundTasks(),
+                USER,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "deployment replica group is empty"
+
+
+@pytest.mark.parametrize("status", ["stopped", "failed", "degraded"])
+def test_create_rejects_inactive_legacy_zero_child_deployment_before_admission(
+    monkeypatch,
+    status,
+):
+    request = _request(
+        [
+            evaluation_routes.ModelConfig(
+                deployment_id="deployment-1",
+                endpoint="http://placeholder.invalid",
+                name="inactive legacy deployment",
+                model_name="served-model",
+            )
+        ]
+    )
+    monkeypatch.setattr(
+        evaluation_routes.deployment_service,
+        "get_deployment",
+        lambda _deployment_id: {
+            "deployment_id": "deployment-1",
+            "user_id": "user-1",
+            "xinference_endpoint": "http://127.0.0.1:11000",
+            "model_uid": "served-model",
+            "inference_framework": "vllm",
+            "config": {},
+            "replica_instances": [],
+            "status": status,
+        },
+    )
+    monkeypatch.setattr(
+        evaluation_routes.background_task_admission_service,
+        "admit_execution",
+        lambda *_args, **_kwargs: pytest.fail(
+            "inactive legacy deployment reached admission"
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            evaluation_routes.create_evaluation_task(
+                request,
+                BackgroundTasks(),
+                USER,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "deployment is not running"
+
+
 def test_route_rejects_normalized_mteb_type_with_unknown_dataset(monkeypatch):
     request = evaluation_routes.CreateEvaluationRequest(
         model_configs=[

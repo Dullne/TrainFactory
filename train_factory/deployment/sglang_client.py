@@ -191,7 +191,10 @@ class SGLangClient:
                         })
                 return adapters
         except Exception as e:
-            logger.debug(f"/v1/models listing failed, trying /list_loras: {e}")
+            logger.debug(
+                "/v1/models listing failed, trying /list_loras (%s)",
+                type(e).__name__,
+            )
 
         # Strategy 2: /list_loras（新版 SGLang）
         try:
@@ -208,8 +211,11 @@ class SGLangClient:
                 for lora in loras
             ]
         except Exception as e:
-            logger.error(f"Failed to list LoRA adapters: {e}")
-            return []
+            logger.error(
+                "Failed to list LoRA adapters (%s)",
+                type(e).__name__,
+            )
+            raise RuntimeError("Failed to list LoRA adapters") from e
 
     # ==================== Inference ====================
 

@@ -1313,11 +1313,15 @@ def _validate_resolved_config(
             base_values = _manifest_environment_values(manifest, "base-environment")
             api_port_text = base_values.get("API_PORT", "18000")
             web_port_text = base_values.get("WEB_PORT", "3000")
-            bind_address = base_values.get("HOST_BIND_ADDRESS", "127.0.0.1")
+            api_bind_address = base_values.get("HOST_BIND_ADDRESS", "127.0.0.1")
+            web_bind_address = base_values.get(
+                "WEB_HOST_BIND_ADDRESS", api_bind_address
+            )
             from scripts.validate_compose_config import _deployment_bind_address
 
             try:
-                _deployment_bind_address(bind_address)
+                _deployment_bind_address(api_bind_address)
+                _deployment_bind_address(web_bind_address)
             except ValueError:
                 raise ValueError("production bind address") from None
             if (
@@ -1325,7 +1329,8 @@ def _validate_resolved_config(
                 or not web_port_text.isdigit()
                 or not 1 <= int(api_port_text) <= 65535
                 or not 1 <= int(web_port_text) <= 65535
-                or not bind_address
+                or not api_bind_address
+                or not web_bind_address
             ):
                 raise ValueError("production ports")
             expected_published = {
@@ -1335,6 +1340,10 @@ def _validate_resolved_config(
             expected_targets = {
                 "train-factory-api": int(api_port_text),
                 "train-factory-web": 80,
+            }
+            expected_bind_addresses = {
+                "train-factory-api": api_bind_address,
+                "train-factory-web": web_bind_address,
             }
             expected_volume_names = {
                 "mysql_data": base_values.get(
@@ -1465,7 +1474,8 @@ def _validate_resolved_config(
                     not isinstance(port, dict)
                     or set(port)
                     != {"host_ip", "mode", "protocol", "published", "target"}
-                    or port.get("host_ip") != bind_address
+                    or port.get("host_ip")
+                    != expected_bind_addresses[service_name]
                     or str(port.get("published", ""))
                     != expected_published[service_name]
                     or port.get("target") != expected_targets[service_name]

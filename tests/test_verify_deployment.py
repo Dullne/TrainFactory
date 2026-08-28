@@ -1218,7 +1218,7 @@ def test_repository_head_is_derived_without_importing_migration_modules():
     from scripts import verify_deployment
 
     assert verify_deployment._repository_head(verify_deployment.ROOT_DIR) == (
-        "053_validate_lifecycle_schema"
+        "058_add_model_artifact_membership_gate"
     )
 
 

@@ -10,7 +10,7 @@ import re
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from sqlmodel import SQLModel, Field, Column, JSON
-from sqlalchemy import Index, Text
+from sqlalchemy import ForeignKey, Index, String, Text
 import uuid
 from ...core.time_utils import sync_now_naive
 from ...enums.sync_status import (
@@ -113,6 +113,10 @@ class ExternalSyncTaskDB(SQLModel, table=True):
     __table_args__ = (
         Index("idx_sync_user", "user_id"),
         Index("idx_sync_active", "is_active", "status"),
+        Index(
+            "idx_external_sync_tasks_base_deployment_replica_id",
+            "base_deployment_replica_id",
+        ),
     )
 
     # === Primary Key ===
@@ -146,6 +150,14 @@ class ExternalSyncTaskDB(SQLModel, table=True):
 
     # === 部署配置 ===
     base_deployment_id: Optional[str] = Field(default=None, max_length=36)
+    base_deployment_replica_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            String(36),
+            ForeignKey("deployment_replicas.replica_id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
 
     # === Milvus 向量库 ===
     milvus_collection_name: Optional[str] = Field(default=None, max_length=255)
@@ -199,6 +211,7 @@ class ExternalSyncTaskDB(SQLModel, table=True):
                 mask_sensitive=mask_sensitive,
             ),
             "base_deployment_id": self.base_deployment_id,
+            "base_deployment_replica_id": self.base_deployment_replica_id,
             "milvus_collection_name": self.milvus_collection_name,
             "pending_record_count": self.pending_record_count,
             "pending_training_samples": self.pending_training_samples,
@@ -270,6 +283,10 @@ class ExternalSyncTrainingTargetDB(SQLModel, table=True):
 
     __table_args__ = (
         Index("idx_training_target_task", "task_id", "is_active"),
+        Index(
+            "idx_external_sync_training_targets_base_deployment_replica_id",
+            "base_deployment_replica_id",
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -291,6 +308,14 @@ class ExternalSyncTrainingTargetDB(SQLModel, table=True):
     # 基座模型和部署
     base_model_path: str = Field(default="", max_length=1024)
     base_deployment_id: Optional[str] = Field(default=None, max_length=36)
+    base_deployment_replica_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            String(36),
+            ForeignKey("deployment_replicas.replica_id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
 
     # 独立阈值和计数器
     training_threshold: int = Field(default=1000)

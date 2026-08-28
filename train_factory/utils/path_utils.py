@@ -3,6 +3,7 @@
 import os
 import hashlib
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from ..config.settings import get_settings
@@ -11,6 +12,35 @@ from ..config.settings import get_settings
 def _normalize_path(path: str) -> str:
     """Normalize path with user expansion and absolute resolution."""
     return os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def canonicalize_artifact_path(path: Optional[str]) -> Optional[str]:
+    """Canonicalize a local artifact path for ownership comparisons."""
+    if not isinstance(path, str) or not path.strip():
+        return None
+    normalized = _normalize_path(path.strip())
+    try:
+        resolved = os.fspath(Path(normalized).resolve(strict=False))
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("artifact path could not be canonicalized") from exc
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def artifact_path_uses_root(
+    candidate: Optional[str],
+    root: Optional[str],
+) -> bool:
+    """Return whether ``candidate`` is exactly ``root`` or below it."""
+    canonical_candidate = canonicalize_artifact_path(candidate)
+    canonical_root = canonicalize_artifact_path(root)
+    if canonical_candidate is None or canonical_root is None:
+        return False
+    try:
+        return os.path.commonpath((canonical_candidate, canonical_root)) == (
+            canonical_root
+        )
+    except ValueError:
+        return False
 
 
 def _parse_mapping_item(item: str) -> Optional[Tuple[str, str]]:

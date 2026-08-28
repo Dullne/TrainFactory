@@ -33,6 +33,7 @@
     "createSync": "Create Sync Task"
   },
   "status": {
+    "degraded": "Degraded",
     "pending": "Pending",
     "deleting": "Deleting",
     "deleting_cascade": "Deleting outputs",
@@ -80,6 +81,7 @@
     "skipped": "Skipped"
   },
   "statusDescription": {
+    "degraded": "Some deployment replicas are unavailable, but at least one healthy replica can still serve requests.",
     "pending": "The task has been created and is waiting for scheduling or background execution.",
     "preparing": "Allocating GPU resources, loading datasets, and initializing the model.",
     "running": "The training loop is actively running and metrics should keep updating.",

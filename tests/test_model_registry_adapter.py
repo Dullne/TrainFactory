@@ -24,6 +24,10 @@ class _EmptyResult:
     def all(self):
         return []
 
+    def first(self):
+        # The registry membership gate must exist before model writers run.
+        return object()
+
 
 class _RecordingSession:
     def __init__(self):

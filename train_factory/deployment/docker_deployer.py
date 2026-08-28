@@ -5,30 +5,39 @@ Automatically creates and manages Docker containers running inference frameworks
 (Xinference, vLLM, SGLang) for model deployment.
 """
 
+import errno
+import json
 import logging
 import os
 import re
+import secrets
 import shlex
+import socket
 import subprocess
+import sys
 import threading
 import time
 from ipaddress import ip_address
-from typing import Optional, Dict, Any, Tuple, Set, List, Sequence
+from typing import Optional, Dict, Any, Tuple, Set, List, Mapping, Sequence
+from urllib.parse import urlsplit
 import requests
 
 from ..config.public_origin import is_loopback_bind_address
 from ..config.settings import get_settings
+from ..core.ssrf import SSRFError
 from ..storage.services.outbound_endpoint_policy import request_user_outbound
 from .launch_config import (
-    xinference_model_launch_overrides,
+    canonical_inference_model_type,
+    is_qwen3_reranker,
     xinference_model_type,
+    xinference_model_launch_overrides,
 )
 
 logger = logging.getLogger(__name__)
 
 # Default Docker images for different frameworks
 # 镜像版本在根目录 .env 中统一配置，通过环境变量读取
-# Xinference v3.1.0 with digest-bound compatibility payloads.
+# Xinference v3.1.0 supports Qwen3; digest-bound overlays preserve local contracts.
 DEFAULT_XINFERENCE_IMAGE = os.environ.get(
     "XINFERENCE_IMAGE",
     "xprobe/xinference:v3.1.0@sha256:ec41459d15cc1c18842370c267e9c9a12a0001245dea9fe3b939e4075dc18178",
@@ -112,10 +121,7 @@ def _validated_server_argv(
     normalized = tuple(server_argv)
     if not normalized or normalized[0] != executable:
         raise ValueError("server argv executable is invalid")
-    if any(
-        not isinstance(value, str) or not value or "\0" in value
-        for value in normalized
-    ):
+    if any(not isinstance(value, str) or not value or "\0" in value for value in normalized):
         raise ValueError("server argv contains an invalid value")
     return normalized
 
@@ -135,6 +141,194 @@ def _published_container_port(port: int) -> str:
     if is_ipv6:
         host_address = f"[{host_address}]"
     return f"{host_address}:{port}:{port}"
+
+
+_DOCKER_PORT_RANGE_RE = re.compile(r"^(\d+)(?:-(\d+))?$")
+_DOCKER_PORT_WITH_PROTOCOL_RE = re.compile(
+    r"^(\d+(?:-\d+)?)/(tcp|udp|sctp)$"
+)
+_CREATE_ATTEMPT_LABEL = "io.trainfactory.create-attempt"
+_DOCKER_ENDPOINT_COMMAND = [
+    "docker",
+    "context",
+    "inspect",
+    "--format",
+    "{{json .Endpoints.docker.Host}}",
+]
+
+
+def _container_create_labels(
+    managed_labels: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    labels = dict(managed_labels or {})
+    labels[_CREATE_ATTEMPT_LABEL] = secrets.token_hex(16)
+    return labels
+
+
+def _docker_port_range(value: str) -> tuple[int, int]:
+    match = _DOCKER_PORT_RANGE_RE.fullmatch(value)
+    if match is None:
+        raise RuntimeError("Docker port mapping output is invalid")
+    range_start = int(match.group(1))
+    range_end = int(match.group(2) or range_start)
+    if not 1 <= range_start <= range_end <= 65535:
+        raise RuntimeError("Docker port mapping output is invalid")
+    return range_start, range_end
+
+
+def _published_docker_host_port_ranges(output: str) -> list[tuple[int, int]]:
+    published_ranges: list[tuple[int, int]] = []
+    for line in output.splitlines():
+        for raw_segment in line.split(","):
+            segment = raw_segment.strip()
+            if not segment:
+                continue
+            if "->" not in segment:
+                unpublished = _DOCKER_PORT_WITH_PROTOCOL_RE.fullmatch(segment)
+                if unpublished is None:
+                    raise RuntimeError("Docker port mapping output is invalid")
+                _docker_port_range(unpublished.group(1))
+                continue
+            if segment.count("->") != 1:
+                raise RuntimeError("Docker port mapping output is invalid")
+
+            published, container = segment.split("->", 1)
+            container_match = _DOCKER_PORT_WITH_PROTOCOL_RE.fullmatch(container)
+            if container_match is None:
+                raise RuntimeError("Docker port mapping output is invalid")
+            container_start, container_end = _docker_port_range(
+                container_match.group(1)
+            )
+
+            if published.startswith("["):
+                closing_bracket = published.find("]:")
+                if closing_bracket < 2:
+                    raise RuntimeError("Docker port mapping output is invalid")
+                host = published[1:closing_bracket]
+                published_ports = published[closing_bracket + 2 :]
+            else:
+                try:
+                    host, published_ports = published.rsplit(":", 1)
+                except ValueError as exc:
+                    raise RuntimeError(
+                        "Docker port mapping output is invalid"
+                    ) from exc
+            try:
+                ip_address(host)
+            except ValueError as exc:
+                raise RuntimeError("Docker port mapping output is invalid") from exc
+
+            host_start, host_end = _docker_port_range(published_ports)
+            if host_end - host_start != container_end - container_start:
+                raise RuntimeError("Docker port mapping output is invalid")
+            published_ranges.append((host_start, host_end))
+    return published_ranges
+
+
+def _native_host_platform() -> str:
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return "other"
+
+
+def _has_container_runtime_marker() -> bool:
+    return "container" in os.environ or any(
+        os.path.exists(path) for path in ("/.dockerenv", "/run/.containerenv")
+    )
+
+
+def _has_proven_host_network_namespace() -> bool:
+    """Return true only for an identifiable native Linux host namespace."""
+
+    if _native_host_platform() != "linux":
+        return False
+    if _has_container_runtime_marker():
+        return False
+    try:
+        if os.readlink("/proc/self/ns/net") != os.readlink("/proc/1/ns/net"):
+            return False
+        with open("/proc/1/comm", encoding="utf-8") as handle:
+            init_name = handle.read().strip()
+        with open("/proc/1/cgroup", encoding="utf-8") as handle:
+            init_cgroup = handle.read().lower()
+        with open("/proc/sys/kernel/osrelease", encoding="utf-8") as handle:
+            kernel_release = handle.read().lower()
+    except (OSError, UnicodeError):
+        return False
+    if init_name not in {"init", "systemd"} or "microsoft" in kernel_release:
+        return False
+    container_markers = (
+        "docker",
+        "kubepods",
+        "containerd",
+        "lxc",
+        "libpod",
+        "podman",
+        "machine.slice",
+    )
+    return not any(marker in init_cgroup for marker in container_markers)
+
+
+def _native_process_can_probe_docker_host() -> bool:
+    """Return whether this process can observe the native host's TCP binds."""
+
+    if _has_container_runtime_marker():
+        return False
+    platform = _native_host_platform()
+    if platform in {"windows", "macos"}:
+        return True
+    if platform == "linux":
+        return _has_proven_host_network_namespace()
+    return False
+
+
+def _docker_endpoint_is_local(endpoint: str) -> bool:
+    """Classify whether the Docker CLI endpoint is hosted on this machine."""
+
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise RuntimeError("Docker endpoint is invalid")
+    parsed = urlsplit(endpoint.strip())
+    scheme = parsed.scheme.lower()
+    if scheme in {"npipe", "unix"}:
+        if not parsed.path or parsed.query or parsed.fragment:
+            raise RuntimeError("Docker endpoint is invalid")
+        return True
+    if scheme == "tcp":
+        try:
+            hostname = parsed.hostname
+            parsed.port
+        except ValueError as exc:
+            raise RuntimeError("Docker endpoint is invalid") from exc
+        if not hostname:
+            raise RuntimeError("Docker endpoint is invalid")
+        if hostname.lower() == "localhost":
+            return True
+        try:
+            return ip_address(hostname).is_loopback
+        except ValueError:
+            return False
+    if scheme == "ssh":
+        return False
+    raise RuntimeError("Docker endpoint is invalid")
+
+
+def _is_local_port_in_use(port: int) -> bool:
+    host_address, is_ipv6 = _normalized_host_bind_address()
+    family = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.bind((host_address, port))
+    except OSError as exc:
+        if exc.errno in {errno.EADDRINUSE, 10048} or getattr(
+            exc, "winerror", None
+        ) == 10048:
+            return True
+        raise RuntimeError("Local port availability probe failed") from None
+    return False
 
 
 class DockerDeployer:
@@ -206,6 +400,9 @@ class DockerDeployer:
         self,
         cmd: list,
         container_name: str,
+        *,
+        expected_image: str,
+        expected_labels: Mapping[str, str],
         timeout: int = INFERENCE_CONTAINER_CREATE_TIMEOUT_SECONDS,
     ) -> Tuple[bool, str]:
         """
@@ -219,11 +416,47 @@ class DockerDeployer:
         if success or "timed out" not in output:
             return success, output
 
-        # Timeout: verify whether the daemon created the container anyway.
+        # Timeout: accept only the exact immutable identity this create requested.
         ok, inspect_output = self._run_command(
-            ["docker", "inspect", container_name], timeout=15
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{json .}}",
+                container_name,
+            ],
+            timeout=15,
         )
-        if ok:
+        try:
+            record = json.loads(inspect_output) if ok else None
+            container_id = record["Id"]
+            name = record["Name"]
+            config = record["Config"]
+            image = config["Image"]
+            labels = config["Labels"] or {}
+        except (KeyError, TypeError, json.JSONDecodeError):
+            container_id = None
+            name = None
+            image = None
+            labels = {}
+        trainfactory_labels = {
+            key: value
+            for key, value in labels.items()
+            if isinstance(key, str) and key.startswith("com.trainfactory.")
+        }
+        expected_trainfactory_labels = {
+            key: value
+            for key, value in expected_labels.items()
+            if key.startswith("com.trainfactory.")
+        }
+        if (
+            isinstance(container_id, str)
+            and re.fullmatch(r"[0-9a-f]{64}", container_id) is not None
+            and name == f"/{container_name}"
+            and image == expected_image
+            and trainfactory_labels == expected_trainfactory_labels
+            and all(labels.get(key) == value for key, value in expected_labels.items())
+        ):
             logger.warning(
                 f"Container {container_name} created despite pull exceeding {timeout}s timeout"
             )
@@ -232,17 +465,27 @@ class DockerDeployer:
 
     def _is_port_in_use(self, port: int) -> bool:
         """Check if a port is already in use on the host."""
-        success, output = self._run_command(
-            [
-                "docker",
-                "ps",
-                "--filter",
-                f"publish={port}",
-                "--format",
-                "{{.ID}}",
-            ]
-        )
-        return success and bool(output.strip())
+        success, output = self._run_command(["docker", "ps", "--format", "{{.Ports}}"])
+        if not success:
+            raise RuntimeError("Docker port mapping query failed")
+        published_ranges = _published_docker_host_port_ranges(output)
+        if any(
+            range_start <= port <= range_end
+            for range_start, range_end in published_ranges
+        ):
+            return True
+        if not _native_process_can_probe_docker_host():
+            return False
+        endpoint_success, endpoint_output = self._run_command(_DOCKER_ENDPOINT_COMMAND)
+        if not endpoint_success:
+            raise RuntimeError("Docker endpoint query failed")
+        try:
+            endpoint = json.loads(endpoint_output)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Docker endpoint is invalid") from exc
+        if not _docker_endpoint_is_local(endpoint):
+            return False
+        return _is_local_port_in_use(port)
 
     def _get_db_reserved_ports(self) -> Set[int]:
         """Get ports reserved by deployments and configs in the database.
@@ -256,6 +499,7 @@ class DockerDeployer:
             from sqlmodel import select
             from ..storage.database import get_session
             from ..storage.entities.deployment_entity import DeploymentDB
+            from ..storage.entities.deployment_replica_entity import DeploymentReplicaDB
             from ..storage.entities.model_config_entity import ModelConfigDB
 
             with get_session() as session:
@@ -269,6 +513,17 @@ class DockerDeployer:
                 deployments = session.exec(statement).all()
                 reserved_ports.update({d.port for d in deployments if d.port is not None})
 
+                # Child rows are the canonical source for replica ports.  Keep
+                # every persisted child port reserved until that child is
+                # deleted because the schema enforces global port uniqueness.
+                replica_statement = select(DeploymentReplicaDB).where(
+                    DeploymentReplicaDB.port.isnot(None)
+                )
+                replicas = session.exec(replica_statement).all()
+                reserved_ports.update(
+                    {replica.port for replica in replicas if replica.port is not None}
+                )
+
                 # Also check model_configs for ports used by external APIs
                 # to avoid deploying on ports that configs are pointing to
                 config_statement = select(ModelConfigDB).where(
@@ -278,19 +533,14 @@ class DockerDeployer:
                 configs = session.exec(config_statement).all()
                 for config in configs:
                     if config.api_endpoint:
-                        # Extract port from endpoint URL
-                        import re
-                        match = re.search(r':(\d+)', config.api_endpoint)
-                        if match:
-                            port = int(match.group(1))
-                            # Only reserve ports in our deployment range
-                            if PORT_RANGE_START <= port <= PORT_RANGE_END:
-                                reserved_ports.add(port)
+                        port = urlsplit(config.api_endpoint).port
+                        if port is not None and PORT_RANGE_START <= port <= PORT_RANGE_END:
+                            reserved_ports.add(port)
 
                 return reserved_ports
         except Exception as e:
-            logger.warning(f"Failed to query DB for reserved ports: {e}")
-            return reserved_ports
+            logger.error(f"Failed to query DB for reserved ports: {e}")
+            raise RuntimeError("Failed to query DB for reserved ports") from e
 
     def find_available_port(
         self,
@@ -353,6 +603,27 @@ class DockerDeployer:
         ])
         return success and container_name in output
 
+    def container_exists_authoritative(self, container_name: str) -> bool:
+        """Return presence only when Docker completed the exact-name query.
+
+        The legacy ``container_exists`` helper intentionally folds command
+        failures into ``False`` for best-effort callers.  Destructive cleanup
+        cannot make that inference: daemon, permission, or timeout failures
+        mean the runtime state is unknown and must fail closed.
+        """
+        success, output = self._run_command([
+            "docker", "ps", "-a", "--format", "{{.Names}}",
+            "--filter", f"name=^{container_name}$"
+        ])
+        if not success:
+            raise RuntimeError("authoritative container presence query failed")
+        names = {
+            line.strip()
+            for line in output.splitlines()
+            if line.strip()
+        }
+        return container_name in names
+
     def container_running(self, container_name: str) -> bool:
         """Check if a container is running."""
         success, output = self._run_command([
@@ -360,6 +631,54 @@ class DockerDeployer:
             "--filter", f"name=^{container_name}$"
         ])
         return success and container_name in output
+
+    def container_running_identity(self, container_id: str) -> bool:
+        """Check runtime state through an already verified immutable ID."""
+        container_id = self._validated_container_id(container_id)
+        success, output = self._run_command(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container_id],
+            timeout=15,
+        )
+        if not success:
+            raise RuntimeError("managed replica container state inspection failed")
+        value = output.strip().lower()
+        if value not in {"true", "false"}:
+            raise RuntimeError("managed replica container state is invalid")
+        return value == "true"
+
+    def probe_service_ready(
+        self,
+        endpoint: str,
+        *,
+        user_id: Optional[str],
+        framework: str,
+        timeout: float = 2.0,
+    ) -> bool:
+        """Perform one bounded readiness check without polling or sleeping."""
+        endpoint = endpoint.rstrip("/")
+        framework = (framework or "").lower()
+        urls = (
+            [f"{endpoint}/v1/models"]
+            if framework in {"vllm", "sglang"}
+            else [f"{endpoint}/health", f"{endpoint}/v1/models"]
+        )
+        for url in urls:
+            try:
+                response = request_user_outbound(
+                    "GET",
+                    url,
+                    user_id,
+                    timeout=timeout,
+                )
+                if response.status_code != 200:
+                    continue
+                if url.endswith("/v1/models"):
+                    payload = response.json()
+                    return isinstance(payload, dict) and bool(payload.get("data"))
+                return True
+            except (requests.RequestException, SSRFError, TypeError, ValueError):
+                return False
+        return False
 
     def stop_container(self, container_name: str) -> bool:
         """Stop a running container."""
@@ -407,6 +726,167 @@ class DockerDeployer:
             logger.error(f"Failed to restart container {container_name}: {output}")
             return False, f"Failed to restart container: {output}"
 
+    @staticmethod
+    def _managed_replica_labels(
+        deployment_id: str,
+        replica_id: str,
+    ) -> dict[str, str]:
+        values = {"deployment_id": deployment_id, "replica_id": replica_id}
+        for label, value in values.items():
+            if (
+                not isinstance(value, str)
+                or not value
+                or any(character in value for character in "\r\n\x00")
+            ):
+                raise ValueError(f"container {label} is invalid")
+        project = os.environ.get("COMPOSE_PROJECT_NAME", "trainfactory")
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", project):
+            raise ValueError("container project label is invalid")
+        return {
+            "com.trainfactory.managed": "deployment-replica",
+            "com.trainfactory.project": project,
+            "com.trainfactory.deployment-id": deployment_id,
+            "com.trainfactory.replica-id": replica_id,
+        }
+
+    def get_managed_container_id(
+        self,
+        container_name: str,
+        *,
+        deployment_id: str,
+        replica_id: str,
+    ) -> str:
+        """Return an immutable ID only for the exact owned replica container."""
+        expected_labels = self._managed_replica_labels(deployment_id, replica_id)
+        success, output = self._run_command(
+            ["docker", "inspect", "--format", "{{json .}}", container_name],
+            timeout=15,
+        )
+        if not success:
+            raise RuntimeError("managed replica container inspection failed")
+        try:
+            record = json.loads(output)
+            container_id = record["Id"]
+            name = record["Name"]
+            labels = record["Config"]["Labels"] or {}
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("managed replica container identity is invalid") from exc
+        if (
+            not isinstance(container_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", container_id) is None
+            or name != f"/{container_name}"
+            or any(labels.get(key) != value for key, value in expected_labels.items())
+        ):
+            raise RuntimeError("managed replica container identity is invalid")
+        return container_id
+
+    def get_legacy_managed_container_id(
+        self,
+        container_name: str,
+        *,
+        deployment_id: str,
+        replica_id: str,
+    ) -> str:
+        """Resolve one legacy runtime without accepting conflicting TF labels."""
+        expected_labels = self._managed_replica_labels(deployment_id, replica_id)
+        success, output = self._run_command(
+            ["docker", "inspect", "--format", "{{json .}}", container_name],
+            timeout=15,
+        )
+        if not success:
+            raise RuntimeError("managed legacy container inspection failed")
+        try:
+            record = json.loads(output)
+            container_id = record["Id"]
+            name = record["Name"]
+            labels = record["Config"]["Labels"] or {}
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("managed legacy container identity is invalid") from exc
+        trainfactory_labels = {
+            key: value
+            for key, value in labels.items()
+            if isinstance(key, str) and key.startswith("com.trainfactory.")
+        }
+        if (
+            not isinstance(container_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", container_id) is None
+            or name != f"/{container_name}"
+            or (trainfactory_labels and trainfactory_labels != expected_labels)
+        ):
+            raise RuntimeError("managed legacy container identity is invalid")
+        return container_id
+
+    def get_managed_replica_container_id(self, container_name: str) -> str:
+        """Resolve an orphan candidate only when its own labels prove ownership."""
+        success, output = self._run_command(
+            ["docker", "inspect", "--format", "{{json .}}", container_name],
+            timeout=15,
+        )
+        if not success:
+            raise RuntimeError("managed replica container inspection failed")
+        try:
+            record = json.loads(output)
+            container_id = record["Id"]
+            name = record["Name"]
+            labels = record["Config"]["Labels"] or {}
+            deployment_id = labels["com.trainfactory.deployment-id"]
+            replica_id = labels["com.trainfactory.replica-id"]
+            expected_labels = self._managed_replica_labels(
+                deployment_id,
+                replica_id,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("managed replica container identity is invalid") from exc
+        if (
+            not isinstance(container_id, str)
+            or re.fullmatch(r"[0-9a-f]{64}", container_id) is None
+            or name != f"/{container_name}"
+            or any(labels.get(key) != value for key, value in expected_labels.items())
+        ):
+            raise RuntimeError("managed replica container identity is invalid")
+        return container_id
+
+    @staticmethod
+    def _validated_container_id(container_id: str) -> str:
+        if not isinstance(container_id, str) or re.fullmatch(
+            r"[0-9a-f]{64}", container_id
+        ) is None:
+            raise ValueError("container identity is invalid")
+        return container_id
+
+    def stop_container_identity(self, container_id: str) -> bool:
+        """Stop one previously verified immutable container ID."""
+        container_id = self._validated_container_id(container_id)
+        success, _output = self._run_command(
+            ["docker", "stop", container_id],
+            timeout=30,
+        )
+        return success
+
+    def restart_container_identity(
+        self,
+        container_id: str,
+        timeout: int = 30,
+    ) -> Tuple[bool, str]:
+        """Restart one previously verified immutable container ID."""
+        container_id = self._validated_container_id(container_id)
+        success, output = self._run_command(
+            ["docker", "restart", container_id],
+            timeout=timeout,
+        )
+        return success, output.strip() or (
+            "Container restarted" if success else "Container restart failed"
+        )
+
+    def remove_container_identity(self, container_id: str) -> bool:
+        """Force-remove one previously verified immutable container ID."""
+        container_id = self._validated_container_id(container_id)
+        success, _output = self._run_command(
+            ["docker", "rm", "--force", container_id],
+            timeout=30,
+        )
+        return success
+
     def create_xinference_container(
         self,
         container_name: str,
@@ -416,6 +896,8 @@ class DockerDeployer:
         model_uid: str = None,
         model_path: str = None,
         model_type: str = "embedding",
+        deployment_id: str | None = None,
+        replica_id: str | None = None,
     ) -> Tuple[bool, str, str]:
         """
         Create and start a Xinference container.
@@ -438,8 +920,28 @@ class DockerDeployer:
         if type(port) is not int or not 1 <= port <= 65535:
             raise ValueError("container port is invalid")
         _validated_gpu_ids((gpu_id,))
+        if (deployment_id is None) != (replica_id is None):
+            raise ValueError("managed replica labels are incomplete")
         published_port = _published_container_port(port)
 
+        # The managed lifecycle proves/removes any legacy runtime by immutable
+        # identity before calling create. Compatibility callers retain the old
+        # best-effort name cleanup behavior.
+        if deployment_id is None and replica_id is None:
+            self.remove_container(container_name)
+
+        expected_labels: dict[str, str] = {}
+        if deployment_id is not None and replica_id is not None:
+            expected_labels = self._managed_replica_labels(
+                deployment_id,
+                replica_id,
+            )
+        expected_labels = _container_create_labels(expected_labels)
+        labels: list[str] = []
+        for key, value in expected_labels.items():
+            labels.extend(["--label", f"{key}={value}"])
+
+        # Build the command that runs inside container
         model_name = model_name or model_uid
         launch_overrides = xinference_model_launch_overrides(
             model_type=model_type,
@@ -473,6 +975,7 @@ class DockerDeployer:
             "--network", DEFAULT_DOCKER_NETWORK,
             "--gpus", f"device={gpu_id}",
             "-p", published_port,
+            *labels,
             "-e", f"HF_ENDPOINT={self.hf_endpoint}",
             "-e", (
                 "ALLOW_MODEL_REMOTE_CODE=true"
@@ -501,8 +1004,12 @@ class DockerDeployer:
 
         docker_cmd = self._cmd_to_string(cmd)
         logger.info(f"Creating container {container_name} on port {port} with GPU {gpu_id}")
-        self.remove_container(container_name)
-        success, output = self._run_container_create(cmd, container_name)
+        success, output = self._run_container_create(
+            cmd,
+            container_name,
+            expected_image=self.image,
+            expected_labels=expected_labels,
+        )
 
         if success:
             logger.info(f"Container {container_name} created successfully")
@@ -675,7 +1182,7 @@ class DockerDeployer:
 
         project = os.environ.get("COMPOSE_PROJECT_NAME", "trainfactory")
         managed_name = re.compile(
-            rf"^{re.escape(project)}-(?:xf|vllm|sglang)-.+-[0-9a-f]{{8}}$",
+            rf"^{re.escape(project)}-(?:xf|vllm|sglang)-.+-[0-9a-f]{{8}}(?:-r[1-9][0-9]*)?$",
             re.IGNORECASE,
         )
         return [
@@ -700,7 +1207,17 @@ class DockerDeployer:
         for container_name in managed_containers:
             if container_name not in valid_container_names:
                 logger.warning(f"Found orphan container: {container_name}")
-                if self.remove_container(container_name):
+                try:
+                    container_id = self.get_managed_replica_container_id(
+                        container_name
+                    )
+                except Exception:
+                    logger.error(
+                        "Preserving unverified orphan candidate: %s",
+                        container_name,
+                    )
+                    continue
+                if self.remove_container_identity(container_id):
                     removed_count += 1
                     logger.info(f"Removed orphan container: {container_name}")
                 else:
@@ -710,12 +1227,299 @@ class DockerDeployer:
 
     # ==================== vLLM Container ====================
 
+    def _legacy_create_vllm_container(
+        self,
+        container_name: str,
+        port: int,
+        gpu_id: int = 0,
+        model_path: str = None,
+        model_name: str = None,
+        model_type: str = "embedding",
+        enable_lora: bool = False,
+        max_loras: int = 4,
+        max_lora_rank: int = 64,
+        gpu_memory_utilization: float = 0.9,
+        dtype: Optional[str] = None,
+        enforce_eager: bool = False,
+    ) -> Tuple[bool, str, str]:
+        """
+        Create and start a vLLM container.
+
+        Args:
+            container_name: Name for the container
+            port: Port to expose
+            gpu_id: GPU device ID to use
+            model_path: Path to model files (container path)
+            model_name: Model name for --served-model-name (defaults to path basename)
+            model_type: Model type (embedding, rerank, llm)
+            enable_lora: Enable LoRA hot-loading
+            max_loras: Maximum number of LoRA adapters
+            max_lora_rank: Maximum LoRA rank
+            gpu_memory_utilization: GPU memory utilization (0.0-1.0)
+
+        Returns:
+            (success, message)
+        """
+        model_type = canonical_inference_model_type(model_type)
+        published_port = _published_container_port(port)
+        expected_labels = _container_create_labels()
+        labels = [
+            value
+            for key, label_value in expected_labels.items()
+            for value in ("--label", f"{key}={label_value}")
+        ]
+
+        # Remove existing container if any
+        self.remove_container(container_name)
+
+        # Keep this compatibility helper aligned with the pinned vLLM 0.26 API.
+        # Use list format to avoid shell quoting issues
+        extra_args: List[str] = []
+        if model_type == "embedding":
+            extra_args = ["--runner", "pooling"]
+        elif model_type == "rerank" or model_type == "reranker":
+            extra_args = ["--runner", "pooling"]
+            if is_qwen3_reranker(model_type, model_name):
+                hf_overrides = json.dumps(
+                    {
+                        "architectures": ["Qwen3ForSequenceClassification"],
+                        "classifier_from_token": ["no", "yes"],
+                        "is_original_qwen3_reranker": True,
+                    },
+                    separators=(",", ":"),
+                )
+                extra_args.extend(
+                    [
+                        "--hf-overrides",
+                        hf_overrides,
+                        "--chat-template",
+                        "/vllm-workspace/examples/pooling/score/template/"
+                        "qwen3_reranker.jinja",
+                    ]
+                )
+
+        # 与 SGLang/Xinference 容器一致：allow_model_remote_code 时放行远程代码执行
+        if get_settings().allow_model_remote_code:
+            extra_args.append("--trust-remote-code")
+
+        # LoRA configuration
+        if enable_lora:
+            extra_args.extend(["--enable-lora", "--max-loras", str(max_loras), "--max-lora-rank", str(max_lora_rank)])
+
+        # Build docker run command
+        env_vars = ["-e", f"HF_ENDPOINT={self.hf_endpoint}"]
+        if enable_lora:
+            env_vars.extend(["-e", "VLLM_ALLOW_RUNTIME_LORA_UPDATING=1"])
+
+        # dtype and enforce_eager options
+        if dtype:
+            extra_args.extend(["--dtype", dtype])
+        if enforce_eager:
+            extra_args.append("--enforce-eager")
+
+        # Build serve arguments (not using bash -c, direct args to vllm serve)
+        # Use model_name for --served-model-name, or extract from path if not provided
+        served_name = model_name or model_path.rstrip('/').split('/')[-1]
+        serve_args = [
+            model_path,
+            "--host", "0.0.0.0",
+            "--port", str(port),
+            "--gpu-memory-utilization", str(gpu_memory_utilization),
+            "--served-model-name", served_name,
+            "--allowed-origins", '["*"]',  # Enable CORS for frontend API testing
+        ] + extra_args
+
+        cmd = [
+            "docker", "run", "--pull=missing", "-d",
+            "--name", container_name,
+            "--network", DEFAULT_DOCKER_NETWORK,
+            "--gpus", f"device={gpu_id}",
+            "-p", published_port,
+            *labels,
+            "-v", self.data_volume,
+            "-v", self.models_volume,
+            "-v", self.output_volume,
+            "-v", self.extra_model_volume,
+            *_shm_size_args(),
+            "--log-opt", "max-size=10m",
+            "--log-opt", "max-file=3",
+            "--entrypoint", "vllm",  # Override entrypoint to use vllm CLI
+        ] + env_vars + [
+            self.vllm_image,
+            "serve",
+        ] + serve_args
+
+        docker_cmd = self._cmd_to_string(cmd)
+        logger.info(f"Creating vLLM container {container_name} on port {port} with GPU {gpu_id}")
+        success, output = self._run_container_create(
+            cmd,
+            container_name,
+            expected_image=self.vllm_image,
+            expected_labels=expected_labels,
+        )
+
+        if success:
+            logger.info(f"vLLM container {container_name} created successfully")
+            return True, f"Container {container_name} created on port {port}", docker_cmd
+        else:
+            logger.error(f"Failed to create vLLM container {container_name}: {output}")
+            return False, output, docker_cmd
+
+    # ==================== SGLang Container ====================
+
+    def _legacy_create_sglang_container(
+        self,
+        container_name: str,
+        port: int,
+        gpu_id: int = 0,
+        model_path: str = None,
+        model_name: str = None,
+        model_type: str = "embedding",
+        enable_lora: bool = False,
+        max_loras: int = 4,
+        max_lora_rank: int = 64,
+        chat_template: Optional[str] = None,
+        gpu_memory_utilization: float = 0.9,
+        dtype: Optional[str] = None,
+        attention_backend: Optional[str] = None,
+    ) -> Tuple[bool, str, str]:
+        """
+        Create and start a SGLang container.
+
+        Args:
+            container_name: Name for the container
+            port: Port to expose
+            gpu_id: GPU device ID to use
+            model_path: Path to model files (container path)
+            model_name: Model name (used to construct container-internal path
+                        so SGLang can identify model type from path name)
+            model_type: Model type (embedding, rerank, llm)
+            enable_lora: Enable LoRA hot-loading
+            max_loras: Maximum number of LoRA adapters
+            max_lora_rank: Maximum LoRA rank
+            chat_template: Path to custom chat template (for reranker)
+            gpu_memory_utilization: GPU memory utilization (0.0-1.0)
+
+        Returns:
+            (success, message)
+        """
+        model_type = canonical_inference_model_type(model_type)
+        published_port = _published_container_port(port)
+        expected_labels = _container_create_labels()
+        labels = [
+            value
+            for key, label_value in expected_labels.items()
+            for value in ("--label", f"{key}={label_value}")
+        ]
+
+        # Remove existing container if any
+        self.remove_container(container_name)
+
+        # Build SGLang launch command based on model type
+        if model_type == "embedding":
+            type_args = "--is-embedding"
+            if get_settings().allow_model_remote_code:
+                type_args = f"--trust-remote-code {type_args}"
+        elif model_type == "rerank" or model_type == "reranker":
+            # Qwen3-Reranker needs generation mode (NOT --is-embedding)
+            # with custom chat template for yes/no scoring
+            type_args = "--disable-radix-cache"
+            if get_settings().allow_model_remote_code:
+                type_args = f"--trust-remote-code {type_args}"
+            if chat_template:
+                type_args += f" --chat-template {shlex.quote(chat_template)}"
+        else:
+            type_args = ""
+
+        # dtype and attention backend options
+        if dtype:
+            type_args += f" --dtype {shlex.quote(dtype)}"
+        if attention_backend:
+            type_args += f" --attention-backend {shlex.quote(attention_backend)}"
+
+        # LoRA configuration
+        # SGLang requires --max-lora-rank AND --lora-target-modules when --enable-lora is set without --lora-paths
+        if enable_lora:
+            # Default target modules cover common Qwen LoRA configurations
+            default_modules = "q_proj k_proj v_proj o_proj gate_proj up_proj down_proj"
+            lora_args = (
+                f"--enable-lora --max-loaded-loras {max_loras} "
+                f"--max-loras-per-batch {max_loras} "
+                f"--max-lora-rank {max_lora_rank} "
+                f"--lora-target-modules {default_modules}"
+            )
+        else:
+            lora_args = ""
+
+        # SGLang identifies model type from path name (e.g. "Embedding" in path).
+        # Create a symlink inside container so SGLang sees a path containing the model name.
+        # The model is already mounted via models_volume, no extra -v needed.
+        if model_name:
+            effective_path = f"/model/{model_name}"
+            symlink_cmd = f"mkdir -p /model && ln -sfn {shlex.quote(model_path)} {shlex.quote(effective_path)} && "
+        else:
+            effective_path = model_path
+            symlink_cmd = ""
+
+        # Build the launch command
+        # v0.5.17 keeps the Python module for compatibility but recommends
+        # the stable CLI entrypoint. exec preserves Docker signal handling.
+        inner_cmd = f"""{symlink_cmd}exec sglang serve \
+                --model-path {shlex.quote(effective_path)} \
+                --host 0.0.0.0 \
+                --port {port} \
+                --mem-fraction-static {gpu_memory_utilization} \
+                {type_args} \
+                {lora_args}
+        """
+
+        # Build docker run command
+        cmd = [
+            "docker", "run", "--pull=missing", "-d",
+            "--name", container_name,
+            "--network", DEFAULT_DOCKER_NETWORK,
+            "--gpus", f"device={gpu_id}",
+            "-p", published_port,
+            *labels,
+            "-e", f"HF_ENDPOINT={self.hf_endpoint}",
+            "-v", self.data_volume,
+            "-v", self.models_volume,
+            "-v", self.output_volume,
+            "-v", self.extra_model_volume,
+            "-v", self.sglang_template_volume,
+            *_shm_size_args(),
+        ]
+        cmd.extend([
+            "--log-opt", "max-size=10m",
+            "--log-opt", "max-file=3",
+            self.sglang_image,
+            "bash", "-c", inner_cmd,
+        ])
+
+        docker_cmd = self._cmd_to_string(cmd)
+        logger.info(f"Creating SGLang container {container_name} on port {port} with GPU {gpu_id}")
+        success, output = self._run_container_create(
+            cmd,
+            container_name,
+            expected_image=self.sglang_image,
+            expected_labels=expected_labels,
+        )
+
+        if success:
+            logger.info(f"SGLang container {container_name} created successfully")
+            return True, f"Container {container_name} created on port {port}", docker_cmd
+        else:
+            logger.error(f"Failed to create SGLang container {container_name}: {output}")
+            return False, output, docker_cmd
+
     def create_vllm_container(
         self,
         container_name: str,
         port: int,
         gpu_ids: Sequence[int],
         server_argv: Sequence[str],
+        deployment_id: str | None = None,
+        replica_id: str | None = None,
     ) -> Tuple[bool, str, str]:
         """Create vLLM from a validated immutable application argv."""
         normalized_gpu_ids = _validated_gpu_ids(gpu_ids)
@@ -728,6 +1532,18 @@ class DockerDeployer:
         if not isinstance(container_name, str) or not container_name:
             raise ValueError("container name is invalid")
 
+        expected_labels: dict[str, str] = {}
+        if deployment_id is not None or replica_id is not None:
+            if deployment_id is None or replica_id is None:
+                raise ValueError("managed replica labels are incomplete")
+            expected_labels = self._managed_replica_labels(
+                deployment_id,
+                replica_id,
+            )
+        expected_labels = _container_create_labels(expected_labels)
+        labels: list[str] = []
+        for key, value in expected_labels.items():
+            labels.extend(["--label", f"{key}={value}"])
         env_vars = ["-e", f"HF_ENDPOINT={self.hf_endpoint}"]
         if "--enable-lora" in normalized_server_argv:
             env_vars.extend(["-e", "VLLM_ALLOW_RUNTIME_LORA_UPDATING=1"])
@@ -744,6 +1560,7 @@ class DockerDeployer:
             f"device={','.join(map(str, normalized_gpu_ids))}",
             "-p",
             _published_container_port(port),
+            *labels,
             "-v",
             self.data_volume,
             "-v",
@@ -770,13 +1587,15 @@ class DockerDeployer:
             port,
             normalized_gpu_ids,
         )
-        self.remove_container(container_name)
-        success, output = self._run_container_create(command, container_name)
+        success, output = self._run_container_create(
+            command,
+            container_name,
+            expected_image=self.vllm_image,
+            expected_labels=expected_labels,
+        )
         if success:
             return True, f"Container {container_name} created on port {port}", docker_cmd
         return False, output, docker_cmd
-
-    # ==================== SGLang Container ====================
 
     def create_sglang_container(
         self,
@@ -784,6 +1603,8 @@ class DockerDeployer:
         port: int,
         gpu_ids: Sequence[int],
         server_argv: Sequence[str],
+        deployment_id: str | None = None,
+        replica_id: str | None = None,
     ) -> Tuple[bool, str, str]:
         """Create SGLang from a validated immutable application argv."""
         normalized_gpu_ids = _validated_gpu_ids(gpu_ids)
@@ -796,6 +1617,18 @@ class DockerDeployer:
         if not isinstance(container_name, str) or not container_name:
             raise ValueError("container name is invalid")
 
+        expected_labels: dict[str, str] = {}
+        if deployment_id is not None or replica_id is not None:
+            if deployment_id is None or replica_id is None:
+                raise ValueError("managed replica labels are incomplete")
+            expected_labels = self._managed_replica_labels(
+                deployment_id,
+                replica_id,
+            )
+        expected_labels = _container_create_labels(expected_labels)
+        labels: list[str] = []
+        for key, value in expected_labels.items():
+            labels.extend(["--label", f"{key}={value}"])
         command = [
             "docker",
             "run",
@@ -809,6 +1642,7 @@ class DockerDeployer:
             f"device={','.join(map(str, normalized_gpu_ids))}",
             "-p",
             _published_container_port(port),
+            *labels,
             "-e",
             f"HF_ENDPOINT={self.hf_endpoint}",
             "-v",
@@ -838,8 +1672,12 @@ class DockerDeployer:
             port,
             normalized_gpu_ids,
         )
-        self.remove_container(container_name)
-        success, output = self._run_container_create(command, container_name)
+        success, output = self._run_container_create(
+            command,
+            container_name,
+            expected_image=self.sglang_image,
+            expected_labels=expected_labels,
+        )
         if success:
             return True, f"Container {container_name} created on port {port}", docker_cmd
         return False, output, docker_cmd

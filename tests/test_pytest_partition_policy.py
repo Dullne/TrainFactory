@@ -97,10 +97,16 @@ def test_partition_checker_collects_four_disjoint_exhaustive_sets():
     responses = iter(
         (
             _completed("tests/test_a.py::test_backend\ntests/test_b.py::test_host\n"
-                       "tests/integration/test_mysql_migrations.py::test_mysql\n3 tests collected in 0.01s\n"),
+                       "tests/integration/test_mysql_migrations.py::test_mysql\n"
+                       "tests/integration/test_mysql_sync_lock_order.py::test_sync\n"
+                       "4 tests collected in 0.01s\n"),
             _completed("tests/test_a.py::test_backend\n1 test collected\n"),
-            _completed("tests/test_b.py::test_host\n1/3 tests collected (2 deselected) in 0.01s\n"),
-            _completed("tests/integration/test_mysql_migrations.py::test_mysql\n1 test collected\n"),
+            _completed("tests/test_b.py::test_host\n1/4 tests collected (3 deselected) in 0.01s\n"),
+            _completed(
+                "tests/integration/test_mysql_migrations.py::test_mysql\n"
+                "tests/integration/test_mysql_sync_lock_order.py::test_sync\n"
+                "2 tests collected\n"
+            ),
         )
     )
     calls = []
@@ -111,7 +117,7 @@ def test_partition_checker_collects_four_disjoint_exhaustive_sets():
 
     summary = module.check_partitions(root=ROOT_DIR, python=sys.executable, run=run)
 
-    assert summary == {"all": 3, "backend": 1, "host_tools": 1, "mysql_migrations": 1}
+    assert summary == {"all": 4, "backend": 1, "host_tools": 1, "mysql_migrations": 2}
     assert len(calls) == 4
     for arguments, kwargs in calls:
         assert arguments[:5] == [
@@ -138,14 +144,18 @@ def test_partition_checker_collects_four_disjoint_exhaustive_sets():
 
     all_argv, backend_argv, host_argv, mysql_argv = [call[0] for call in calls]
     assert "-m" not in all_argv[5:]
-    assert backend_argv[-4:] == [
+    assert backend_argv[-5:] == [
         "-m",
         "not host_tools",
         "--ignore=tests/integration/test_mysql_migrations.py",
+        "--ignore=tests/integration/test_mysql_sync_lock_order.py",
         "tests",
     ]
     assert host_argv[-3:] == ["-m", "host_tools", "tests"]
-    assert mysql_argv[-1] == "tests/integration/test_mysql_migrations.py"
+    assert mysql_argv[-2:] == [
+        "tests/integration/test_mysql_migrations.py",
+        "tests/integration/test_mysql_sync_lock_order.py",
+    ]
 
 
 @pytest.mark.parametrize(

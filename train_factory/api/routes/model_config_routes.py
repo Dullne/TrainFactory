@@ -22,6 +22,9 @@ from ...storage.services.outbound_endpoint_policy import (
 )
 from ...storage.services.milvus_collection_service import milvus_collection_service
 from ...storage.services.model_config_service import model_config_service
+from ...storage.services.runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
+)
 from ...deployment.deployment_service import (
     deployment_service,
     get_default_xinference_endpoint,
@@ -117,6 +120,7 @@ class ConfigResponse(BaseModel):
     # Source and deployment info
     source_type: Optional[str] = None  # external_api or local_deployed
     deployment_id: Optional[str] = None
+    deployment_replica_id: Optional[str] = None
     container_name: Optional[str] = None  # Container name for local deployed
     inference_framework: Optional[str] = None  # xinference, vllm, sglang
     # Optional API validation result, populated when create/update requested validate_api
@@ -331,6 +335,7 @@ def _config_to_response(config: Dict[str, Any], mask_key: bool = True) -> Config
         updated_at=config["updated_at"].isoformat() if config.get("updated_at") else None,
         source_type=config.get("source_type", "external_api"),
         deployment_id=deployment_id,
+        deployment_replica_id=config.get("deployment_replica_id"),
         container_name=container_name,
         inference_framework=inference_framework,
     )
@@ -647,18 +652,25 @@ async def update_config(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Update configuration."""
-    _verify_model_config_access(
+    existing_config = _verify_model_config_access(
         model_config_service.get_config(config_id), current_user
+    )
+    has_local_binding = (
+        existing_config.get("source_type") == "local_deployed"
+        and bool(
+            existing_config.get("deployment_id")
+            or existing_config.get("deployment_replica_id")
+        )
     )
     success = model_config_service.update_config(
         config_id=config_id,
         config_name=request.config_name,
-        model_type=request.model_type,
-        provider=request.provider,
-        api_endpoint=request.api_endpoint,
-        api_key=request.api_key,
-        model_name=request.model_name,
-        provider_config=request.provider_config,
+        model_type=None if has_local_binding else request.model_type,
+        provider=None if has_local_binding else request.provider,
+        api_endpoint=None if has_local_binding else request.api_endpoint,
+        api_key=None if has_local_binding else request.api_key,
+        model_name=None if has_local_binding else request.model_name,
+        provider_config=None if has_local_binding else request.provider_config,
         default_params=request.default_params,
         description=request.description,
         tags=request.tags,
@@ -681,7 +693,10 @@ async def delete_config(
     _verify_model_config_access(
         model_config_service.get_config(config_id), current_user
     )
-    success = model_config_service.delete_config(config_id)
+    try:
+        success = model_config_service.delete_config(config_id)
+    except RuntimeDependencyUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=404, detail=f"Config not found: {config_id}")
     return {"message": f"Config {config_id} deleted"}
@@ -1020,10 +1035,7 @@ async def test_api_proxy(
     if deployment_id and not inference_framework:
         # 使用缓存
         if deployment_id in _deployment_framework_cache:
-            inference_framework = (
-                _deployment_framework_cache[deployment_id]
-                or inference_framework
-            )
+            inference_framework = _deployment_framework_cache[deployment_id] or ''
         else:
             try:
                 deployment = deployment_service.get_deployment(deployment_id)

@@ -127,6 +127,7 @@ jobs:
             "trainfactory-test:$GITHUB_SHA" \
             python -I -m pytest -q --strict-markers -m "not host_tools" \
               --ignore=tests/integration/test_mysql_migrations.py \
+              --ignore=tests/integration/test_mysql_sync_lock_order.py \
               --junitxml=/reports/backend.xml
       - name: Validate backend report
         id: backend-validator
@@ -348,6 +349,9 @@ jobs:
           package-manager-cache: false
       - run: npm ci
       - run: npm run test:playwright-runtime
+      - run: npm run test:deployment-lora-policy
+      - run: npm run test:deployment-config-policy
+      - run: npm run test:deployment-replica-policy
       - run: npm run lint
       - run: npm run test:bundle
       - run: npm run build

@@ -14,6 +14,10 @@ from sqlmodel import Session, SQLModel, create_engine
 from train_factory.api.routes import training_routes
 from train_factory.enums import TrainingStatus
 from train_factory.storage.entities.training_task_entity import TrainingTaskDB
+from train_factory.storage.entities.model_registry_entity import ModelRegistryDB
+from train_factory.storage.entities.model_artifact_membership_gate_entity import (
+    ModelArtifactMembershipGateDB,
+)
 
 service_module = importlib.import_module(
     "train_factory.storage.services.training_task_service"
@@ -26,7 +30,17 @@ def _training_service():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
-    SQLModel.metadata.create_all(engine, tables=[TrainingTaskDB.__table__])
+    SQLModel.metadata.create_all(
+        engine,
+        tables=[
+            ModelArtifactMembershipGateDB.__table__,
+            ModelRegistryDB.__table__,
+            TrainingTaskDB.__table__,
+        ],
+    )
+    with Session(engine) as session:
+        session.add(ModelArtifactMembershipGateDB(gate_id=1))
+        session.commit()
 
     @contextmanager
     def test_session():

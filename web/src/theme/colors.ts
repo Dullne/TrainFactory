@@ -64,6 +64,7 @@ export const STATUS_COLOR_MAP: Record<string, string> = {
   pending: STATUS_WARNING,
   preparing: STATUS_INFO,
   running: STATUS_INFO,
+  degraded: STATUS_WARNING,
   stopping: STATUS_INFO,
   recovering: STATUS_INFO,
   publishing: STATUS_INFO,

@@ -6,7 +6,10 @@ from fastapi import HTTPException
 
 from train_factory.api.routes import generation_routes, milvus_routes, model_config_routes
 from train_factory.deployment.docker_deployer import docker_deployer
-from train_factory.deployment.deployment_service import deployment_service
+from train_factory.deployment.deployment_service import (
+    ReplicaOperationClaim,
+    deployment_service,
+)
 from train_factory.generation import pipeline as pipeline_module
 from train_factory.generation.pipeline import DatasetGenerationPipeline, PipelineConfig
 from train_factory.generation.steps.base import Document, GeneratedSample
@@ -156,6 +159,8 @@ def test_container_cleanup_failure_preserves_deployment_retry_handle(monkeypatch
         deploy_mode="container",
         container_name="model-container",
         deployment_id="deployment-1",
+        config={},
+        inference_framework="xinference",
     )
     monkeypatch.setattr(
         deployment_service,
@@ -167,10 +172,25 @@ def test_container_cleanup_failure_preserves_deployment_retry_handle(monkeypatch
         "_require_managed_container",
         lambda _deployment: None,
     )
+    monkeypatch.setattr(
+        deployment_service,
+        "_require_replica_operation_ownership",
+        lambda _claim: None,
+    )
     monkeypatch.setattr(docker_deployer, "remove_container", lambda name: False)
 
     with pytest.raises(RuntimeError, match="deployment-1"):
-        _remove_deployment_container(deployment, "model-1")
+        _remove_deployment_container(
+            deployment,
+            "model-1",
+            replica_operation_claim=ReplicaOperationClaim(
+                deployment_id="deployment-1",
+                token="delete-token",
+                generation=1,
+                operation="delete",
+                replica_id=None,
+            ),
+        )
 
 
 @pytest.mark.parametrize(

@@ -590,7 +590,7 @@ def test_lifecycle_schema_validation_migration_is_current_head_and_downgrade_is_
     assert operations.mutations == []
 
 
-def test_lifecycle_schema_validation_migration_is_alembic_head():
+def test_replica_binding_migration_is_alembic_head():
     pytest.importorskip("alembic")
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -605,7 +605,7 @@ def test_lifecycle_schema_validation_migration_is_alembic_head():
         )
     )
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "053_validate_lifecycle_schema"
+    assert script.get_current_head() == "058_add_model_artifact_membership_gate"
 
 
 def test_lifecycle_schema_validation_sanitizes_whitelisted_import_errors(

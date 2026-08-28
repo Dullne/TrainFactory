@@ -12,6 +12,24 @@ import uuid
 from ...enums.model_status import ModelStatus
 from train_factory.core.time_utils import now_naive
 
+
+MODEL_DELETE_INTENT_METADATA_KEY = "_train_factory_model_delete_intent_v1"
+
+
+def public_model_extra_metadata(
+    extra_metadata: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Strip operator-owned lifecycle metadata from public model payloads."""
+    if not isinstance(extra_metadata, dict):
+        return extra_metadata
+    intent = extra_metadata.get(MODEL_DELETE_INTENT_METADATA_KEY)
+    if isinstance(intent, dict) and type(intent.get("had_extra_metadata")) is bool:
+        if not intent["had_extra_metadata"]:
+            return None
+    public_metadata = dict(extra_metadata)
+    public_metadata.pop(MODEL_DELETE_INTENT_METADATA_KEY, None)
+    return public_metadata
+
 class ModelRegistryDB(SQLModel, table=True):
     """Model registry database model."""
 
@@ -135,7 +153,7 @@ class ModelRegistryDB(SQLModel, table=True):
             "description": self.description,
             "tags": self.tags,
             "category": self.category,
-            "extra_metadata": self.extra_metadata,
+            "extra_metadata": public_model_extra_metadata(self.extra_metadata),
             "metrics": self.metrics,
             "file_size": self.file_size,
             "status": self.status,

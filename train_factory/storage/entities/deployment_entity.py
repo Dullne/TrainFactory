@@ -80,15 +80,25 @@ class DeploymentDB(SQLModel, table=True):
     started_at: Optional[datetime] = Field(default=None)
     stopped_at: Optional[datetime] = Field(default=None)
 
+    # Durable CAS fence for replica lifecycle operations. A non-null token is
+    # deliberately never expired implicitly: startup recovery must fail closed.
+    replica_operation_token: Optional[str] = Field(default=None, max_length=36)
+    replica_operation_kind: Optional[str] = Field(default=None, max_length=16)
+    replica_operation_replica_id: Optional[str] = Field(default=None, max_length=36)
+    replica_operation_generation: int = Field(default=0)
+    replica_operation_started_at: Optional[datetime] = Field(default=None)
+    replica_operation_heartbeat_at: Optional[datetime] = Field(default=None)
+
     # Valid status transitions
     VALID_TRANSITIONS: ClassVar[Dict[str, Set[str]]] = {
         "pending": {"starting", "failed", "stopped", "restarting"},  # stopped: user cancel before start
-        "starting": {"running", "failed", "stopping", "stopped", "restarting"},  # stopping: user abort during startup
-        "running": {"stopping", "stopped", "failed", "restarting"},  # stopped: for shared stop detection (auto-sync)
-        "stopping": {"stopped", "failed", "restarting"},
-        "stopped": {"starting", "pending", "restarting"},  # Allow restart or reset
-        "failed": {"pending", "starting", "restarting"},  # Allow retry from failed state
-        "restarting": {"running", "failed", "stopped"},
+        "starting": {"running", "degraded", "failed", "stopping", "stopped", "restarting"},  # stopping: user abort during startup
+        "running": {"degraded", "stopping", "stopped", "failed", "restarting"},  # stopped: for shared stop detection (auto-sync)
+        "degraded": {"starting", "running", "stopping", "stopped", "failed", "restarting"},
+        "stopping": {"stopped", "degraded", "failed", "restarting"},
+        "stopped": {"starting", "pending", "restarting", "degraded"},  # Allow restart or reset
+        "failed": {"pending", "starting", "restarting", "degraded"},  # Allow retry from failed state
+        "restarting": {"running", "degraded", "failed", "stopped"},
     }
 
     def update_status(self, status: str, error_message: Optional[str] = None):

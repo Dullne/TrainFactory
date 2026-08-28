@@ -27,7 +27,11 @@ from ..storage.services.dataset_service import DatasetConsumptionUnavailableErro
 from ..enums import TrainingStatus
 from .routes.training_routes import router as training_router
 from .routes.registry_routes import router as registry_router
-from .routes.deployment_routes import router as deployment_router
+from .routes.deployment_routes import (
+    _drain_deferred_deployment_starts,
+    _resume_deferred_deployment_starts,
+    router as deployment_router,
+)
 from .routes.model_config_routes import router as model_config_router
 from .routes.dataset_routes import router as dataset_router
 from .routes.resource_routes import router as resource_router
@@ -775,17 +779,41 @@ def cleanup_orphan_containers():
         from sqlmodel import select
         from ..storage.database import get_session
         from ..storage.entities.deployment_entity import DeploymentDB
+        from ..storage.entities.deployment_replica_entity import DeploymentReplicaDB
+        from ..deployment.deployment_service import deployment_service
         from ..deployment.docker_deployer import docker_deployer
+
+        deployment_service.recover_stale_replica_operations()
 
         # Get all container names from active deployments
         with get_session() as session:
             statement = select(DeploymentDB).where(
                 DeploymentDB.deploy_mode == "container",
                 DeploymentDB.container_name.isnot(None),
-                DeploymentDB.status.in_(["pending", "starting", "running", "restarting"])
+                (
+                    DeploymentDB.status.in_(
+                        ["pending", "starting", "running", "degraded", "restarting"]
+                    )
+                    | DeploymentDB.replica_operation_token.isnot(None)
+                ),
             )
             deployments = session.exec(statement).all()
-            valid_containers = {d.container_name for d in deployments if d.container_name}
+            deployment_ids = {deployment.deployment_id for deployment in deployments}
+            replicas = session.exec(
+                select(DeploymentReplicaDB).where(
+                    DeploymentReplicaDB.deployment_id.in_(deployment_ids)
+                )
+            ).all() if deployment_ids else []
+            child_parent_ids = {replica.deployment_id for replica in replicas}
+            valid_containers = {
+                replica.container_name for replica in replicas if replica.container_name
+            }
+            valid_containers.update(
+                deployment.container_name
+                for deployment in deployments
+                if deployment.deployment_id not in child_parent_ids
+                and deployment.container_name
+            )
 
         # Cleanup orphan containers
         removed_count = docker_deployer.cleanup_orphan_containers(valid_containers)
@@ -831,6 +859,7 @@ async def lifespan(app: FastAPI):
         cleanup_orphan_generation_tasks()
         cleanup_orphan_datasets()
         cleanup_orphan_containers()
+        await _resume_deferred_deployment_starts()
         from .routes.sync_routes import resume_pending_sync_deletions
 
         resumed_sync_deletions, failed_sync_deletions = (
@@ -859,6 +888,10 @@ async def lifespan(app: FastAPI):
         await sync_manager.start()
         yield
     finally:
+        try:
+            await _drain_deferred_deployment_starts()
+        except Exception as exc:
+            logger.error("Failed to drain deferred deployment starts: %s", exc)
         audit_cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
             await audit_cleanup_task

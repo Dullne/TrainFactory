@@ -400,6 +400,7 @@ def test_direct_load_adapter_resolves_owned_registry_source(monkeypatch):
                 "adapter_path": "/app/models/owned-adapter",
                 "source_task_id": None,
                 "source_model_id": "model-owned",
+                "deployment_replica_id": None,
                 "user_id": "user-1",
             },
         )

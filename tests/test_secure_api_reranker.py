@@ -78,45 +78,6 @@ def test_secure_reranker_batch_preserves_input_order(monkeypatch):
     assert results == [([0], {0: 0.1}), ([0], {0: 0.9})]
 
 
-@pytest.mark.parametrize(
-    ("framework", "instruction_field"),
-    [("vllm", "instruction"), ("sglang", "instruct")],
-)
-def test_secure_reranker_batch_uses_raw_payload_and_framework_instruction(
-    monkeypatch,
-    framework,
-    instruction_field,
-):
-    calls = []
-
-    def request(_method, _url, _user_id, **kwargs):
-        calls.append(kwargs["json"])
-        return _Response({"results": [{"index": 0, "score": 0.5}]})
-
-    monkeypatch.setattr(secure_module, "request_user_outbound", request)
-    reranker = secure_module.SecureAPIReranker(
-        "https://rerank.example.test/v1",
-        model="Qwen3-Reranker-4B",
-        inference_framework=framework,
-        instruction="rank by factual relevance",
-        user_id="user-1",
-    )
-
-    reranker.rerank_batch(
-        [("raw batch query", ["raw batch document"])],
-        show_progress=False,
-    )
-
-    assert calls == [
-        {
-            "model": "Qwen3-Reranker-4B",
-            "query": "raw batch query",
-            "documents": ["raw batch document"],
-            instruction_field: "rank by factual relevance",
-        }
-    ]
-
-
 def test_secure_vllm_reranker_sends_instruction_with_raw_cohere_payload(monkeypatch):
     calls = []
 
@@ -166,6 +127,43 @@ def test_secure_sglang_reranker_uses_instruct_field(monkeypatch):
         "query": "raw query",
         "documents": ["raw document"],
         "instruct": "use the fixed SGLang protocol",
+    }
+
+
+@pytest.mark.parametrize(
+    ("framework", "instruction_key"),
+    [("vllm", "instruction"), ("sglang", "instruct")],
+)
+def test_secure_reranker_batch_preserves_raw_framework_payload(
+    monkeypatch,
+    framework,
+    instruction_key,
+):
+    calls = []
+
+    def request(method, url, user_id, **kwargs):
+        calls.append((method, url, user_id, kwargs))
+        return _Response({"results": [{"index": 0, "score": 0.5}]})
+
+    monkeypatch.setattr(secure_module, "request_user_outbound", request)
+    reranker = secure_module.SecureAPIReranker(
+        "https://rerank.example.test/v1",
+        model="Qwen3-Reranker-4B",
+        inference_framework=framework,
+        instruction="framework-owned instruction",
+        user_id="user-1",
+    )
+
+    reranker.rerank_batch(
+        [("raw batch query", ["raw batch document"])],
+        show_progress=False,
+    )
+
+    assert calls[0][3]["json"] == {
+        "model": "Qwen3-Reranker-4B",
+        "query": "raw batch query",
+        "documents": ["raw batch document"],
+        instruction_key: "framework-owned instruction",
     }
 
 

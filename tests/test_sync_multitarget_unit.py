@@ -56,6 +56,12 @@ class _FakeExternalSyncService:
         self.created_targets.append(kwargs)
         return {"target_id": kwargs["target_id"]}
 
+    def migrate_legacy_training_target(self, **kwargs):
+        if self.raise_integrity_on_create:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+        self.created_targets.append(kwargs)
+        return {"target_id": kwargs["target_id"]}
+
     def increment_target_pending_samples(self, target_id: str, delta: int):
         self.increment_target_calls.append((target_id, delta))
 
@@ -168,8 +174,7 @@ def test_get_task_training_targets_returns_existing_active_targets(fake_external
     assert fake_external_sync_service.created_targets == []
 
 
-def test_get_task_training_targets_migrates_legacy_and_carries_pending(fake_external_sync_service):
-    fake_external_sync_service.active_targets = [{"target_id": "migrated", "is_active": True}]
+def test_get_task_training_targets_returns_read_only_legacy_view(fake_external_sync_service):
     config = {
         "training_threshold": 1200,
         "pending_training_samples": 88,
@@ -183,17 +188,17 @@ def test_get_task_training_targets_migrates_legacy_and_carries_pending(fake_exte
 
     targets = _get_task_training_targets("task-legacy", config)
 
-    assert len(fake_external_sync_service.created_targets) == 1
-    created = fake_external_sync_service.created_targets[0]
-    assert created["target_id"] == _legacy_training_target_id("task-legacy")
-    assert created["training_threshold"] == 1200
-    assert fake_external_sync_service.increment_target_calls == [(created["target_id"], 88)]
-    assert targets == [{"target_id": "migrated", "is_active": True}]
+    assert fake_external_sync_service.created_targets == []
+    assert fake_external_sync_service.increment_target_calls == []
+    assert len(targets) == 1
+    assert targets[0]["target_id"] == _legacy_training_target_id("task-legacy")
+    assert targets[0]["target_name"] == "LLM (legacy)"
+    assert targets[0]["training_threshold"] == 1200
+    assert targets[0]["pending_training_samples"] == 88
 
 
-def test_get_task_training_targets_integrity_error_is_idempotent(fake_external_sync_service):
+def test_get_task_training_targets_never_enters_migration_write_path(fake_external_sync_service):
     fake_external_sync_service.raise_integrity_on_create = True
-    fake_external_sync_service.active_targets = [{"target_id": "t-idem", "is_active": True}]
     config = {
         "training_threshold": 1000,
         "training_config": {"model_type": "embedding", "training_method": "sft"},
@@ -201,7 +206,8 @@ def test_get_task_training_targets_integrity_error_is_idempotent(fake_external_s
 
     targets = _get_task_training_targets("task-idem", config)
 
-    assert targets == [{"target_id": "t-idem", "is_active": True}]
+    assert targets[0]["target_id"] == _legacy_training_target_id("task-idem")
+    assert fake_external_sync_service.created_targets == []
     assert fake_external_sync_service.increment_target_calls == []
 
 

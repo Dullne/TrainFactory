@@ -1,7 +1,14 @@
+import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Input, Select, InputNumber, Tabs, Row, Col, Typography, Divider,
 } from 'antd'
+import type { Deployment } from '../../types'
+import {
+  getAutomaticHealthyReplicaId,
+  getHealthyDeploymentReplicas,
+  isSelectableSyncDeployment,
+} from '@/pages/sync/deploymentReplicaPolicy'
 
 const { Option } = Select
 const { Text } = Typography
@@ -38,6 +45,7 @@ export interface TrainingTargetFormState {
   base_model_id: string
   base_model_name: string
   base_deployment_id: string
+  base_deployment_replica_id: string
   training_threshold: number
   priority: number
   sort_order: number
@@ -74,6 +82,7 @@ export const DEFAULT_TARGET: Omit<TrainingTargetFormState, 'key'> = {
   base_model_id: '',
   base_model_name: '',
   base_deployment_id: '',
+  base_deployment_replica_id: '',
   training_threshold: 1000,
   priority: 0,
   sort_order: 0,
@@ -98,21 +107,91 @@ interface TrainingTargetFormProps {
   target: TrainingTargetFormState
   index: number
   registeredModels: Array<{ model_id: string; model_name: string; model_path: string; display_name?: string }>
+  deployments: Deployment[]
   onChange: (index: number, patch: Partial<TrainingTargetFormState>) => void
 }
 
 export default function TrainingTargetForm({
-  target, index, registeredModels, onChange,
+  target, index, registeredModels, deployments, onChange,
 }: TrainingTargetFormProps) {
   const { t } = useTranslation(['sync', 'common', 'training'])
 
   const handleChange = (patch: Partial<TrainingTargetFormState>) => {
     onChange(index, patch)
   }
+  const selectedDeployment = deployments.find(
+    (deployment) => deployment.deployment_id === target.base_deployment_id
+  )
+  const replicas = selectedDeployment?.replica_instances ?? []
+
+  useEffect(() => {
+    if (!target.base_deployment_id) return
+    const currentIsHealthy = getHealthyDeploymentReplicas(selectedDeployment).some(
+      (replica) => replica.replica_id === target.base_deployment_replica_id,
+    )
+    if (currentIsHealthy) return
+    const nextReplicaId = getAutomaticHealthyReplicaId(selectedDeployment) ?? ''
+    if (target.base_deployment_replica_id !== nextReplicaId) {
+      onChange(index, { base_deployment_replica_id: nextReplicaId })
+    }
+  }, [
+    index,
+    onChange,
+    selectedDeployment,
+    target.base_deployment_id,
+    target.base_deployment_replica_id,
+  ])
 
   const basicTab = (
     <Row gutter={16}>
-      <Col span={12}>
+      <Col xs={24} md={12}>
+        <div style={{ marginBottom: 16 }}>
+          <Text strong>{t('create.fields.baseDeployment')}</Text>
+          <Select
+            allowClear
+            value={target.base_deployment_id || undefined}
+            placeholder={t('create.fields.baseDeploymentPlaceholder')}
+            style={{ width: '100%', marginTop: 4 }}
+            onChange={(deploymentId?: string) => {
+              const deployment = deployments.find(
+                (item) => item.deployment_id === deploymentId
+              )
+              handleChange({
+                base_deployment_id: deploymentId ?? '',
+                base_deployment_replica_id: getAutomaticHealthyReplicaId(deployment) ?? '',
+              })
+            }}
+            options={deployments
+              .filter(isSelectableSyncDeployment)
+              .map((deployment) => ({
+                label: deployment.deployment_name || deployment.deployment_id.slice(0, 8),
+                value: deployment.deployment_id,
+              }))}
+          />
+        </div>
+      </Col>
+      {target.base_deployment_id && replicas.length > 0 && (
+        <Col xs={24} md={12}>
+          <div style={{ marginBottom: 16 }}>
+            <Text strong>{t('create.fields.deploymentReplica')}</Text>
+            <Select
+              value={target.base_deployment_replica_id || undefined}
+              placeholder={t('create.fields.deploymentReplicaPlaceholder')}
+              style={{ width: '100%', marginTop: 4 }}
+              onChange={(replicaId: string) =>
+                handleChange({ base_deployment_replica_id: replicaId })
+              }
+              options={replicas.map((replica) => ({
+                label: `#${replica.replica_index} · ${replica.endpoint} · GPU ${replica.gpu_ids.join(',')}`,
+                value: replica.replica_id,
+                disabled:
+                  replica.status !== 'running' || replica.health_status !== 'HEALTHY',
+              }))}
+            />
+          </div>
+        </Col>
+      )}
+      <Col xs={24} md={12}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.targetName')}</Text>
           <Input
@@ -123,7 +202,7 @@ export default function TrainingTargetForm({
           />
         </div>
       </Col>
-      <Col span={12}>
+      <Col xs={24} md={12}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.dataPhase')}</Text>
           <Select
@@ -136,7 +215,7 @@ export default function TrainingTargetForm({
           </Select>
         </div>
       </Col>
-      <Col span={12}>
+      <Col xs={24} md={12}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.modelType')}</Text>
           <Select
@@ -151,7 +230,7 @@ export default function TrainingTargetForm({
           </Select>
         </div>
       </Col>
-      <Col span={12}>
+      <Col xs={24} md={12}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('detail.configFields.baseModelPath')}</Text>
           <Select
@@ -179,7 +258,7 @@ export default function TrainingTargetForm({
           </Select>
         </div>
       </Col>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.trainingThreshold')}</Text>
           <InputNumber
@@ -189,7 +268,7 @@ export default function TrainingTargetForm({
           />
         </div>
       </Col>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.targetPriority')}</Text>
           <InputNumber
@@ -200,7 +279,7 @@ export default function TrainingTargetForm({
           <Text type="secondary" style={{ fontSize: 12 }}>{t('create.fields.targetPriorityHelp')}</Text>
         </div>
       </Col>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>LoRA Rank</Text>
           <InputNumber
@@ -215,7 +294,7 @@ export default function TrainingTargetForm({
 
   const advancedTab = (
     <Row gutter={16}>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>LoRA Alpha</Text>
           <InputNumber
@@ -225,7 +304,7 @@ export default function TrainingTargetForm({
           />
         </div>
       </Col>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.numTrainEpochs')}</Text>
           <InputNumber
@@ -235,7 +314,7 @@ export default function TrainingTargetForm({
           />
         </div>
       </Col>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.learningRate')}</Text>
           <InputNumber
@@ -245,7 +324,7 @@ export default function TrainingTargetForm({
           />
         </div>
       </Col>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.batchSize')}</Text>
           <InputNumber
@@ -255,7 +334,7 @@ export default function TrainingTargetForm({
           />
         </div>
       </Col>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.warmupRatio')}</Text>
           <InputNumber
@@ -265,7 +344,7 @@ export default function TrainingTargetForm({
           />
         </div>
       </Col>
-      <Col span={8}>
+      <Col xs={24} md={8}>
         <div style={{ marginBottom: 16 }}>
           <Text strong>{t('create.fields.gradAccumSteps')}</Text>
           <InputNumber
@@ -276,7 +355,7 @@ export default function TrainingTargetForm({
         </div>
       </Col>
       {target.model_type === 'embedding' && (
-        <Col span={12}>
+        <Col xs={24} md={12}>
           <div style={{ marginBottom: 16 }}>
             <Text strong>{t('create.fields.lossFunction')}</Text>
             <Select
@@ -298,7 +377,7 @@ export default function TrainingTargetForm({
       )}
       {target.model_type === 'reranker' && (
         <>
-          <Col span={12}>
+          <Col xs={24} md={12}>
             <div style={{ marginBottom: 16 }}>
               <Text strong>{t('create.fields.lossFunction')}</Text>
               <Select
@@ -328,7 +407,7 @@ export default function TrainingTargetForm({
             return (
               <>
                 {showScale && (
-                  <Col span={12}>
+                  <Col xs={24} md={12}>
                     <div style={{ marginBottom: 16 }}>
                       <Text strong>Scale</Text>
                       <InputNumber
@@ -343,7 +422,7 @@ export default function TrainingTargetForm({
                   </Col>
                 )}
                 {showMiniBatch && (
-                  <Col span={12}>
+                  <Col xs={24} md={12}>
                     <div style={{ marginBottom: 16 }}>
                       <Text strong>Mini Batch Size</Text>
                       <InputNumber
@@ -358,7 +437,7 @@ export default function TrainingTargetForm({
                   </Col>
                 )}
                 {showNegatives && (
-                  <Col span={12}>
+                  <Col xs={24} md={12}>
                     <div style={{ marginBottom: 16 }}>
                       <Text strong>Num Negatives</Text>
                       <InputNumber
@@ -373,7 +452,7 @@ export default function TrainingTargetForm({
                   </Col>
                 )}
                 {showTopK && (
-                  <Col span={12}>
+                  <Col xs={24} md={12}>
                     <div style={{ marginBottom: 16 }}>
                       <Text strong>Top K</Text>
                       <InputNumber
@@ -388,7 +467,7 @@ export default function TrainingTargetForm({
                   </Col>
                 )}
                 {showSigma && (
-                  <Col span={12}>
+                  <Col xs={24} md={12}>
                     <div style={{ marginBottom: 16 }}>
                       <Text strong>Sigma</Text>
                       <InputNumber
@@ -403,7 +482,7 @@ export default function TrainingTargetForm({
                   </Col>
                 )}
                 {showRespectInputOrder && (
-                  <Col span={12}>
+                  <Col xs={24} md={12}>
                     <div style={{ marginBottom: 16 }}>
                       <Text strong>Respect Input Order</Text>
                       <Select
@@ -426,7 +505,7 @@ export default function TrainingTargetForm({
       {target.model_type === 'llm' && (target.training_method === 'dpo' || target.training_method === 'orpo') && (
         <>
           <Divider>{t('create.preference.divider', { ns: 'training' })}</Divider>
-          <Col span={12}>
+          <Col xs={24} md={12}>
             <div style={{ marginBottom: 16 }}>
               <Text strong>{target.training_method === 'dpo' ? 'DPO Beta' : 'ORPO Beta'}</Text>
               <InputNumber
@@ -439,7 +518,7 @@ export default function TrainingTargetForm({
               />
             </div>
           </Col>
-          <Col span={12}>
+          <Col xs={24} md={12}>
             <div style={{ marginBottom: 16 }}>
               <Text strong>{t('create.preference.rankingsDirection', { ns: 'training' })}</Text>
               <Select

@@ -48,8 +48,12 @@ from ...evaluation.dataset_access import (
     resolve_managed_local_evaluation_dataset,
 )
 from ...storage.services.outbound_endpoint_policy import validate_user_outbound_url
+from ...deployment.deployment_service import deployment_service
 from ...storage.services.dataset_service import (
     DatasetConsumptionUnavailableError,
+)
+from ...storage.services.runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
 )
 from ...storage.services.background_task_admission_service import (
     BackgroundTaskAlreadyExecuting,
@@ -275,6 +279,8 @@ class ModelConfig(BaseModel):
     model_name: Optional[str] = Field(default=None, max_length=256, description="模型名称")
     name: Optional[str] = Field(default=None, max_length=256, description="显示名称")
     inference_framework: Optional[str] = Field(default=None, max_length=32, description="推理框架: vllm | sglang | xinference")
+    deployment_id: Optional[str] = Field(default=None, max_length=36)
+    deployment_replica_id: Optional[str] = Field(default=None, max_length=36)
 
     @model_validator(mode="after")
     def normalize_identity(self):
@@ -400,10 +406,36 @@ def _validate_model_configs(
     validated = []
     for raw_config in model_configs:
         config = dict(raw_config)
-        config["endpoint"] = validate_user_outbound_url(
-            config.get("endpoint", ""),
-            user_id,
-        )
+        deployment_id = config.get("deployment_id")
+        replica_id = config.get("deployment_replica_id")
+        if deployment_id:
+            deployment, replica = deployment_service.resolve_replica_selection(
+                deployment_id,
+                replica_id,
+                user_id=user_id,
+                require_healthy=True,
+            )
+            if replica is None:
+                config["endpoint"] = deployment["xinference_endpoint"]
+                config.pop("deployment_replica_id", None)
+            else:
+                config["endpoint"] = replica["endpoint"]
+                config["deployment_replica_id"] = replica["replica_id"]
+            config["model_name"] = deployment.get("model_uid") or config.get(
+                "model_name"
+            )
+            config["inference_framework"] = deployment.get(
+                "inference_framework"
+            )
+        else:
+            if replica_id is not None:
+                raise ValueError("deployment_replica_id requires deployment_id")
+            config.pop("deployment_id", None)
+            config.pop("deployment_replica_id", None)
+            config["endpoint"] = validate_user_outbound_url(
+                config.get("endpoint", ""),
+                user_id,
+            )
         validated.append(config)
     return canonicalize_evaluation_model_configs(validated)
 
@@ -542,10 +574,15 @@ async def create_evaluation_task(
         )
 
     # Serialize configs once
-    model_configs_data = _validate_model_configs(
-        [mc.model_dump() for mc in request.model_configs],
-        current_user.get("user_id"),
-    )
+    try:
+        model_configs_data = _validate_model_configs(
+            [mc.model_dump() for mc in request.model_configs],
+            current_user.get("user_id"),
+        )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     dataset_configs_data = _validate_dataset_configs(
         [dc.model_dump(exclude_none=True) for dc in request.dataset_configs],
         current_user,
@@ -591,6 +628,8 @@ async def create_evaluation_task(
     except BackgroundTaskAlreadyExecuting as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DatasetConsumptionUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeDependencyUnavailableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Prepare config for runner

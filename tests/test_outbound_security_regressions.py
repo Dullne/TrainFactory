@@ -798,6 +798,26 @@ def test_sglang_client_disables_redirects_for_every_request(monkeypatch):
     assert len(calls) == 9
 
 
+@pytest.mark.parametrize(
+    "client_type",
+    [vllm_client_module.VLLMClient, sglang_client_module.SGLangClient],
+    ids=["vllm", "sglang"],
+)
+def test_lora_adapter_list_failure_is_not_authoritative_absence(
+    monkeypatch,
+    client_type,
+):
+    client = client_type(PUBLIC_ENDPOINT)
+
+    def unavailable(*_args, **_kwargs):
+        raise TimeoutError("adapter registry unavailable")
+
+    monkeypatch.setattr(client, "_request", unavailable)
+
+    with pytest.raises(RuntimeError, match="Failed to list LoRA adapters"):
+        client.list_lora_adapters()
+
+
 def test_xinference_client_disables_redirects_for_request(monkeypatch):
     calls = []
 

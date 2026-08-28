@@ -6,13 +6,24 @@ import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
 from ..database import get_engine
+from ..entities.deployment_entity import DeploymentDB
 from ..entities.external_api_config_entity import ExternalApiConfigDB
+from ..entities.external_sync_entity import ExternalSyncTaskDB
 from ...core.time_utils import sync_now_naive
 
 logger = logging.getLogger(__name__)
+
+
+def _deployment_api_config_reference(config_id: str):
+    """Match normalized and legacy JSON deployment API-config bindings."""
+    return or_(
+        DeploymentDB.external_api_config_id == config_id,
+        DeploymentDB.config["external_api_config_id"].as_string() == config_id,
+    )
 
 
 def _utcnow_naive() -> datetime:
@@ -30,6 +41,30 @@ class ExternalApiConfigService:
         if self.engine is None:
             self.engine = get_engine()
         return self.engine
+
+    @staticmethod
+    def _lock_references(
+        session: Session,
+        config_id: str,
+    ) -> tuple[list[DeploymentDB], list[ExternalSyncTaskDB]]:
+        """Lock API consumers in API -> deployments -> sync tasks order."""
+        deployments = list(
+            session.exec(
+                select(DeploymentDB)
+                .where(_deployment_api_config_reference(config_id))
+                .order_by(DeploymentDB.deployment_id)
+                .with_for_update()
+            ).all()
+        )
+        sync_tasks = list(
+            session.exec(
+                select(ExternalSyncTaskDB)
+                .where(ExternalSyncTaskDB.external_api_config_id == config_id)
+                .order_by(ExternalSyncTaskDB.task_id)
+                .with_for_update()
+            ).all()
+        )
+        return deployments, sync_tasks
 
     # ─── CRUD ───
 
@@ -114,20 +149,14 @@ class ExternalApiConfigService:
                 and (kwargs.get("api_url") or "").strip()
                 != (config.api_url or "").strip()
             ):
-                from ..entities.external_sync_entity import ExternalSyncTaskDB
-
-                referenced = session.exec(
-                    select(ExternalSyncTaskDB.id)
-                    .where(
-                        ExternalSyncTaskDB.external_api_config_id == config_id
-                    )
-                    .limit(1)
-                    .with_for_update()
-                ).first()
-                if referenced is not None:
+                deployments, sync_tasks = self._lock_references(
+                    session,
+                    config_id,
+                )
+                if deployments or sync_tasks:
                     raise ValueError(
                         "External API URL cannot change while referenced by a "
-                        "sync task; create a new API config"
+                        "sync task or deployment; create a new API config"
                     )
 
             for key, value in kwargs.items():
@@ -142,12 +171,23 @@ class ExternalApiConfigService:
 
     def delete_config(self, config_id: str) -> bool:
         with Session(self._get_engine()) as session:
-            stmt = select(ExternalApiConfigDB).where(
-                ExternalApiConfigDB.config_id == config_id
+            stmt = (
+                select(ExternalApiConfigDB)
+                .where(ExternalApiConfigDB.config_id == config_id)
+                .with_for_update()
             )
             config = session.exec(stmt).first()
             if not config:
                 return False
+            deployments, sync_tasks = self._lock_references(
+                session,
+                config_id,
+            )
+            if deployments or sync_tasks:
+                raise ValueError(
+                    "Cannot delete: this API config is referenced by sync "
+                    "configurations or deployments"
+                )
             session.delete(config)
             session.commit()
             logger.info(f"Deleted external API config: {config_id}")
@@ -166,7 +206,7 @@ class ExternalApiConfigService:
                 return True
 
             deployment_stmt = select(DeploymentDB).where(
-                DeploymentDB.external_api_config_id == config_id
+                _deployment_api_config_reference(config_id)
             )
             return session.exec(deployment_stmt).first() is not None
 

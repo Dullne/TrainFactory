@@ -1298,6 +1298,145 @@ def _load_all_historical_documents(config: Dict[str, Any]) -> list:
     return all_docs
 
 
+def _get_training_target_adapter_targets(
+    config: Dict[str, Any],
+    emb_hash: str,
+    task_hash: str,
+    milvus_client_class: Any,
+) -> List[Dict[str, Any]]:
+    """Resolve loaded adapters from each target's own healthy runtime binding."""
+    from ..deployment.adapter_service import AdapterService
+    from ..deployment.deployment_service import deployment_service
+    from ..storage.services.external_sync_service import external_sync_service
+
+    task_id = config["task_id"]
+    loaded_training_ids: Dict[Optional[str], set[str]] = {}
+    training_offset = 0
+    training_page_size = 1000
+    while True:
+        training_page, training_total = external_sync_service.list_trainings(
+            task_id=task_id,
+            status=SyncTrainingStatus.ADAPTER_LOADED,
+            limit=training_page_size,
+            offset=training_offset,
+        )
+        for training in training_page:
+            training_task_id = training.get("training_task_id")
+            if training_task_id:
+                loaded_training_ids.setdefault(training.get("target_id"), set()).add(
+                    training_task_id
+                )
+        training_offset += len(training_page)
+        if not training_page or training_offset >= training_total:
+            break
+
+    adapter_service = AdapterService()
+    task_api_config_id = (config.get("external_api_config_id") or "").strip()
+    seen_runtime_adapters: set[tuple[str, Optional[str], str]] = set()
+    adapter_targets: List[Dict[str, Any]] = []
+    for target in external_sync_service.list_training_targets_raw(
+        task_id,
+        is_active=None,
+    ):
+        desired_adapter_id = target.get("current_adapter_id")
+        desired_adapter_name = target.get("current_adapter_name")
+        if not desired_adapter_id and not desired_adapter_name:
+            continue
+        deployment_id = (
+            target.get("base_deployment_id") or config.get("base_deployment_id")
+        )
+        if not deployment_id:
+            continue
+        deployment_replica_id = (
+            target.get("base_deployment_replica_id")
+            if target.get("base_deployment_id")
+            else config.get("base_deployment_replica_id")
+        )
+        try:
+            deployment, replica = deployment_service.resolve_replica_selection(
+                deployment_id,
+                deployment_replica_id,
+                user_id=config.get("user_id"),
+                require_healthy=True,
+            )
+            if replica is None and deployment.get("status") != "running":
+                raise ValueError("deployment is not running")
+            deployment_api_config_id = _get_deployment_external_api_config_id(
+                deployment
+            )
+            if (
+                task_api_config_id
+                and deployment_api_config_id != task_api_config_id
+            ):
+                raise ValueError("deployment api_config mismatch")
+            resolved_replica_id = (
+                replica.get("replica_id") if replica is not None else None
+            )
+            expected_training_ids = loaded_training_ids.get(
+                target.get("target_id"), set()
+            )
+            for adapter in adapter_service.list_loaded_adapters(
+                deployment_id,
+                deployment_replica_id=resolved_replica_id,
+                user_id=config.get("user_id"),
+            ):
+                adapter_id = adapter.get("adapter_id")
+                adapter_name = adapter.get("adapter_name")
+                if (
+                    adapter.get("status") != "loaded"
+                    or adapter.get("source_task_id") not in expected_training_ids
+                    or not adapter_id
+                    or not adapter_name
+                ):
+                    continue
+                if desired_adapter_id:
+                    if adapter_id != desired_adapter_id:
+                        continue
+                elif adapter_name != desired_adapter_name:
+                    continue
+                runtime_key = (deployment_id, resolved_replica_id, adapter_id)
+                if runtime_key in seen_runtime_adapters:
+                    break
+                seen_runtime_adapters.add(runtime_key)
+                fingerprint = json.dumps(
+                    {
+                        "base": emb_hash,
+                        "deployment_id": deployment_id,
+                        "deployment_replica_id": resolved_replica_id,
+                        "adapter_id": adapter_id,
+                        "adapter_name": adapter_name,
+                    },
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                adapter_hash = hashlib.sha256(fingerprint).hexdigest()[:16]
+                adapter_targets.append(
+                    {
+                        "type": "adapter",
+                        "target_id": target.get("target_id"),
+                        "deployment_id": deployment_id,
+                        "deployment_replica_id": resolved_replica_id,
+                        "adapter_id": adapter_id,
+                        "collection_name": milvus_client_class.sanitize_collection_name(
+                            f"tf_sync_v3_{task_hash}_a{adapter_id[:8]}_{adapter_hash}"
+                        ),
+                        "fingerprint": adapter_hash,
+                        "model_name": adapter_name,
+                        "label": adapter_name,
+                    }
+                )
+                break
+        except Exception as exc:
+            logger.warning(
+                "[sync:%s] Skip adapter target %s: %s",
+                task_id[:8],
+                target.get("target_id"),
+                exc,
+            )
+    return adapter_targets
+
+
 def _get_sync_targets(
     config: Dict[str, Any], embedding_config_data: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
@@ -1359,6 +1498,23 @@ def _get_sync_targets(
         "label": "base",
     })
 
+    try:
+        targets.extend(
+            _get_training_target_adapter_targets(
+                config,
+                emb_hash,
+                task_hash,
+                MilvusClient,
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "[sync:%s] Failed to query training target adapters: %s",
+            task_id[:8],
+            exc,
+            exc_info=True,
+        )
+
     # 目标 2+: 部署上已加载的 adapters
     deployment_id = config.get("base_deployment_id")
     if deployment_id:
@@ -1367,11 +1523,16 @@ def _get_sync_targets(
             from ..deployment.adapter_service import AdapterService
             from ..storage.services.external_sync_service import external_sync_service
 
-            deployment = deployment_service.get_deployment(deployment_id)
-            if not deployment:
-                logger.warning(f"[sync:{task_id[:8]}] Deployment not found: {deployment_id}")
-                return targets
-            if deployment.get("status") != "running":
+            deployment, replica = deployment_service.resolve_replica_selection(
+                deployment_id,
+                config.get("base_deployment_replica_id"),
+                user_id=config.get("user_id"),
+                require_healthy=True,
+            )
+            resolved_replica_id = (
+                replica.get("replica_id") if replica is not None else None
+            )
+            if replica is None and deployment.get("status") != "running":
                 logger.info(
                     f"[sync:{task_id[:8]}] Deployment not running ({deployment.get('status')}), "
                     "skip adapter targets"
@@ -1381,7 +1542,7 @@ def _get_sync_targets(
             # 租户隔离：sync 任务与 deployment 绑定的 external_api_config_id 必须一致。
             task_api_cfg = (config.get("external_api_config_id") or "").strip()
             dep_api_cfg = _get_deployment_external_api_config_id(deployment)
-            if task_api_cfg and dep_api_cfg and task_api_cfg != dep_api_cfg:
+            if task_api_cfg and task_api_cfg != dep_api_cfg:
                 logger.warning(
                     f"[sync:{task_id[:8]}] Deployment api_config mismatch, "
                     f"skip adapter targets (deployment={dep_api_cfg}, task={task_api_cfg})"
@@ -1405,13 +1566,18 @@ def _get_sync_targets(
                     training["training_task_id"]
                     for training in training_page
                     if training.get("training_task_id")
+                    and training.get("target_id") is None
                 )
                 training_offset += len(training_page)
                 if not training_page or training_offset >= training_total:
                     break
 
             adapter_service = AdapterService()
-            adapters = adapter_service.list_loaded_adapters(deployment_id)
+            adapters = adapter_service.list_loaded_adapters(
+                deployment_id,
+                deployment_replica_id=resolved_replica_id,
+                user_id=config.get("user_id"),
+            )
             for adapter in adapters:
                 if adapter.get("status") != "loaded":
                     continue
@@ -1426,6 +1592,8 @@ def _get_sync_targets(
                 adapter_fingerprint = json.dumps(
                     {
                         "base": emb_hash,
+                        "deployment_id": deployment_id,
+                        "deployment_replica_id": resolved_replica_id,
                         "adapter_id": adapter_id,
                         "adapter_name": adapter_name,
                     },
@@ -1439,6 +1607,9 @@ def _get_sync_targets(
                 )
                 targets.append({
                     "type": "adapter",
+                    "target_id": None,
+                    "deployment_id": deployment_id,
+                    "deployment_replica_id": resolved_replica_id,
                     "adapter_id": adapter_id,
                     "collection_name": a_collection,
                     "fingerprint": a_hash,

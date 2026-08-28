@@ -18,10 +18,20 @@ from sqlmodel import Session, select, func, or_
 from ..database import get_engine
 from ..entities.model_config_entity import ModelConfigDB
 from ..entities.deployment_entity import DeploymentDB
+from ..entities.deployment_replica_entity import DeploymentReplicaDB
+from ..entities.milvus_collection_entity import MilvusCollectionDB
+from .model_registry_service import model_registry_service
 from .outbound_endpoint_policy import (
     async_request_user_outbound,
     create_pinned_async_client,
     validate_user_outbound_url,
+)
+from .runtime_dependency_service import (
+    RuntimeDependencyReferences,
+    RuntimeDependencyUnavailableError,
+    lock_active_runtime_dependency_consumers,
+    lock_runtime_dependencies,
+    snapshot_runtime_executions,
 )
 from ...enums import ValidationErrorType
 
@@ -482,6 +492,90 @@ class ModelConfigService:
             "error_type": ValidationErrorType.UNKNOWN_ERROR.value
         }
 
+    def _resolve_local_deployment_binding(
+        self,
+        *,
+        deployment_id: str | None,
+        deployment_replica_id: str | None,
+        user_id: str | None,
+        require_healthy: bool,
+        session: Session | None = None,
+        lock: bool = False,
+    ) -> tuple[str, str, str, str | None, bool]:
+        """Resolve trusted local endpoint and container fields from one child row."""
+        if not deployment_id:
+            raise ValueError("local deployment config requires deployment_id")
+        if session is None:
+            with Session(self._get_engine()) as owned_session:
+                return self._resolve_local_deployment_binding(
+                    deployment_id=deployment_id,
+                    deployment_replica_id=deployment_replica_id,
+                    user_id=user_id,
+                    require_healthy=require_healthy,
+                    session=owned_session,
+                    lock=lock,
+                )
+
+        deployment_statement = select(DeploymentDB).where(
+            DeploymentDB.deployment_id == deployment_id
+        )
+        if lock:
+            deployment_statement = deployment_statement.with_for_update()
+        deployment = session.exec(deployment_statement).first()
+        if deployment is None or (
+            user_id is not None and deployment.user_id != user_id
+        ):
+            raise ValueError("deployment not found")
+        if deployment.replica_operation_kind == "delete":
+            from ...deployment.deployment_service import ReplicaOperationBusyError
+
+            raise ReplicaOperationBusyError("deployment is being deleted")
+
+        replica_statement = (
+            select(DeploymentReplicaDB)
+            .where(DeploymentReplicaDB.deployment_id == deployment_id)
+            .order_by(DeploymentReplicaDB.replica_index)
+        )
+        if lock:
+            replica_statement = replica_statement.with_for_update()
+        replicas = list(session.exec(replica_statement).all())
+        if not replicas:
+            return (
+                deployment.xinference_endpoint,
+                deployment.container_name or "",
+                deployment.inference_framework or "xinference",
+                None,
+                False,
+            )
+        if deployment_replica_id is None:
+            if len(replicas) != 1:
+                raise ValueError(
+                    "replica_id is required for multi-replica deployment"
+                )
+            replica = replicas[0]
+        else:
+            replica = next(
+                (
+                    item
+                    for item in replicas
+                    if item.replica_id == deployment_replica_id
+                ),
+                None,
+            )
+            if replica is None:
+                raise ValueError("deployment replica not found")
+        if require_healthy and not (
+            replica.status == "running" and replica.health_status == "HEALTHY"
+        ):
+            raise ValueError("deployment replica is not running and healthy")
+        return (
+            replica.endpoint,
+            replica.container_name,
+            deployment.inference_framework or "xinference",
+            replica.replica_id,
+            True,
+        )
+
     # === CRUD Operations ===
 
     def create_config(
@@ -504,6 +598,7 @@ class ModelConfigService:
         source_type: str = "external_api",
         registry_id: Optional[str] = None,
         deployment_id: Optional[str] = None,
+        deployment_replica_id: Optional[str] = None,
         container_name: Optional[str] = None,
         inference_framework: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -525,12 +620,32 @@ class ModelConfigService:
         # Normalize model_type (e.g., 'reranker' -> 'rerank')
         model_type = normalize_model_type(model_type)
 
-        # Normalize endpoint (auto-fix common mistakes)
-        try:
-            api_endpoint = normalize_api_endpoint(api_endpoint, provider, user_id)
-            logger.info(f"Normalized endpoint: {api_endpoint}")
-        except ValueError as e:
-            raise ValueError(f"Invalid API endpoint: {e}")
+        trusted_child_binding = False
+        if source_type == "local_deployed":
+            (
+                trusted_endpoint,
+                trusted_container,
+                trusted_framework,
+                deployment_replica_id,
+                trusted_child_binding,
+            ) = self._resolve_local_deployment_binding(
+                deployment_id=deployment_id,
+                deployment_replica_id=deployment_replica_id,
+                user_id=user_id,
+                require_healthy=validate,
+            )
+            if trusted_child_binding:
+                api_endpoint = trusted_endpoint
+                container_name = trusted_container
+                inference_framework = trusted_framework
+
+        # Normalize untrusted or legacy endpoints (auto-fix common mistakes).
+        if not trusted_child_binding:
+            try:
+                api_endpoint = normalize_api_endpoint(api_endpoint, provider, user_id)
+                logger.info(f"Normalized endpoint: {api_endpoint}")
+            except ValueError as e:
+                raise ValueError(f"Invalid API endpoint: {e}")
 
         validation_result = None
         initial_status = "active"
@@ -554,6 +669,31 @@ class ModelConfigService:
                 logger.warning(f"Validation failed, saving with pending status: {validation_result.get('error')}")
 
         with Session(self._get_engine()) as session:
+            if registry_id:
+                model_registry_service.lock_model_reference(
+                    session,
+                    registry_id,
+                )
+            if source_type == "local_deployed":
+                (
+                    trusted_endpoint,
+                    trusted_container,
+                    trusted_framework,
+                    deployment_replica_id,
+                    trusted_child_binding,
+                ) = self._resolve_local_deployment_binding(
+                    deployment_id=deployment_id,
+                    deployment_replica_id=deployment_replica_id,
+                    user_id=user_id,
+                    require_healthy=validate,
+                    session=session,
+                    lock=True,
+                )
+                if trusted_child_binding:
+                    api_endpoint = trusted_endpoint
+                    container_name = trusted_container
+                    inference_framework = trusted_framework
+
             # If setting as default, unset other defaults for same type
             if is_default and initial_status == "active":
                 self._unset_defaults(session, model_type, user_id)
@@ -581,6 +721,7 @@ class ModelConfigService:
                 source_type=source_type,
                 registry_id=registry_id,
                 deployment_id=deployment_id,
+                deployment_replica_id=deployment_replica_id,
                 container_name=container_name,
                 inference_framework=inference_framework,
             )
@@ -617,6 +758,7 @@ class ModelConfigService:
         source_type: str = "external_api",
         registry_id: Optional[str] = None,
         deployment_id: Optional[str] = None,
+        deployment_replica_id: Optional[str] = None,
         container_name: Optional[str] = None,
         inference_framework: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -638,12 +780,31 @@ class ModelConfigService:
         # Normalize model_type (e.g., 'reranker' -> 'rerank')
         model_type = normalize_model_type(model_type)
 
-        # Normalize endpoint (auto-fix common mistakes)
-        try:
-            api_endpoint = normalize_api_endpoint(api_endpoint, provider, user_id)
-            logger.info(f"Normalized endpoint: {api_endpoint}")
-        except ValueError as e:
-            raise ValueError(f"Invalid API endpoint: {e}")
+        trusted_child_binding = False
+        if source_type == "local_deployed":
+            (
+                trusted_endpoint,
+                trusted_container,
+                trusted_framework,
+                deployment_replica_id,
+                trusted_child_binding,
+            ) = self._resolve_local_deployment_binding(
+                deployment_id=deployment_id,
+                deployment_replica_id=deployment_replica_id,
+                user_id=user_id,
+                require_healthy=validate,
+            )
+            if trusted_child_binding:
+                api_endpoint = trusted_endpoint
+                container_name = trusted_container
+                inference_framework = trusted_framework
+
+        if not trusted_child_binding:
+            try:
+                api_endpoint = normalize_api_endpoint(api_endpoint, provider, user_id)
+                logger.info(f"Normalized endpoint: {api_endpoint}")
+            except ValueError as e:
+                raise ValueError(f"Invalid API endpoint: {e}")
 
         validation_result = None
         initial_status = "active"
@@ -667,6 +828,31 @@ class ModelConfigService:
                 logger.warning(f"Validation failed, saving with pending status: {validation_result.get('error')}")
 
         with Session(self._get_engine()) as session:
+            if registry_id:
+                model_registry_service.lock_model_reference(
+                    session,
+                    registry_id,
+                )
+            if source_type == "local_deployed":
+                (
+                    trusted_endpoint,
+                    trusted_container,
+                    trusted_framework,
+                    deployment_replica_id,
+                    trusted_child_binding,
+                ) = self._resolve_local_deployment_binding(
+                    deployment_id=deployment_id,
+                    deployment_replica_id=deployment_replica_id,
+                    user_id=user_id,
+                    require_healthy=validate,
+                    session=session,
+                    lock=True,
+                )
+                if trusted_child_binding:
+                    api_endpoint = trusted_endpoint
+                    container_name = trusted_container
+                    inference_framework = trusted_framework
+
             # If setting as default, unset other defaults for same type
             if is_default and initial_status == "active":
                 self._unset_defaults(session, model_type, user_id)
@@ -694,6 +880,7 @@ class ModelConfigService:
                 source_type=source_type,
                 registry_id=registry_id,
                 deployment_id=deployment_id,
+                deployment_replica_id=deployment_replica_id,
                 container_name=container_name,
                 inference_framework=inference_framework,
             )
@@ -735,6 +922,35 @@ class ModelConfigService:
         with Session(self._get_engine()) as session:
             stmt = select(ModelConfigDB).where(ModelConfigDB.deployment_id == deployment_id)
             config = session.exec(stmt).first()
+            return self._to_dict(config) if config else None
+
+    def list_configs_by_deployment_id(
+        self,
+        deployment_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Return every child-bound configuration for a deployment group."""
+        with Session(self._get_engine()) as session:
+            configs = session.exec(
+                select(ModelConfigDB)
+                .where(ModelConfigDB.deployment_id == deployment_id)
+                .order_by(ModelConfigDB.created_at)
+            ).all()
+            return [self._to_dict(config) for config in configs]
+
+    def get_config_by_deployment_replica_id(
+        self,
+        deployment_id: str,
+        deployment_replica_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        with Session(self._get_engine()) as session:
+            config = session.exec(
+                select(ModelConfigDB)
+                .where(ModelConfigDB.deployment_id == deployment_id)
+                .where(
+                    ModelConfigDB.deployment_replica_id
+                    == deployment_replica_id
+                )
+            ).first()
             return self._to_dict(config) if config else None
 
     def list_configs(
@@ -806,6 +1022,21 @@ class ModelConfigService:
             if not config:
                 return False
 
+            has_local_binding = (
+                getattr(config, "source_type", None) == "local_deployed"
+                and bool(
+                    getattr(config, "deployment_id", None)
+                    or getattr(config, "deployment_replica_id", None)
+                )
+            )
+            if has_local_binding:
+                model_type = None
+                provider = None
+                api_endpoint = None
+                api_key = None
+                model_name = None
+                provider_config = None
+
             normalized_endpoint = None
             if api_endpoint is not None or provider is not None:
                 normalized_endpoint = normalize_api_endpoint(
@@ -850,6 +1081,7 @@ class ModelConfigService:
 
     def delete_config(self, config_id: str) -> bool:
         """Delete configuration."""
+        execution_snapshot = snapshot_runtime_executions()
         with Session(self._get_engine()) as session:
             stmt = select(ModelConfigDB).where(ModelConfigDB.config_id == config_id)
             config = session.exec(stmt).first()
@@ -857,7 +1089,51 @@ class ModelConfigService:
             if not config:
                 return False
 
-            session.delete(config)
+            references = RuntimeDependencyReferences(config_ids=(config_id,))
+            locked_dependencies = lock_runtime_dependencies(
+                session,
+                references,
+            )
+            locked_config = next(
+                (
+                    item
+                    for item in locked_dependencies.configs
+                    if item.config_id == config_id
+                ),
+                None,
+            )
+            if locked_config is None:
+                raise RuntimeDependencyUnavailableError(
+                    "Model config changed while acquiring deletion locks; retry"
+                )
+
+            consumers = lock_active_runtime_dependency_consumers(
+                session,
+                references,
+                execution_snapshot=execution_snapshot,
+            )
+            if consumers:
+                raise RuntimeDependencyUnavailableError(
+                    "Model config is referenced by an active runtime task"
+                )
+
+            milvus_references = list(
+                session.exec(
+                    select(MilvusCollectionDB)
+                    .where(
+                        MilvusCollectionDB.embedding_config_id == config_id
+                    )
+                    .order_by(MilvusCollectionDB.collection_name)
+                    .execution_options(populate_existing=True)
+                    .with_for_update()
+                ).all()
+            )
+            if milvus_references:
+                raise RuntimeDependencyUnavailableError(
+                    "Model config is referenced by a Milvus collection"
+                )
+
+            session.delete(locked_config)
             session.commit()
 
             logger.info(f"Model config deleted: {config_id}")
@@ -1338,6 +1614,7 @@ class ModelConfigService:
             "source_type": config.source_type,
             "registry_id": config.registry_id,
             "deployment_id": config.deployment_id,
+            "deployment_replica_id": config.deployment_replica_id,
             "container_name": config.container_name,
             "inference_framework": config.inference_framework,
         }

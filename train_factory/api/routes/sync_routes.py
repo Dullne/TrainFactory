@@ -10,13 +10,11 @@ import hashlib
 import logging
 import os
 import shutil
-import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy.exc import IntegrityError
 
 from ...auth.dependencies import get_current_user, verify_resource_ownership
 from ...config.settings import get_settings
@@ -296,6 +294,7 @@ def _validate_external_api_config_reference(
 
 _GENERATION_MODEL_CONFIG_KEYS = (
     "llm_config",
+    "eval_llm_config",
     "embedding_config",
     "rerank_config",
 )
@@ -314,6 +313,7 @@ def _validate_generation_config(
     from ...storage.services.model_config_service import model_config_service
 
     user_id = current_user.get("user_id")
+    auth_enabled = get_settings().auth_enabled
     validated = dict(generation_config)
     raw_milvus_config = validated.get("milvus_config")
     if raw_milvus_config is not None and not isinstance(raw_milvus_config, dict):
@@ -321,7 +321,7 @@ def _validate_generation_config(
             status_code=400,
             detail="generation_config.milvus_config must be an object",
         )
-    if get_settings().auth_enabled:
+    if auth_enabled:
         # Milvus uses gRPC, so HTTP SSRF pinning cannot protect arbitrary
         # tenant-provided targets. Authenticated tasks use only operator env.
         validated.pop("milvus_config", None)
@@ -342,7 +342,9 @@ def _validate_generation_config(
             model_config = model_config_service.get_config(config_id)
             if not model_config:
                 raise HTTPException(status_code=404, detail="Model config not found")
-            if not user_id or model_config.get("user_id") != user_id:
+            if auth_enabled and (
+                not user_id or model_config.get("user_id") != user_id
+            ):
                 raise HTTPException(
                     status_code=403,
                     detail="Not authorized to use this model config",
@@ -366,13 +368,35 @@ def _validate_base_deployment_reference(
     base_deployment_id: Optional[str],
     current_user: Dict[str, Any],
     external_api_config_id: Optional[str] = None,
+    base_deployment_replica_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Validate referenced deployment ownership and api config consistency."""
+    if base_deployment_replica_id and not base_deployment_id:
+        raise HTTPException(
+            status_code=400,
+            detail="base_deployment_replica_id requires base_deployment_id",
+        )
     if not base_deployment_id:
         return None
     from ...deployment.deployment_service import deployment_service
 
-    deployment = deployment_service.get_deployment(base_deployment_id)
+    try:
+        deployment, _replica = deployment_service.resolve_replica_selection(
+            base_deployment_id,
+            base_deployment_replica_id,
+            user_id=_resolve_sync_user_id(current_user, for_query=True),
+            require_healthy=True,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "access denied" in message:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to use this deployment",
+            ) from exc
+        if "not found" in message:
+            raise HTTPException(status_code=404, detail=message) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
     if not external_api_config_id:
@@ -393,48 +417,11 @@ def _validate_base_deployment_reference(
     return deployment
 
 
-def _tag_base_deployment_api_config_if_missing(
-    deployment: Optional[Dict[str, Any]],
-    external_api_config_id: Optional[str],
-) -> None:
-    """Backfill deployment external_api_config_id for explicit base deployment binding."""
-    if not deployment or not external_api_config_id:
-        return
-
-    deployment_id = deployment.get("deployment_id")
-    if not deployment_id:
-        return
-
-    current_column_value = (deployment.get("external_api_config_id") or "").strip()
-    current_config = dict(deployment.get("config") or {})
-    current_config_value = (current_config.get("external_api_config_id") or "").strip()
-    current_value = current_column_value or current_config_value
-    if current_value:
-        return
-
-    current_config["external_api_config_id"] = external_api_config_id
-
-    try:
-        from ...deployment.deployment_service import deployment_service
-
-        deployment_service.update_deployment_config(deployment_id, current_config)
-        logger.info(
-            "Tagged deployment %s with external_api_config_id=%s",
-            deployment_id[:8],
-            external_api_config_id,
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to tag deployment %s with external_api_config_id=%s: %s",
-            deployment_id[:8],
-            external_api_config_id,
-            e,
-        )
-
-
 def _legacy_training_target_id(task_id: str) -> str:
     """Use a deterministic target_id so legacy migration is idempotent."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"train-factory/sync-legacy-target/{task_id}"))
+    from ...storage.services.external_sync_service import legacy_training_target_id
+
+    return legacy_training_target_id(task_id)
 
 
 def _get_training_target_for_task(
@@ -461,47 +448,148 @@ def _require_training_target_mutable(target: Dict[str, Any]) -> None:
         )
 
 
+def _legacy_training_target_view(
+    task_id: str,
+    config: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Build the stable read-only target view for legacy task-level training."""
+    train_cfg = config.get("training_config")
+    training_threshold = int(config.get("training_threshold", 0) or 0)
+    if not isinstance(train_cfg, dict) or training_threshold <= 0:
+        return None
+    task_status = config.get("status")
+    target_status = (
+        task_status
+        if task_status
+        in {
+            TrainingTargetStatus.TRAINING,
+            TrainingTargetStatus.LOADING_ADAPTER,
+            TrainingTargetStatus.ERROR,
+        }
+        else TrainingTargetStatus.IDLE
+    )
+    model_type = train_cfg.get("model_type", "embedding")
+    return {
+        "target_id": _legacy_training_target_id(task_id),
+        "task_id": task_id,
+        "target_name": f"{model_type.upper()} (legacy)",
+        "model_type": model_type,
+        "data_phase": "final",
+        "training_method": train_cfg.get("training_method", "sft"),
+        "training_config": train_cfg,
+        "base_model_path": train_cfg.get("base_model_path", ""),
+        "base_deployment_id": config.get("base_deployment_id"),
+        "base_deployment_replica_id": config.get("base_deployment_replica_id"),
+        "training_threshold": training_threshold,
+        "pending_training_samples": int(
+            config.get("pending_training_samples", 0) or 0
+        ),
+        "total_training_samples": int(
+            config.get("total_training_samples", 0) or 0
+        ),
+        "total_trainings": int(config.get("total_trainings", 0) or 0),
+        "current_adapter_name": config.get("current_adapter_name"),
+        "current_adapter_id": config.get("current_adapter_id"),
+        "current_training_id": config.get("current_training_id"),
+        "priority": 0,
+        "status": target_status,
+        "is_active": bool(config.get("is_active", True)),
+        "sort_order": 0,
+        "created_at": config.get("created_at"),
+        "updated_at": config.get("updated_at"),
+    }
+
+
 def _get_task_training_targets(task_id: str, config: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Return active training targets, auto-migrating legacy task training once."""
+    """Return active targets without mutating legacy task state."""
     from ...storage.services.external_sync_service import external_sync_service
 
     all_targets = external_sync_service.list_training_targets(task_id, is_active=None)
     if all_targets:
         return external_sync_service.list_training_targets(task_id)
+    legacy_target = _legacy_training_target_view(task_id, config)
+    return [legacy_target] if legacy_target is not None else []
 
-    train_cfg = config.get("training_config")
-    training_threshold = int(config.get("training_threshold", 0) or 0)
-    if not isinstance(train_cfg, dict) or training_threshold <= 0:
-        return []
 
-    legacy_target_id = _legacy_training_target_id(task_id)
-    pending = int(config.get("pending_training_samples", 0) or 0)
+def _migrate_legacy_training_target_for_write(
+    task_id: str,
+    config: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Persist the synthetic legacy target only from an explicit write path."""
+    from ...storage.services.external_sync_service import external_sync_service
 
-    try:
-        target = external_sync_service.create_training_target(
-            task_id=task_id,
-            target_id=legacy_target_id,
-            target_name=f"{train_cfg.get('model_type', 'embedding').upper()} (migrated)",
-            model_type=train_cfg.get("model_type", "embedding"),
-            data_phase="final",
-            training_method=train_cfg.get("training_method", "sft"),
-            training_config=train_cfg,
-            base_model_path=train_cfg.get("base_model_path", ""),
-            base_deployment_id=config.get("base_deployment_id"),
-            training_threshold=training_threshold,
-            expected_user_id=config.get("user_id"),
-        )
-        if pending > 0:
-            external_sync_service.increment_target_pending_samples(target["target_id"], pending)
-    except IntegrityError:
-        logger.info(
-            "Legacy training target already migrated for sync task %s",
-            task_id[:8],
-        )
-    return external_sync_service.list_training_targets(task_id)
+    target = _legacy_training_target_view(task_id, config)
+    if target is None:
+        return None
+    return external_sync_service.migrate_legacy_training_target(
+        task_id=task_id,
+        target_id=target["target_id"],
+        target_name=target["target_name"],
+        model_type=target["model_type"],
+        data_phase=target["data_phase"],
+        training_method=target["training_method"],
+        training_config=target["training_config"],
+        base_model_path=target["base_model_path"],
+        base_deployment_id=target["base_deployment_id"],
+        base_deployment_replica_id=target["base_deployment_replica_id"],
+        training_threshold=target["training_threshold"],
+        expected_user_id=config.get("user_id"),
+    )
+
+
+def _get_or_materialize_training_target_for_write(
+    task_id: str,
+    target_id: str,
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Resolve a real target, materializing only the exact legacy UUID5 ID."""
+    from ...storage.services.external_sync_service import (
+        external_sync_service,
+        legacy_training_target_id,
+    )
+
+    target = external_sync_service.get_training_target(target_id)
+    if target is not None:
+        if target.get("task_id") != task_id:
+            raise HTTPException(status_code=404, detail="Training target not found")
+        return target
+
+    if target_id != legacy_training_target_id(task_id):
+        raise HTTPException(status_code=404, detail="Training target not found")
+
+    migrated = _migrate_legacy_training_target_for_write(task_id, config)
+    if (
+        migrated is None
+        or migrated.get("target_id") != target_id
+        or migrated.get("task_id") != task_id
+    ):
+        raise HTTPException(status_code=404, detail="Training target not found")
+
+    target = external_sync_service.get_training_target(target_id)
+    if target is None or target.get("task_id") != task_id:
+        raise HTTPException(status_code=404, detail="Training target not found")
+    return target
 
 
 # ── Request / Response Models ──────────────────────────────────────
+
+
+class TrainingTargetCreateRequest(BaseModel):
+    target_name: str = Field(..., min_length=1, max_length=255)
+    model_type: str = Field("embedding")
+    data_phase: str = Field("final")
+    training_method: str = Field("sft")
+    training_config: Optional[Dict[str, Any]] = None
+    base_model_path: str = Field("")
+    base_deployment_id: Optional[str] = None
+    base_deployment_replica_id: Optional[str] = None
+    training_threshold: int = Field(1000, ge=0)
+    priority: int = Field(0, ge=0)
+    sort_order: int = Field(0, ge=0)
+
+
+class TrainingTargetReplaceRequest(TrainingTargetCreateRequest):
+    target_id: str = Field(..., min_length=1, max_length=36)
 
 
 class SyncTaskCreateRequest(BaseModel):
@@ -516,6 +604,8 @@ class SyncTaskCreateRequest(BaseModel):
     training_threshold: int = Field(1000, ge=0)
     training_config: Optional[Dict[str, Any]] = None
     base_deployment_id: Optional[str] = None
+    base_deployment_replica_id: Optional[str] = None
+    training_targets: List[TrainingTargetCreateRequest] = Field(default_factory=list)
     is_active: bool = True
 
 
@@ -531,20 +621,9 @@ class SyncTaskUpdateRequest(BaseModel):
     training_threshold: Optional[int] = Field(None, ge=0)
     training_config: Optional[Dict[str, Any]] = None
     base_deployment_id: Optional[str] = None
+    base_deployment_replica_id: Optional[str] = None
+    training_targets: Optional[List[TrainingTargetReplaceRequest]] = None
     is_active: Optional[bool] = None
-
-
-class TrainingTargetCreateRequest(BaseModel):
-    target_name: str = Field(..., min_length=1, max_length=255)
-    model_type: str = Field("embedding")
-    data_phase: str = Field("final")
-    training_method: str = Field("sft")
-    training_config: Optional[Dict[str, Any]] = None
-    base_model_path: str = Field("")
-    base_deployment_id: Optional[str] = None
-    training_threshold: int = Field(1000, ge=0)
-    priority: int = Field(0, ge=0)
-    sort_order: int = Field(0, ge=0)
 
 
 class TrainingTargetUpdateRequest(BaseModel):
@@ -555,6 +634,7 @@ class TrainingTargetUpdateRequest(BaseModel):
     training_config: Optional[Dict[str, Any]] = None
     base_model_path: Optional[str] = None
     base_deployment_id: Optional[str] = None
+    base_deployment_replica_id: Optional[str] = None
     training_threshold: Optional[int] = Field(None, ge=0)
     priority: Optional[int] = Field(None, ge=0)
     sort_order: Optional[int] = Field(None, ge=0)
@@ -592,28 +672,42 @@ async def create_sync_task(
         request.generation_config,
         current_user,
     )
-    base_deployment = _validate_base_deployment_reference(
+    _validate_base_deployment_reference(
         request.base_deployment_id,
         current_user,
         request.external_api_config_id,
+        request.base_deployment_replica_id,
     )
+    for target in request.training_targets:
+        _validate_base_deployment_reference(
+            target.base_deployment_id,
+            current_user,
+            request.external_api_config_id,
+            target.base_deployment_replica_id,
+        )
 
-    config = external_sync_service.create_task(
-        task_name=request.task_name,
-        user_id=user_id,
-        external_api_config_id=request.external_api_config_id,
-        external_api_url=external_api_url,
-        external_auth_config=request.external_auth_config,
-        sync_interval_seconds=request.sync_interval_seconds,
-        generation_threshold=request.generation_threshold,
-        generation_mode=request.generation_mode,
-        generation_config=generation_config,
-        training_threshold=request.training_threshold,
-        training_config=request.training_config,
-        base_deployment_id=request.base_deployment_id,
-        is_active=request.is_active,
-    )
-    _tag_base_deployment_api_config_if_missing(base_deployment, request.external_api_config_id)
+    try:
+        config = external_sync_service.create_task(
+            task_name=request.task_name,
+            user_id=user_id,
+            external_api_config_id=request.external_api_config_id,
+            external_api_url=external_api_url,
+            external_auth_config=request.external_auth_config,
+            sync_interval_seconds=request.sync_interval_seconds,
+            generation_threshold=request.generation_threshold,
+            generation_mode=request.generation_mode,
+            generation_config=generation_config,
+            training_threshold=request.training_threshold,
+            training_config=request.training_config,
+            base_deployment_id=request.base_deployment_id,
+            base_deployment_replica_id=request.base_deployment_replica_id,
+            training_targets=[
+                target.model_dump() for target in request.training_targets
+            ],
+            is_active=request.is_active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if config.get("is_active"):
         from ...sync.sync_manager import sync_manager
 
@@ -669,11 +763,24 @@ async def update_sync_task(
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
-    update_fields = {k: v for k, v in request.model_dump().items() if v is not None}
+    raw_update_fields = request.model_dump(exclude_unset=True)
+    explicitly_set_fields = request.model_fields_set
+    nullable_update_fields = {
+        "generation_config",
+        "training_config",
+        "base_deployment_id",
+        "base_deployment_replica_id",
+    }
+    update_fields = {
+        key: value
+        for key, value in raw_update_fields.items()
+        if key in explicitly_set_fields
+        and (value is not None or key in nullable_update_fields)
+    }
     if not update_fields:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    if "external_api_url" in update_fields:
+    if update_fields.get("external_api_url"):
         update_fields["external_api_url"] = validate_user_outbound_url(
             update_fields["external_api_url"],
             _resolve_sync_user_id(current_user),
@@ -714,21 +821,25 @@ async def update_sync_task(
                 "external_api_config_id",
                 latest.get("external_api_config_id"),
             )
-            base_deployment = _validate_base_deployment_reference(
+            _validate_base_deployment_reference(
                 update_fields.get(
                     "base_deployment_id",
                     latest.get("base_deployment_id"),
                 ),
                 current_user,
                 target_api_config,
+                update_fields.get(
+                    "base_deployment_replica_id",
+                    latest.get("base_deployment_replica_id"),
+                ),
             )
-            updated = external_sync_service.update_task(task_id, **update_fields)
+            updated = external_sync_service.update_task(
+                task_id,
+                expected_user_id=latest.get("user_id"),
+                **update_fields,
+            )
             if updated is None:
                 raise HTTPException(status_code=404, detail="Sync task not found")
-            _tag_base_deployment_api_config_if_missing(
-                base_deployment,
-                target_api_config,
-            )
     except ValueError as exc:
         if worker_stopped and resume_worker and sync_manager.running:
             sync_manager.start_worker(task_id)
@@ -2338,7 +2449,17 @@ async def start_sync(
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
-    external_sync_service.update_task(task_id, is_active=True)
+    async with sync_manager.task_operation_lock(task_id):
+        latest = external_sync_service.get_task(task_id)
+        latest = verify_resource_ownership(latest, current_user, "Sync task")
+        _require_sync_task_mutable(latest)
+        updated = external_sync_service.update_task(
+            task_id,
+            expected_user_id=latest.get("user_id"),
+            is_active=True,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Sync task not found")
     sync_manager.start_worker(task_id)
 
     return {"message": "Sync started", "worker_status": sync_manager.get_worker_status(task_id)}
@@ -2357,8 +2478,19 @@ async def stop_sync(
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
-    await sync_manager.stop_worker(task_id)
-    external_sync_service.update_task(task_id, is_active=False, status=SyncStatus.IDLE)
+    async with sync_manager.task_operation_lock(task_id):
+        latest = external_sync_service.get_task(task_id)
+        latest = verify_resource_ownership(latest, current_user, "Sync task")
+        _require_sync_task_mutable(latest)
+        updated = external_sync_service.update_task(
+            task_id,
+            expected_user_id=latest.get("user_id"),
+            is_active=False,
+            status=SyncStatus.IDLE,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Sync task not found")
+        await sync_manager.stop_worker(task_id)
 
     return {"message": "Sync stopped", "worker_status": sync_manager.get_worker_status(task_id)}
 
@@ -2582,18 +2714,21 @@ async def retry_adapter_load(
 @router.post("/tasks/{task_id}/unload-adapter")
 async def unload_current_adapter(
     task_id: str,
+    target_id: Optional[str] = Query(default=None),
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Unload the current adapter from the sync task's deployment."""
+    """Unload the current adapter from one target runtime binding."""
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.post_training_handler import unload_current_adapter as _unload
 
     config = external_sync_service.get_task(task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
+    if target_id:
+        _get_training_target_for_task(task_id, target_id)
 
     try:
-        await asyncio.to_thread(_unload, task_id)
+        await asyncio.to_thread(_unload, task_id, target_id)
         return {"message": "Adapter unloaded"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2787,14 +2922,11 @@ async def create_training_target(
             config = external_sync_service.get_task(task_id)
             config = verify_resource_ownership(config, current_user, "Sync task")
             _require_sync_task_mutable(config)
-            base_deployment = _validate_base_deployment_reference(
+            _validate_base_deployment_reference(
                 request.base_deployment_id,
                 current_user,
                 config.get("external_api_config_id"),
-            )
-            _tag_base_deployment_api_config_if_missing(
-                base_deployment,
-                config.get("external_api_config_id"),
+                request.base_deployment_replica_id,
             )
             target = external_sync_service.create_training_target(
                 task_id=task_id,
@@ -2818,10 +2950,17 @@ async def update_training_target(
     config = external_sync_service.get_task(task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
-    target = _get_training_target_for_task(task_id, target_id)
-    _require_training_target_mutable(target)
 
-    updates = {k: v for k, v in request.model_dump().items() if v is not None}
+    raw_updates = request.model_dump(exclude_unset=True)
+    nullable_binding_fields = {
+        "base_deployment_id",
+        "base_deployment_replica_id",
+    }
+    updates = {
+        key: value
+        for key, value in raw_updates.items()
+        if value is not None or key in nullable_binding_fields
+    }
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -2832,17 +2971,20 @@ async def update_training_target(
             config = external_sync_service.get_task(task_id)
             config = verify_resource_ownership(config, current_user, "Sync task")
             _require_sync_task_mutable(config)
-            target = _get_training_target_for_task(task_id, target_id)
-            _require_training_target_mutable(target)
-            if "base_deployment_id" in updates:
-                base_deployment = _validate_base_deployment_reference(
-                    updates["base_deployment_id"],
+            target = _get_or_materialize_training_target_for_write(
+                task_id,
+                target_id,
+                config,
+            )
+            if "base_deployment_id" in updates or "base_deployment_replica_id" in updates:
+                _validate_base_deployment_reference(
+                    updates.get("base_deployment_id", target.get("base_deployment_id")),
                     current_user,
                     config.get("external_api_config_id"),
-                )
-                _tag_base_deployment_api_config_if_missing(
-                    base_deployment,
-                    config.get("external_api_config_id"),
+                    updates.get(
+                        "base_deployment_replica_id",
+                        target.get("base_deployment_replica_id"),
+                    ),
                 )
             updated = external_sync_service.update_training_target(
                 target["target_id"],
@@ -2868,8 +3010,6 @@ async def delete_training_target(
     config = external_sync_service.get_task(task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
-    target = _get_training_target_for_task(task_id, target_id)
-    _require_training_target_mutable(target)
 
     from ...sync.sync_manager import sync_manager
 
@@ -2878,7 +3018,11 @@ async def delete_training_target(
             config = external_sync_service.get_task(task_id)
             config = verify_resource_ownership(config, current_user, "Sync task")
             _require_sync_task_mutable(config)
-            target = _get_training_target_for_task(task_id, target_id)
+            target = _get_or_materialize_training_target_for_write(
+                task_id,
+                target_id,
+                config,
+            )
             _require_training_target_mutable(target)
             deleted = external_sync_service.delete_training_target(
                 target["target_id"],
@@ -2904,14 +3048,18 @@ async def trigger_target_training(
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
-    target = _get_training_target_for_task(task_id, target_id)
-    _validate_base_deployment_reference(
-        target.get("base_deployment_id"),
-        current_user,
-        config.get("external_api_config_id"),
-    )
-
     try:
+        target = _get_or_materialize_training_target_for_write(
+            task_id,
+            target_id,
+            config,
+        )
+        _validate_base_deployment_reference(
+            target.get("base_deployment_id"),
+            current_user,
+            config.get("external_api_config_id"),
+            target.get("base_deployment_replica_id"),
+        )
         from ...sync.level2_handler import _trigger_training_for_target
         raw_target = external_sync_service.get_training_target_raw(target_id)
         if not raw_target or raw_target.get("task_id") != task_id:
@@ -2925,5 +3073,7 @@ async def trigger_target_training(
         return {"message": f"Training triggered for target '{target['target_name']}'"}
     except HTTPException:
         raise
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

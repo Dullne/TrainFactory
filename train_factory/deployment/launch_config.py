@@ -1,4 +1,11 @@
-"""Strict, version-pinned launch configuration for container inference."""
+"""Strict, version-pinned launch configuration for container inference.
+
+This module deliberately contains no Docker or database calls.  It converts
+API payloads into a closed set of framework arguments that later layers can
+plan and render without accepting raw command-line strings.
+"""
+
+from __future__ import annotations
 
 import json
 from typing import Annotated, Any, Literal, Mapping, TypeAlias
@@ -10,6 +17,7 @@ from pydantic import (
     StrictBool,
     StrictInt,
     TypeAdapter,
+    field_validator,
     model_validator,
 )
 
@@ -17,6 +25,7 @@ from pydantic import (
 ParallelSize = Annotated[StrictInt, Field(ge=1, le=64)]
 ContextLength = Annotated[StrictInt, Field(ge=1, le=4_194_304)]
 ConcurrentRequests = Annotated[StrictInt, Field(ge=1, le=4096)]
+GpuId = Annotated[StrictInt, Field(ge=0)]
 
 ModelDtype: TypeAlias = Literal[
     "auto",
@@ -153,6 +162,24 @@ SglangAttentionBackend: TypeAlias = Literal[
 ]
 
 
+class ReplicaGpuOverride(BaseModel):
+    """Manual GPU assignment for one independent replica."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    replica_index: Annotated[StrictInt, Field(ge=0)]
+    gpu_ids: list[GpuId]
+
+    @field_validator("gpu_ids")
+    @classmethod
+    def _validate_gpu_ids(cls, value: list[int]) -> list[int]:
+        if not value:
+            raise ValueError("replica gpu_ids must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("replica gpu_ids must not contain duplicates")
+        return value
+
+
 class CommonLaunchConfig(BaseModel):
     """Fields shared by the pinned vLLM and SGLang adapters."""
 
@@ -164,6 +191,27 @@ class CommonLaunchConfig(BaseModel):
     max_context_length: ContextLength | None = None
     max_concurrent_requests: ConcurrentRequests | None = None
     dtype: ModelDtype = "auto"
+    gpu_pool: list[GpuId] = Field(default_factory=list)
+    replica_gpu_overrides: list[ReplicaGpuOverride] = Field(default_factory=list)
+    allow_gpu_reuse: StrictBool = False
+
+    @field_validator("gpu_pool")
+    @classmethod
+    def _validate_gpu_pool(cls, value: list[int]) -> list[int]:
+        if len(set(value)) != len(value):
+            raise ValueError("gpu_pool must not contain duplicates")
+        return value
+
+    @field_validator("replica_gpu_overrides")
+    @classmethod
+    def _validate_override_indexes(
+        cls,
+        value: list[ReplicaGpuOverride],
+    ) -> list[ReplicaGpuOverride]:
+        indexes = [override.replica_index for override in value]
+        if len(set(indexes)) != len(indexes):
+            raise ValueError("replica override indexes must be unique")
+        return value
 
 
 class VllmLaunchConfig(CommonLaunchConfig):
@@ -377,7 +425,10 @@ def build_vllm_server_argv(
                     "qwen3_reranker.jinja",
                 ]
             )
-    _append_common_optional_args(argv, trust_remote_code=trust_remote_code)
+    _append_common_optional_args(
+        argv,
+        trust_remote_code=trust_remote_code,
+    )
     if enable_lora:
         argv.extend(
             [
@@ -482,7 +533,10 @@ def build_sglang_server_argv(
             model_family,
         ):
             argv.extend(["--chat-template", chat_template])
-    _append_common_optional_args(argv, trust_remote_code=trust_remote_code)
+    _append_common_optional_args(
+        argv,
+        trust_remote_code=trust_remote_code,
+    )
     if enable_lora:
         argv.extend(
             [
@@ -504,3 +558,118 @@ def build_sglang_server_argv(
             ]
         )
     return tuple(argv)
+
+
+def _validate_replica_count(replica_count: object) -> int:
+    if type(replica_count) is not int or not 1 <= replica_count <= 8:
+        raise ValueError("replica count must be an integer between 1 and 8")
+    return replica_count
+
+
+def _validate_override_range(config: LaunchConfig, replica_count: int) -> None:
+    if any(
+        override.replica_index >= replica_count
+        for override in config.replica_gpu_overrides
+    ):
+        raise ValueError("replica index is outside the requested replica count")
+
+
+def _legacy_conflicts(
+    config: LaunchConfig,
+    *,
+    replica_count: int,
+    gpu_id: int | None,
+    legacy_config: Mapping[str, Any],
+) -> bool:
+    if gpu_id is not None and not (replica_count == 1 and config.gpu_pool == [gpu_id]):
+        return True
+
+    legacy_fields = {
+        "dtype": config.dtype,
+    }
+    if isinstance(config, VllmLaunchConfig):
+        legacy_fields["enforce_eager"] = config.enforce_eager
+    else:
+        legacy_fields["attention_backend"] = config.attention_backend
+
+    for key, expected in legacy_fields.items():
+        if key not in legacy_config:
+            continue
+        actual = legacy_config[key]
+        if type(actual) is not type(expected) or actual != expected:
+            return True
+    return False
+
+
+def normalize_launch_config(
+    *,
+    framework: str,
+    replica_count: object,
+    gpu_id: int | None,
+    legacy_config: Mapping[str, Any] | None,
+    launch_config: Mapping[str, Any] | LaunchConfig | None,
+) -> LaunchConfig | None:
+    """Normalize new and legacy request fields without mutating either payload.
+
+    Xinference remains outside this container launch surface.  Multi-replica
+    vLLM/SGLang requests must use the typed shape so resource planning is never
+    inferred from the old free-form ``config`` mapping.
+    """
+
+    replica_count_value = _validate_replica_count(replica_count)
+    legacy = dict(legacy_config or {})
+
+    if gpu_id is not None and (type(gpu_id) is not int or gpu_id < 0):
+        raise ValueError("gpu_id must be a non-negative integer")
+
+    if framework == "xinference":
+        if launch_config is not None:
+            raise ValueError("Xinference does not accept container launch_config")
+        return None
+    if framework not in ("vllm", "sglang"):
+        raise ValueError("unsupported inference framework")
+
+    if launch_config is not None:
+        if isinstance(launch_config, (VllmLaunchConfig, SglangLaunchConfig)):
+            normalized = launch_config.model_copy(deep=True)
+        else:
+            normalized = parse_launch_config(launch_config)
+        if normalized.framework != framework:
+            raise ValueError("launch_config framework does not match request")
+        _validate_override_range(normalized, replica_count_value)
+        if _legacy_conflicts(
+            normalized,
+            replica_count=replica_count_value,
+            gpu_id=gpu_id,
+            legacy_config=legacy,
+        ):
+            raise ValueError("legacy deployment fields conflict with launch_config")
+        return normalized
+
+    if replica_count_value != 1:
+        raise ValueError("multi-replica container deployment requires launch_config")
+
+    common: dict[str, Any] = {
+        "framework": framework,
+        "gpu_pool": [] if gpu_id is None else [gpu_id],
+        "dtype": legacy.get("dtype", "auto"),
+    }
+    if framework == "vllm":
+        common["enforce_eager"] = legacy.get("enforce_eager", False)
+    else:
+        common["attention_backend"] = legacy.get("attention_backend")
+    return parse_launch_config(common)
+
+
+__all__ = [
+    "LaunchConfig",
+    "ReplicaGpuOverride",
+    "SglangLaunchConfig",
+    "VllmLaunchConfig",
+    "build_sglang_server_argv",
+    "build_vllm_server_argv",
+    "is_qwen3_reranker",
+    "normalize_launch_config",
+    "parse_launch_config",
+    "xinference_model_launch_overrides",
+]

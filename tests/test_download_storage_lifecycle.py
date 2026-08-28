@@ -16,11 +16,27 @@ from train_factory.api import server
 from train_factory.core import remote_download_security
 from train_factory.storage.entities.dataset_entity import DatasetDB
 from train_factory.storage.entities.deployment_entity import DeploymentDB
+from train_factory.storage.entities.deployment_replica_entity import (
+    DeploymentReplicaDB,
+)
+from train_factory.storage.entities.evaluation_task_entity import EvaluationTaskDB
+from train_factory.storage.entities.external_sync_entity import (
+    ExternalSyncTaskDB,
+    ExternalSyncTrainingDB,
+    ExternalSyncTrainingTargetDB,
+)
+from train_factory.storage.entities.generation_task_entity import GenerationTaskDB
+from train_factory.storage.entities.loaded_adapter_entity import LoadedAdapterDB
+from train_factory.storage.entities.milvus_collection_entity import MilvusCollectionDB
+from train_factory.storage.entities.model_artifact_membership_gate_entity import (
+    ModelArtifactMembershipGateDB,
+)
 from train_factory.storage.entities.model_config_entity import ModelConfigDB
 from train_factory.storage.entities.model_registry_entity import (
     ModelRegistryDB,
     ModelVersionDB,
 )
+from train_factory.storage.entities.training_task_entity import TrainingTaskDB
 
 dataset_download_module = importlib.import_module(
     "train_factory.storage.services.dataset_download_service"
@@ -30,6 +46,9 @@ model_download_module = importlib.import_module(
 )
 model_registry_module = importlib.import_module(
     "train_factory.storage.services.model_registry_service"
+)
+deployment_service_module = importlib.import_module(
+    "train_factory.deployment.deployment_service"
 )
 
 
@@ -93,10 +112,23 @@ def lifecycle_db(monkeypatch, tmp_path):
         ModelRegistryDB.__table__,
         ModelVersionDB.__table__,
         DeploymentDB.__table__,
+        DeploymentReplicaDB.__table__,
+        LoadedAdapterDB.__table__,
         ModelConfigDB.__table__,
         DatasetDB.__table__,
+        ModelArtifactMembershipGateDB.__table__,
+        ExternalSyncTaskDB.__table__,
+        ExternalSyncTrainingTargetDB.__table__,
+        ExternalSyncTrainingDB.__table__,
+        TrainingTaskDB.__table__,
+        GenerationTaskDB.__table__,
+        EvaluationTaskDB.__table__,
+        MilvusCollectionDB.__table__,
     ):
         table.create(engine)
+    with Session(engine) as session:
+        session.add(ModelArtifactMembershipGateDB(gate_id=1))
+        session.commit()
 
     @contextmanager
     def isolated_session():
@@ -111,6 +143,7 @@ def lifecycle_db(monkeypatch, tmp_path):
     monkeypatch.setattr(model_registry_module, "get_session", isolated_session)
     monkeypatch.setattr(model_download_module, "get_session", isolated_session)
     monkeypatch.setattr(dataset_download_module, "get_session", isolated_session)
+    monkeypatch.setattr(deployment_service_module, "get_session", isolated_session)
     monkeypatch.setattr(_quota_module(), "get_session", isolated_session)
     monkeypatch.setattr(model_download_module.settings, "models_dir", tmp_path / "models")
     monkeypatch.setattr(
@@ -254,6 +287,8 @@ def test_force_model_delete_stops_deployment_before_storage_cleanup(
                     xinference_endpoint="http://127.0.0.1:9997",
                     deploy_mode="container",
                     container_name="trainfactory-xf-deployed-model-deadbeef",
+                    inference_framework="vllm",
+                    config={"replica_schema_version": 1},
                     status="running",
                 ),
             ]

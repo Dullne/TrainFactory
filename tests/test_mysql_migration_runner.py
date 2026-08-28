@@ -78,6 +78,7 @@ def test_pytest_environment_drops_host_database_compose_and_secret_values():
     environment = module.clean_pytest_environment(
         base,
         test_url="mysql+pymysql://root:test@127.0.0.1:3307/mysql",
+        jwt_secret_key="controlled-child-jwt-" + "a" * 64,
     )
 
     assert environment["TRAINFACTORY_TEST_MYSQL_URL"].startswith(
@@ -89,6 +90,24 @@ def test_pytest_environment_drops_host_database_compose_and_secret_values():
     assert "MYSQL_URL" not in environment
     assert "DATABASE_URL" not in environment
     assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_pytest_environment_replaces_ambient_jwt_with_controlled_child_secret():
+    module = _module()
+    ambient_secret = "private-ambient-jwt-canary"
+    child_secret = "controlled-child-jwt-" + "a" * 64
+
+    environment = module.clean_pytest_environment(
+        {
+            "PATH": os.environ.get("PATH", ""),
+            "JWT_SECRET_KEY": ambient_secret,
+        },
+        test_url="mysql+pymysql://root:test@127.0.0.1:3307/mysql",
+        jwt_secret_key=child_secret,
+    )
+
+    assert environment["JWT_SECRET_KEY"] == child_secret
+    assert ambient_secret not in "\n".join(environment.values())
 
 
 def test_pytest_environment_rejects_ambient_plugin_path_and_telemetry_injection():
@@ -108,6 +127,7 @@ def test_pytest_environment_rejects_ambient_plugin_path_and_telemetry_injection(
     environment = module.clean_pytest_environment(
         base,
         test_url="mysql+pymysql://root:test@127.0.0.1:3307/mysql",
+        jwt_secret_key="controlled-child-jwt-" + "a" * 64,
     )
 
     assert environment["PATH"] == base["PATH"]
@@ -307,15 +327,17 @@ def test_junit_summary_rejects_zero_passed_or_any_skipped_as_incomplete(tmp_path
         with pytest.raises(module.RunnerError) as exc_info:
             module.require_complete_summary(summary)
         assert str(exc_info.value) == "MySQL migration test report is incomplete"
-    with pytest.raises(module.RunnerError):
-        module.require_complete_summary(module.TestSummary(5, 0, 0, 0))
+    assert module.require_complete_summary(module.TestSummary(15, 0, 0, 0)) is None
+    for passed in (5, 6, 7, 8, 9, 11, 13, 14):
+        with pytest.raises(module.RunnerError):
+            module.require_complete_summary(module.TestSummary(passed, 0, 0, 0))
 
     with pytest.raises(module.RunnerError) as exc_info:
         module.read_junit_summary(report, max_bytes=8)
     assert str(exc_info.value) == "MySQL migration test report is invalid"
 
 
-def test_runner_invokes_only_the_explicit_integration_file():
+def test_runner_invokes_only_the_two_explicit_approved_integration_files():
     module = _module()
     config = ROOT_DIR / ".runtime" / "run" / "pytest" / "pytest.ini"
     command = module.pytest_command(
@@ -331,11 +353,16 @@ def test_runner_invokes_only_the_explicit_integration_file():
     ]
     def normalize(value):
         return os.path.normcase(os.path.abspath(value))
-    expected_test = normalize(
-        ROOT_DIR / "tests" / "integration" / "test_mysql_migrations.py"
-    )
-    assert any(normalize(argument) == expected_test for argument in command)
+    expected_tests = [
+        normalize(ROOT_DIR / "tests" / "integration" / "test_mysql_migrations.py"),
+        normalize(
+            ROOT_DIR / "tests" / "integration" / "test_mysql_sync_lock_order.py"
+        ),
+    ]
+    selected_tests = command[command.index("-q") + 1 : command.index("--noconftest")]
+    assert [normalize(argument) for argument in selected_tests] == expected_tests
     assert not any(argument == "tests" for argument in command)
+    assert not any("*" in argument for argument in selected_tests)
     assert any(argument.startswith("--junitxml=") for argument in command)
     confcut = next(argument for argument in command if argument.startswith("--confcutdir="))
     assert normalize(confcut.split("=", 1)[1]) == normalize(
@@ -440,10 +467,14 @@ def test_test_file_must_be_the_single_canonical_integration_file(tmp_path):
 
     assert module.validate_test_file(expected) == expected.resolve()
 
-    with pytest.raises(module.RunnerError) as exc_info:
-        module.validate_test_file(tmp_path / "private-canary.py")
-    assert str(exc_info.value) == "MySQL migration test file is not allowed"
-    assert "private-canary" not in repr(exc_info.value)
+    for rejected in (
+        ROOT_DIR / "tests" / "integration" / "test_mysql_sync_lock_order.py",
+        tmp_path / "private-canary.py",
+    ):
+        with pytest.raises(module.RunnerError) as exc_info:
+            module.validate_test_file(rejected)
+        assert str(exc_info.value) == "MySQL migration test file is not allowed"
+        assert "private-canary" not in repr(exc_info.value)
 
 
 def test_runner_cleanup_attempts_only_created_resources_and_aggregates_failures():
@@ -477,10 +508,28 @@ def test_full_runner_masks_credentials_before_first_docker_mutation(
     report = tmp_path / "mysql.xml"
     docker_calls = []
     child_observation = {}
-    secrets = iter(("private-root-canary", "private-app-canary"))
+    events = []
+    database_secrets = iter(
+        (
+            ("root", "private-root-canary"),
+            ("app", "private-app-canary"),
+        )
+    )
     project = "trainfactory-mysql-" + "ab" * 16
     masks = []
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("JWT_SECRET_KEY", "private-ambient-jwt-canary")
+
+    def token_urlsafe(size):
+        label, value = next(database_secrets)
+        events.append((label, "token_urlsafe", size))
+        return value
+
+    def token_bytes(size):
+        events.append(("jwt", "token_bytes", size))
+        return b"\xa5" * size
+
+    monkeypatch.setattr(module.secrets, "token_bytes", token_bytes)
 
     def run_cli(args):
         docker_calls.append(args)
@@ -517,10 +566,10 @@ def test_full_runner_masks_credentials_before_first_docker_mutation(
         child_observation["args"] = list(args)
         child_observation["env"] = dict(env)
         report.write_text(
-            '<testsuites tests="6" failures="0" errors="0" skipped="0" />',
+            '<testsuites tests="15" failures="0" errors="0" skipped="0" />',
             encoding="utf-8",
         )
-        return _completed(args, stdout="6 passed in 1.0s")
+        return _completed(args, stdout="15 passed in 1.0s")
 
     summary = module.run_isolated_mysql(
         images_lock=tmp_path / "images.lock.env",
@@ -530,14 +579,14 @@ def test_full_runner_masks_credentials_before_first_docker_mutation(
         run_cli=run_cli,
         run_child=run_child,
         token_hex=lambda size: "ab" * size,
-        token_urlsafe=lambda _size: next(secrets),
+        token_urlsafe=token_urlsafe,
         sleep=lambda _seconds: None,
         image_override=f"mysql:8.0@sha256:{'a' * 64}",
         github_actions_mask=True,
         mask_sink=masks.append,
     )
 
-    assert module.format_summary(summary) == "passed=6 skipped=0 warnings=0 failures=0"
+    assert module.format_summary(summary) == "passed=15 skipped=0 warnings=0 failures=0"
     assert "TRAINFACTORY_TEST_MYSQL_URL" in child_observation["env"]
     assert "private-root-canary" in child_observation["env"]["TRAINFACTORY_TEST_MYSQL_URL"]
     assert child_observation["env"]["TRAINFACTORY_TEST_MYSQL_URL"].endswith(
@@ -546,6 +595,17 @@ def test_full_runner_masks_credentials_before_first_docker_mutation(
     assert child_observation["env"]["TRAINFACTORY_MYSQL_SERVER_UUID"] == (
         "12345678-1234-1234-1234-123456789abc"
     )
+    jwt_secret = child_observation["env"]["JWT_SECRET_KEY"]
+    assert events == [
+        ("root", "token_urlsafe", 32),
+        ("app", "token_urlsafe", 32),
+        ("jwt", "token_bytes", 32),
+    ]
+    assert len(jwt_secret.encode("utf-8")) >= 32
+    assert jwt_secret != "private-ambient-jwt-canary"
+    assert jwt_secret not in " ".join(child_observation["args"])
+    assert jwt_secret not in "\n".join(" ".join(args) for args in docker_calls)
+    assert jwt_secret not in report.read_text(encoding="utf-8")
     assert "private-root-canary" not in " ".join(child_observation["args"])
     remove_calls = [args for args in docker_calls if args[1:3] in (["rm", "-f"], ["network", "rm"], ["volume", "rm"])]
     assert [args[-1] for args in remove_calls] == [
@@ -554,6 +614,95 @@ def test_full_runner_masks_credentials_before_first_docker_mutation(
         f"{project}-data",
     ]
     assert not (tmp_path / "work" / project).exists()
+
+
+@pytest.mark.parametrize("failure_mode", ("raises", "short-bytes", "non-bytes"))
+def test_jwt_entropy_failure_precedes_docker_mutation_without_residue(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    failure_mode,
+):
+    module = _module()
+    report = tmp_path / "mysql.xml"
+    work_root = tmp_path / "work"
+    events = []
+    database_secrets = iter(
+        (
+            ("root", "private-root-canary"),
+            ("app", "private-app-canary"),
+        )
+    )
+    docker_calls = []
+
+    def token_urlsafe(size):
+        label, value = next(database_secrets)
+        events.append((label, "token_urlsafe", size))
+        return value
+
+    def token_bytes(size):
+        events.append(("jwt", "token_bytes", size))
+        if failure_mode == "raises":
+            raise RuntimeError("private-jwt-error-canary")
+        if failure_mode == "short-bytes":
+            return b"private-short-jwt-canary"
+        return "private-nonbytes-jwt-canary"
+
+    monkeypatch.setattr(module.secrets, "token_bytes", token_bytes)
+
+    def run_cli(args):
+        docker_calls.append(list(args))
+        if args[1] == "version":
+            return _completed(args, stdout="linux/amd64\n")
+        if args[1] == "info":
+            return _completed(
+                args,
+                stdout="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n",
+            )
+        return _completed(args)
+
+    with pytest.raises(module.RunnerError) as exc_info:
+        module.run_isolated_mysql(
+            images_lock=tmp_path / "unused.lock",
+            test_file=ROOT_DIR / "tests" / "integration" / "test_mysql_migrations.py",
+            work_root=work_root,
+            junit_out=report,
+            run_cli=run_cli,
+            run_child=lambda _args, _env: pytest.fail("pytest must not execute"),
+            token_hex=lambda size: "ab" * size,
+            token_urlsafe=token_urlsafe,
+            sleep=lambda _seconds: None,
+            image_override=f"mysql:8.0@sha256:{'a' * 64}",
+        )
+
+    assert events == [
+        ("root", "token_urlsafe", 32),
+        ("app", "token_urlsafe", 32),
+        ("jwt", "token_bytes", 32),
+    ]
+    assert [tuple(args[1:3]) for args in docker_calls] == [
+        ("version", "--format"),
+        ("info", "--format"),
+        ("ps", "-aq"),
+        ("network", "ls"),
+        ("volume", "ls"),
+    ]
+    assert str(exc_info.value) == "isolated MySQL child secret generation failed"
+    private_values = (
+        "private-root-canary",
+        "private-app-canary",
+        "private-jwt-error-canary",
+        "private-short-jwt-canary",
+        "private-nonbytes-jwt-canary",
+    )
+    assert all(value not in repr(exc_info.value) for value in private_values)
+    docker_argv = "\n".join(" ".join(args) for args in docker_calls)
+    assert all(value not in docker_argv for value in private_values)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+    assert not work_root.exists()
+    assert not report.exists()
 
 
 def test_mysql_runner_github_environment_requires_mask_flag_before_docker(
@@ -825,7 +974,7 @@ def test_main_accepts_only_github_runner_report_root(tmp_path, monkeypatch, caps
         module,
         "run_isolated_mysql",
         lambda **kwargs: observed.update(kwargs)
-        or module.TestSummary(passed=6, skipped=0, warnings=0, failures=0),
+        or module.TestSummary(passed=15, skipped=0, warnings=0, failures=0),
     )
 
     result = module.main(
@@ -846,7 +995,7 @@ def test_main_accepts_only_github_runner_report_root(tmp_path, monkeypatch, caps
     assert observed["work_root"] == (ROOT_DIR / ".runtime").resolve()
     assert observed["junit_out"] == report
     assert observed["github_actions_mask"] is True
-    assert capsys.readouterr().out == "passed=6 skipped=0 warnings=0 failures=0\n"
+    assert capsys.readouterr().out == "passed=15 skipped=0 warnings=0 failures=0\n"
 
 
 def test_secret_setup_partial_failure_rolls_back_only_its_new_directory(tmp_path, monkeypatch):
@@ -996,7 +1145,16 @@ def test_mysql_runner_isolated_direct_cli_help_is_available():
 
 @pytest.mark.parametrize(
     "failure_mode",
-    ("setup-acl", "timeout", "oversize", "bad-xml", "stdout-secret"),
+    (
+        "setup-acl",
+        "timeout",
+        "oversize",
+        "bad-xml",
+        "stdout-secret",
+        "stdout-jwt",
+        "stderr-jwt",
+        "junit-jwt",
+    ),
 )
 def test_full_runner_discards_unverified_private_report_on_all_child_failures(
     tmp_path, failure_mode, monkeypatch
@@ -1005,6 +1163,8 @@ def test_full_runner_discards_unverified_private_report_on_all_child_failures(
     report = tmp_path / "mysql.xml"
     project = "trainfactory-mysql-" + "ab" * 16
     secrets = iter(("private-root-canary", "private-app-canary"))
+    child_observation = {}
+    monkeypatch.setattr(module.secrets, "token_bytes", lambda size: b"\xa5" * size)
     if failure_mode == "setup-acl":
         original_write = module._write_private_file
         write_calls = 0
@@ -1036,9 +1196,12 @@ def test_full_runner_discards_unverified_private_report_on_all_child_failures(
             return _completed(args, stdout=project + "\n")
         return _completed(args)
 
-    def run_child(args, _env):
+    def run_child(args, env):
         if failure_mode == "setup-acl":
             pytest.fail("pytest must not execute after report ACL failure")
+        jwt_secret = env["JWT_SECRET_KEY"]
+        child_observation["jwt_secret"] = jwt_secret
+        assert jwt_secret not in " ".join(args)
         if failure_mode == "timeout":
             report.write_text("private-root-canary", encoding="utf-8")
             raise TimeoutError("private-timeout-canary")
@@ -1048,10 +1211,21 @@ def test_full_runner_discards_unverified_private_report_on_all_child_failures(
         if failure_mode == "bad-xml":
             report.write_text("<malformed", encoding="utf-8")
             return _completed(args)
+        if failure_mode == "junit-jwt":
+            report.write_text(
+                '<testsuites tests="15" failures="0" errors="0" skipped="0">'
+                f"<system-out>{jwt_secret}</system-out></testsuites>",
+                encoding="utf-8",
+            )
+            return _completed(args)
         report.write_text(
-            '<testsuites tests="6" failures="0" errors="0" skipped="0" />',
+            '<testsuites tests="15" failures="0" errors="0" skipped="0" />',
             encoding="utf-8",
         )
+        if failure_mode == "stdout-jwt":
+            return _completed(args, stdout=jwt_secret)
+        if failure_mode == "stderr-jwt":
+            return _completed(args, stderr=jwt_secret)
         return _completed(args, stdout="private-root-canary")
 
     with pytest.raises(module.RunnerError) as exc_info:
@@ -1071,3 +1245,6 @@ def test_full_runner_discards_unverified_private_report_on_all_child_failures(
     assert not report.exists()
     assert "private-root-canary" not in repr(exc_info.value)
     assert "private-timeout-canary" not in repr(exc_info.value)
+    if failure_mode.endswith("-jwt"):
+        assert str(exc_info.value) == "MySQL migration report contains private data"
+        assert child_observation["jwt_secret"] not in repr(exc_info.value)

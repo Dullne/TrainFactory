@@ -66,6 +66,8 @@
     "sourceDeployment": "Deployed Model",
     "sourceCustom": "Custom Endpoint",
     "selectDeployment": "Select a deployed model",
+    "selectReplica": "Select a replica to evaluate",
+    "replicas": "replicas",
     "endpointPlaceholder": "Endpoint (e.g. http://localhost:9997)",
     "displayNamePlaceholder": "Display Name",
     "datasetConfig": "Dataset Configuration",

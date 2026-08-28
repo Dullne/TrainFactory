@@ -625,6 +625,8 @@ def test_test_dockerignore_is_sensitive_allowlist_for_copy_sources():
     dockerfile = (ROOT_DIR / "docker" / "Dockerfile.test").read_text(encoding="utf-8")
     assert (ROOT_DIR / "scripts" / "verify_inference_upstream.py").is_file()
     assert ignore_lines[0] == "*"
+    assert all("docs/" not in line for line in ignore_lines)
+    assert "production-web-release" not in dockerfile
     assert {
         ".env*",
         ".runtime",

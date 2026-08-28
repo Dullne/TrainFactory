@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   Card,
   Table,
@@ -37,25 +37,53 @@ export function AdapterManager({ deployment, onRefresh }: AdapterManagerProps) {
   const [loading, setLoading] = useState(false)
   const [loadModalVisible, setLoadModalVisible] = useState(false)
   const [loadingAdapter, setLoadingAdapter] = useState(false)
+  const [selectedReplicaId, setSelectedReplicaId] = useState<string>()
   const [form] = Form.useForm()
+  const replicas = useMemo(
+    () => deployment.replica_instances ?? [],
+    [deployment.replica_instances],
+  )
+  const healthyReplicas = useMemo(
+    () =>
+      replicas.filter(
+        (replica) => replica.status === 'running' && replica.health_status === 'HEALTHY',
+      ),
+    [replicas],
+  )
+  const requiresReplicaSelection = replicas.length > 1
+  const isOperational = deployment.status === 'running' || deployment.status === 'degraded'
 
   const supportsLora =
     deployment.inference_framework === 'vllm' ||
     deployment.inference_framework === 'sglang'
 
   const fetchAdapters = useCallback(async () => {
-    if (!supportsLora || deployment.status !== 'running') return
+    if (!supportsLora || !isOperational) return
+    if (replicas.length > 0 && !selectedReplicaId) {
+      setAdapters([])
+      return
+    }
 
     setLoading(true)
     try {
-      const response = await adapterApi.listLoaded(deployment.deployment_id)
+      const response = await adapterApi.listLoaded(
+        deployment.deployment_id,
+        false,
+        selectedReplicaId,
+      )
       setAdapters(response.adapters || [])
     } catch (error) {
       console.error('Failed to fetch adapters:', error)
     } finally {
       setLoading(false)
     }
-  }, [deployment.deployment_id, deployment.status, supportsLora])
+  }, [
+    deployment.deployment_id,
+    isOperational,
+    replicas.length,
+    selectedReplicaId,
+    supportsLora,
+  ])
 
   const fetchAvailableAdapters = useCallback(async () => {
     try {
@@ -67,10 +95,19 @@ export function AdapterManager({ deployment, onRefresh }: AdapterManagerProps) {
   }, [])
 
   useEffect(() => {
-    if (supportsLora && deployment.status === 'running') {
+    setSelectedReplicaId((current) => {
+      if (healthyReplicas.some((replica) => replica.replica_id === current)) return current
+      return replicas.length === 1 && healthyReplicas.length === 1
+        ? healthyReplicas[0].replica_id
+        : undefined
+    })
+  }, [deployment.deployment_id, healthyReplicas, replicas.length])
+
+  useEffect(() => {
+    if (supportsLora && isOperational) {
       Promise.all([fetchAdapters(), fetchAvailableAdapters()])
     }
-  }, [deployment.deployment_id, deployment.status, supportsLora, fetchAdapters, fetchAvailableAdapters])
+  }, [deployment.deployment_id, isOperational, supportsLora, fetchAdapters, fetchAvailableAdapters])
 
   const handleLoadAdapter = async (values: {
     adapter_source: string
@@ -93,6 +130,7 @@ export function AdapterManager({ deployment, onRefresh }: AdapterManagerProps) {
           selectedAdapter.source === 'training_task' ? selectedAdapter.source_id : undefined,
         source_model_id:
           selectedAdapter.source === 'model_registry' ? selectedAdapter.source_id : undefined,
+        replica_id: selectedReplicaId,
       })
 
       message.success(t('adapter.message.loadSuccess'))
@@ -111,7 +149,7 @@ export function AdapterManager({ deployment, onRefresh }: AdapterManagerProps) {
 
   const handleUnloadAdapter = async (adapterName: string) => {
     try {
-      await adapterApi.unload(deployment.deployment_id, adapterName)
+      await adapterApi.unload(deployment.deployment_id, adapterName, selectedReplicaId)
       message.success(t('adapter.message.unloadSuccess'))
       fetchAdapters()
       onRefresh?.()
@@ -124,7 +162,7 @@ export function AdapterManager({ deployment, onRefresh }: AdapterManagerProps) {
 
   const handleSync = async () => {
     try {
-      await adapterApi.sync(deployment.deployment_id)
+      await adapterApi.sync(deployment.deployment_id, selectedReplicaId)
       message.success(t('adapter.message.syncSuccess'))
       fetchAdapters()
     } catch (error) {
@@ -211,7 +249,7 @@ export function AdapterManager({ deployment, onRefresh }: AdapterManagerProps) {
   }
 
   // If deployment is not running
-  if (deployment.status !== 'running') {
+  if (!isOperational) {
     return (
       <Card title={t('adapter.title')}>
         <Alert
@@ -238,25 +276,79 @@ export function AdapterManager({ deployment, onRefresh }: AdapterManagerProps) {
     )
   }
 
+  if (replicas.length > 0 && healthyReplicas.length === 0) {
+    return (
+      <Card title={t('adapter.title')}>
+        <Alert
+          type="warning"
+          showIcon
+          message={t('adapter.noHealthyReplicaMessage')}
+          description={t('adapter.noHealthyReplicaDesc')}
+        />
+      </Card>
+    )
+  }
+
   return (
     <Card
       title={t('adapter.title')}
       extra={
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={handleSync}>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={handleSync}
+            disabled={requiresReplicaSelection && !selectedReplicaId}
+          >
             {t('adapter.syncStatus')}
           </Button>
           <Button
             type="primary"
             icon={<PlusOutlined />}
             onClick={() => setLoadModalVisible(true)}
-            disabled={adapters.filter((a) => a.status === 'loaded').length >= (deployment.max_loras || 4)}
+            disabled={
+              (requiresReplicaSelection && !selectedReplicaId) ||
+              adapters.filter((a) => a.status === 'loaded').length >=
+                (deployment.max_loras || 4)
+            }
           >
             {t('adapter.loadAdapter')}
           </Button>
         </Space>
       }
     >
+      {replicas.length > 0 ? (
+        <Form.Item
+          label={t('adapter.replica')}
+          required={requiresReplicaSelection}
+          extra={
+            requiresReplicaSelection
+              ? t('adapter.replicaRequiredHint')
+              : t('adapter.replicaSingleHint')
+          }
+        >
+          <Select
+            value={selectedReplicaId}
+            onChange={setSelectedReplicaId}
+            placeholder={t('adapter.replicaPlaceholder')}
+            options={replicas.map((replica) => ({
+              label: `#${replica.replica_index} · ${replica.endpoint} · GPU ${replica.gpu_ids.join(', ')}`,
+              value: replica.replica_id,
+              disabled:
+                replica.status !== 'running' || replica.health_status !== 'HEALTHY',
+            }))}
+          />
+        </Form.Item>
+      ) : null}
+
+      {requiresReplicaSelection && !selectedReplicaId ? (
+        <Alert
+          type="info"
+          showIcon
+          message={t('adapter.selectReplicaFirst')}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
+
       <Spin spinning={loading}>
         {adapters.length === 0 ? (
           <Empty description={t('adapter.noAdapters')} />
@@ -266,6 +358,7 @@ export function AdapterManager({ deployment, onRefresh }: AdapterManagerProps) {
             columns={columns}
             rowKey="adapter_id"
             pagination={false}
+            scroll={{ x: 640 }}
           />
         )}
       </Spin>

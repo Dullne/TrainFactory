@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from pydantic import ConfigDict
-from sqlalchemy import Column, JSON, Text, Index, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, JSON, String, Text, Index, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from train_factory.core.time_utils import now_naive
@@ -29,6 +29,7 @@ class ModelConfigDB(SQLModel, table=True):
         UniqueConstraint('user_id', 'config_name', name='uq_config_user_name'),
         Index('idx_config_user_type', 'user_id', 'model_type'),
         Index('idx_config_provider_status', 'provider', 'status'),
+        Index('idx_model_configs_deployment_replica_id', 'deployment_replica_id'),
     )
 
     # Primary key
@@ -58,6 +59,16 @@ class ModelConfigDB(SQLModel, table=True):
 
     # Reference to deployments (for deployed models)
     deployment_id: Optional[str] = Field(default=None, max_length=36, index=True)
+
+    # Explicit child binding for independent multi-replica deployments.
+    deployment_replica_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(
+            String(36),
+            ForeignKey("deployment_replicas.replica_id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
 
     # Container name (for local deployed models)
     container_name: Optional[str] = Field(default=None, max_length=255)

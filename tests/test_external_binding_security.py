@@ -8,6 +8,10 @@ from fastapi import HTTPException
 from train_factory.api.routes import deployment_routes, model_config_routes
 from train_factory.deployment.docker_deployer import DockerDeployer, docker_deployer
 from train_factory.storage.entities.deployment_entity import DeploymentDB
+from train_factory.storage.entities.model_artifact_membership_gate_entity import (
+    ModelArtifactMembershipGateDB,
+)
+from train_factory.storage.entities.model_registry_entity import ModelRegistryDB
 from train_factory.storage.services.model_registry_service import (
     _remove_deployment_container,
 )
@@ -30,10 +34,47 @@ REGULAR_USER = {
 SHARED_ENDPOINT = "http://xinference:9997"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_managed_container_runtime(monkeypatch):
+    """Keep lifecycle unit tests on the immutable-ID Docker contract."""
+    monkeypatch.setattr(
+        deployment_service_module.docker_deployer,
+        "container_exists_authoritative",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        deployment_service_module.docker_deployer,
+        "get_legacy_managed_container_id",
+        lambda _name, **_identity: "owned-container-id",
+    )
+    monkeypatch.setattr(
+        deployment_service_module.docker_deployer,
+        "container_running_identity",
+        lambda _container_id: True,
+    )
+    monkeypatch.setattr(
+        deployment_service_module.docker_deployer,
+        "stop_container_identity",
+        lambda _container_id: True,
+    )
+    monkeypatch.setattr(
+        deployment_service_module.docker_deployer,
+        "remove_container_identity",
+        lambda _container_id: True,
+    )
+    monkeypatch.setattr(
+        deployment_service_module.docker_deployer,
+        "restart_container_identity",
+        lambda _container_id: (True, "restarted"),
+    )
+
+
 class _FakeResult:
-    def __init__(self, *, first=None, rows=None):
+    def __init__(self, *, first=None, rows=None, one=None, rowcount=1):
         self._first = first
         self._rows = list(rows or [])
+        self._one = one
+        self.rowcount = rowcount
 
     def first(self):
         return self._first
@@ -41,13 +82,51 @@ class _FakeResult:
     def all(self):
         return self._rows
 
+    def one(self):
+        if self._one is not None:
+            return self._one
+        if self._first is not None:
+            return self._first
+        if len(self._rows) == 1:
+            return self._rows[0]
+        return 0
+
 
 class _FakeSession:
     def __init__(self, results):
-        self._results = iter(results)
+        results = list(results)
+        self._deployments = []
+        for result in results:
+            candidates = [result._first, *result._rows]
+            for candidate in candidates:
+                if (
+                    isinstance(candidate, DeploymentDB)
+                    and candidate not in self._deployments
+                ):
+                    self._deployments.append(candidate)
+        self._results = iter(
+            result
+            for result in results
+            if not any(
+                isinstance(candidate, DeploymentDB)
+                for candidate in [result._first, *result._rows]
+            )
+        )
+        model_id = self._deployments[0].model_id if self._deployments else "model-1"
+        self._model = ModelRegistryDB(
+            model_id=model_id,
+            model_name="owned-model",
+            model_type="embedding",
+            model_path="/models/owned-model",
+            source_type="trained",
+            status="available",
+        )
+        self._gate = ModelArtifactMembershipGateDB(gate_id=1)
         self.added = []
         self.deleted = []
         self.commits = 0
+        self.rollbacks = 0
+        self.statements = []
 
     def __enter__(self):
         return self
@@ -55,17 +134,90 @@ class _FakeSession:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def exec(self, statement):  # noqa: ARG002
-        return next(self._results)
+    def exec(self, statement):
+        self.statements.append(statement)
+        sql = str(statement).lower()
+        is_update = sql.lstrip().startswith("update ")
+
+        if "model_artifact_membership_gate" in sql:
+            if is_update:
+                return _FakeResult(rowcount=1)
+            return _FakeResult(first=self._gate, rows=[self._gate])
+
+        if "model_registry" in sql:
+            if is_update:
+                return _FakeResult(rowcount=1)
+            return _FakeResult(first=self._model, rows=[self._model])
+
+        if "deployments" in sql:
+            if is_update:
+                return _FakeResult(rowcount=1)
+            if sql.lstrip().startswith(
+                "select deployments.replica_operation_generation "
+            ):
+                generation = max(
+                    (
+                        deployment.replica_operation_generation or 0
+                        for deployment in self._deployments
+                    ),
+                    default=0,
+                ) + 1
+                return _FakeResult(one=generation)
+            if (
+                "deployments.container_name =" in sql
+                and "deployments.deployment_id !=" in sql
+            ):
+                return _FakeResult(first=None, rows=[])
+            if self._deployments:
+                return _FakeResult(
+                    first=self._deployments[0],
+                    rows=list(self._deployments),
+                )
+            try:
+                return next(self._results)
+            except StopIteration:
+                return _FakeResult(first=None, rows=[])
+
+        empty_tables = (
+            "deployment_replicas",
+            "model_configs",
+            "loaded_adapters",
+            "external_sync_tasks",
+            "external_sync_training_targets",
+            "external_sync_trainings",
+            "training_tasks",
+            "generation_tasks",
+            "evaluation_tasks",
+            "deep_evaluation_tasks",
+            "milvus_collections",
+            "external_api_configs",
+        )
+        if any(table in sql for table in empty_tables):
+            return _FakeResult(rowcount=1) if is_update else _FakeResult(rows=[])
+
+        if is_update or sql.lstrip().startswith("delete "):
+            return _FakeResult(rowcount=1)
+        try:
+            return next(self._results)
+        except StopIteration:
+            return _FakeResult(first=None, rows=[])
 
     def add(self, value):
         self.added.append(value)
+        if isinstance(value, DeploymentDB) and value not in self._deployments:
+            self._deployments.append(value)
 
     def delete(self, value):
         self.deleted.append(value)
 
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+    def expire_all(self):
+        return None
 
     def refresh(self, value):  # noqa: ARG002
         return None
@@ -234,7 +386,6 @@ def test_duplicate_endpoint_and_model_uid_is_rejected_before_registry_mutation(
         "get_session",
         lambda: session,
     )
-
     def unexpected(*args, **kwargs):  # noqa: ARG001
         pytest.fail("model registry mutated before duplicate binding check")
 
@@ -266,6 +417,17 @@ def test_unmanaged_binding_lifecycle_is_read_only(monkeypatch, operation):
         "get_session",
         lambda: session,
     )
+    monkeypatch.setattr(
+        deployment_service_module.model_registry_service,
+        "get_model",
+        lambda model_id: {
+            "model_id": model_id,
+            "model_name": "owned-model",
+            "model_path": "/models/owned-model",
+            "model_type": "embedding",
+            "source_type": "external_bind",
+        },
+    )
 
     def unexpected(*args, **kwargs):  # noqa: ARG001
         pytest.fail("unmanaged binding performed a runtime operation")
@@ -292,7 +454,12 @@ def test_unmanaged_binding_lifecycle_is_read_only(monkeypatch, operation):
 def test_deleting_unmanaged_binding_never_terminates_remote_model(monkeypatch):
     deployment = _deployment()
     session = _FakeSession(
-        [_FakeResult(first=deployment), _FakeResult(rows=[])]
+        [
+            _FakeResult(first=deployment),
+            _FakeResult(rows=[]),  # external sync tasks
+            _FakeResult(rows=[]),  # external sync training targets
+            _FakeResult(rows=[]),  # model configs
+        ]
     )
     monkeypatch.setattr(
         deployment_service_module,
@@ -475,7 +642,22 @@ def test_force_delete_model_terminates_managed_shared_runtime(monkeypatch):
         ),
     )
 
-    _remove_deployment_container(deployment, "model-1")
+    monkeypatch.setattr(
+        deployment_service_module.deployment_service,
+        "_require_replica_operation_ownership",
+        lambda _claim: None,
+    )
+    _remove_deployment_container(
+        deployment,
+        "model-1",
+        replica_operation_claim=deployment_service_module.ReplicaOperationClaim(
+            deployment_id=deployment.deployment_id,
+            token="delete-token",
+            generation=1,
+            operation="delete",
+            replica_id=None,
+        ),
+    )
 
     assert terminated == [(SHARED_ENDPOINT, "user-1", "owned-model")]
 
@@ -487,18 +669,36 @@ def test_force_delete_model_keeps_shared_runtime_failure_retryable(monkeypatch):
         "_is_unmanaged_binding",
         lambda _deployment: False,
     )
+    class FailingClient:
+        def terminate_model(self, _model_uid):
+            raise OSError("endpoint unavailable")
+
+        def get_model(self, _model_uid):
+            return {"id": "owned-model"}
+
     monkeypatch.setattr(
         deployment_service_module.deployment_service,
         "_get_xinference_client",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            terminate_model=lambda _model_uid: (_ for _ in ()).throw(
-                OSError("endpoint unavailable")
-            )
-        ),
+        lambda *_args, **_kwargs: FailingClient(),
+    )
+    monkeypatch.setattr(
+        deployment_service_module.deployment_service,
+        "_require_replica_operation_ownership",
+        lambda _claim: None,
     )
 
     with pytest.raises(RuntimeError, match="deployment-1|deadbeef"):
-        _remove_deployment_container(deployment, "model-1")
+        _remove_deployment_container(
+            deployment,
+            "model-1",
+            replica_operation_claim=deployment_service_module.ReplicaOperationClaim(
+                deployment_id=deployment.deployment_id,
+                token="delete-token",
+                generation=1,
+                operation="delete",
+                replica_id=None,
+            ),
+        )
 
 
 @pytest.mark.parametrize("initial_status", ["pending", "failed", "stopped"])
@@ -555,7 +755,8 @@ def test_stop_does_not_release_transient_port_for_non_running_container(
     assert deployment.status == "stopped"
     assert released_ports == []
     assert stopped_containers == []
-    assert session.commits == (0 if initial_status == "stopped" else 1)
+    # Durable parent fencing adds one claim and one exact-release commit.
+    assert session.commits == (2 if initial_status == "stopped" else 3)
 
 
 def test_repeat_stop_does_not_release_an_unrelated_transient_port_reservation(
@@ -799,7 +1000,7 @@ def test_stop_commits_container_cleanup_without_releasing_transient_port(monkeyp
 
     monkeypatch.setattr(
         deployment_service_module.docker_deployer,
-        "stop_container",
+        "stop_container_identity",
         stop_container,
     )
     monkeypatch.setattr(
@@ -813,10 +1014,12 @@ def test_stop_commits_container_cleanup_without_releasing_transient_port(monkeyp
     )
 
     assert events == [
+        ("commit", "running"),
+        ("commit", "stopping"),
         ("commit", "stopping"),
         ("stop_container", "stopping"),
         ("commit", "stopped"),
-        ("refresh", "stopped"),
+        ("commit", "stopped"),
     ]
 
 
@@ -852,7 +1055,7 @@ def test_stop_keeps_container_deployment_retryable_when_cleanup_fails(
     )
     monkeypatch.setattr(
         deployment_service_module.docker_deployer,
-        "stop_container",
+        "stop_container_identity",
         lambda _name: False,
     )
     monkeypatch.setattr(
@@ -902,7 +1105,7 @@ def test_stop_does_not_release_port_when_container_stop_raises(monkeypatch):
     )
     monkeypatch.setattr(
         deployment_service_module.docker_deployer,
-        "stop_container",
+        "stop_container_identity",
         lambda _name: (_ for _ in ()).throw(OSError("docker unavailable")),
     )
     monkeypatch.setattr(
@@ -1026,19 +1229,22 @@ def test_stop_keeps_shared_deployment_retryable_when_termination_fails(
         def terminate_model(self, _model_uid):
             raise RuntimeError("runtime unavailable")
 
+        def get_model(self, _model_uid):
+            return {"id": "owned-model"}
+
     monkeypatch.setattr(
         deployment_service_module.deployment_service,
         "_get_xinference_client",
         lambda *_args, **_kwargs: FailingClient(),
     )
 
-    with pytest.raises(RuntimeError, match="terminate model"):
+    with pytest.raises(RuntimeError, match="remains present"):
         deployment_service_module.deployment_service.stop_deployment(
             deployment.deployment_id
         )
 
     assert deployment.status == "stopping"
-    assert "terminate model" in deployment.error_message.lower()
+    assert "remains present" in deployment.error_message.lower()
 
 
 def test_start_shared_failure_terminates_possibly_launched_runtime(monkeypatch):
@@ -1138,9 +1344,15 @@ def test_start_container_cleanup_failure_remains_stopping_and_retryable(monkeypa
             RuntimeError("container readiness failed")
         ),
     )
+    runtime_presence = iter((False, True))
     monkeypatch.setattr(
         deployment_service_module.docker_deployer,
-        "remove_container",
+        "container_exists_authoritative",
+        lambda _container_name: next(runtime_presence),
+    )
+    monkeypatch.setattr(
+        deployment_service_module.docker_deployer,
+        "remove_container_identity",
         lambda _container_name: False,
     )
     monkeypatch.setattr(
@@ -1168,8 +1380,10 @@ def test_delete_keeps_container_record_when_cleanup_fails(monkeypatch):
     session = _FakeSession(
         [
             _FakeResult(first=deployment),
-            _FakeResult(rows=[]),
-            _FakeResult(first=None),
+            _FakeResult(rows=[]),  # external sync tasks
+            _FakeResult(rows=[]),  # external sync training targets
+            _FakeResult(rows=[]),  # model configs
+            _FakeResult(first=None),  # shared container lookup
         ]
     )
     monkeypatch.setattr(
@@ -1188,7 +1402,7 @@ def test_delete_keeps_container_record_when_cleanup_fails(monkeypatch):
     )
     monkeypatch.setattr(
         deployment_service_module.docker_deployer,
-        "remove_container",
+        "remove_container_identity",
         lambda _name: False,
     )
 
@@ -1203,7 +1417,12 @@ def test_delete_keeps_container_record_when_cleanup_fails(monkeypatch):
 def test_delete_keeps_shared_record_when_termination_fails(monkeypatch):
     deployment = _deployment(config={})
     session = _FakeSession(
-        [_FakeResult(first=deployment), _FakeResult(rows=[])]
+        [
+            _FakeResult(first=deployment),
+            _FakeResult(rows=[]),  # external sync tasks
+            _FakeResult(rows=[]),  # external sync training targets
+            _FakeResult(rows=[]),  # model configs
+        ]
     )
     monkeypatch.setattr(
         deployment_service_module,
@@ -1224,13 +1443,16 @@ def test_delete_keeps_shared_record_when_termination_fails(monkeypatch):
         def terminate_model(self, _model_uid):
             raise RuntimeError("runtime unavailable")
 
+        def get_model(self, _model_uid):
+            return {"id": "owned-model"}
+
     monkeypatch.setattr(
         deployment_service_module.deployment_service,
         "_get_xinference_client",
         lambda *_args, **_kwargs: FailingClient(),
     )
 
-    with pytest.raises(RuntimeError, match="terminate model"):
+    with pytest.raises(RuntimeError, match="remains present"):
         deployment_service_module.deployment_service.delete_deployment(
             deployment.deployment_id
         )
@@ -1245,7 +1467,12 @@ def test_delete_terminates_shared_runtime_in_every_active_state(
 ):
     deployment = _deployment(config={}, status=status)
     session = _FakeSession(
-        [_FakeResult(first=deployment), _FakeResult(rows=[])]
+        [
+            _FakeResult(first=deployment),
+            _FakeResult(rows=[]),  # external sync tasks
+            _FakeResult(rows=[]),  # external sync training targets
+            _FakeResult(rows=[]),  # model configs
+        ]
     )
     terminated = []
     monkeypatch.setattr(
@@ -1297,6 +1524,21 @@ def test_sync_all_running_scopes_model_ids_to_each_endpoint(monkeypatch):
         deployment_service_module.deployment_service,
         "_sync_configs_from_deployments",
         lambda *_args, **_kwargs: None,
+    )
+    deployments_by_id = {
+        deployment.deployment_id: deployment for deployment in (first, second)
+    }
+
+    def persist_snapshot(snapshot, *, status=None, error_message=None):
+        deployment = deployments_by_id[snapshot.deployment_id]
+        if status is not None:
+            deployment.status = status
+        return True
+
+    monkeypatch.setattr(
+        deployment_service_module.deployment_service,
+        "_write_legacy_status_sync_state",
+        persist_snapshot,
     )
 
     class Client:
@@ -1397,8 +1639,8 @@ def test_orphan_cleanup_never_removes_non_managed_container(monkeypatch):
         {"trainfactory-xf-active-0123abcd"}
     )
 
-    assert count == 1
-    assert removed == ["trainfactory-xf-orphan-deadbeef"]
+    assert count == 0
+    assert removed == []
 
 
 def test_regular_discovery_only_returns_owned_running_model_without_path(

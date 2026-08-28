@@ -370,6 +370,16 @@ def _patch_lifespan_boundaries(monkeypatch, events):
     )
     monkeypatch.setattr(server.settings, "storage_backend", "local")
     monkeypatch.setattr(sync_manager_module, "sync_manager", Worker())
+    monkeypatch.setattr(
+        server,
+        "_resume_deferred_deployment_starts",
+        lambda: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        server,
+        "_drain_deferred_deployment_starts",
+        lambda: asyncio.sleep(0),
+    )
     startup_names = (
         *cleanup_names,
         "resume_pending_sync_deletions",

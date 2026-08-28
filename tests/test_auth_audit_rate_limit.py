@@ -566,6 +566,16 @@ def test_lifespan_cancels_audit_cleanup_when_sync_start_fails(monkeypatch):
         monkeypatch.setattr(server, name, lambda: None)
     monkeypatch.setattr(server, "bootstrap_default_admin", lambda settings: None)
     monkeypatch.setattr(server.settings, "storage_backend", "local")
+    monkeypatch.setattr(
+        server,
+        "_resume_deferred_deployment_starts",
+        lambda: asyncio.sleep(0),
+    )
+    monkeypatch.setattr(
+        server,
+        "_drain_deferred_deployment_starts",
+        lambda: asyncio.sleep(0),
+    )
 
     async def cleanup_loop():
         await asyncio.Event().wait()

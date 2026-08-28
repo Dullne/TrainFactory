@@ -2187,6 +2187,7 @@ def test_ci_workflow_uses_private_validated_reports_and_controlled_runners_only(
     assert "--privileged" not in backend
     assert '-m "not host_tools"' in backend
     assert "--ignore=tests/integration/test_mysql_migrations.py" in backend
+    assert "--ignore=tests/integration/test_mysql_sync_lock_order.py" in backend
     assert "python -I scripts/check_pytest_partitions.py" in workflow
     assert "python -I scripts/run_mysql_migration_tests.py" in workflow
     assert "python -I scripts/run_compose_smoke.py" in workflow

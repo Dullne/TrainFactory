@@ -33,6 +33,7 @@
     "createSync": "创建同步任务"
   },
   "status": {
+    "degraded": "部分可用",
     "pending": "等待中",
     "deleting": "删除中",
     "deleting_cascade": "级联删除中",
@@ -80,6 +81,7 @@
     "skipped": "已跳过"
   },
   "statusDescription": {
+    "degraded": "部分部署副本不可用，但至少还有一个健康副本可以继续提供服务。",
     "pending": "任务已创建，等待资源调度或后台执行。",
     "preparing": "正在分配 GPU、加载数据并初始化模型。",
     "running": "训练主循环正在执行，Loss 和步数会持续更新。",

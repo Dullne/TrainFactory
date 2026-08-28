@@ -20,6 +20,7 @@ from train_factory.storage.entities.loaded_adapter_entity import LoadedAdapterDB
 from train_factory.storage.services.background_task_admission_service import (
     BackgroundTaskAlreadyExecuting,
 )
+from train_factory.deployment.deployment_service import ReplicaOperationBusyError
 from train_factory.storage.services.external_sync_service import (
     external_sync_service,
 )
@@ -259,6 +260,52 @@ def test_adapter_load_releases_training_guard_after_failure(
 
     assert exc_info.value.status_code == 500
     assert releases == [True]
+
+
+@pytest.mark.parametrize("endpoint_name", ["direct", "from-task"])
+def test_adapter_load_maps_replica_operation_conflict_to_409(
+    monkeypatch,
+    endpoint_name,
+):
+    task_id = f"task-{endpoint_name}"
+    monkeypatch.setattr(
+        adapter_routes.deployment_service,
+        "get_deployment",
+        lambda _deployment_id: {
+            "deployment_id": "deployment-1",
+            "user_id": USER["user_id"],
+        },
+    )
+    monkeypatch.setattr(
+        adapter_routes,
+        "background_task_admission_service",
+        SimpleNamespace(
+            begin_deletion=lambda *_args: SimpleNamespace(release=lambda: None)
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        adapter_routes,
+        "_resolve_direct_adapter_path",
+        lambda *_args: f"/app/output/{task_id}/final_model",
+    )
+    monkeypatch.setattr(
+        adapter_routes,
+        "_resolve_owned_task_adapter_path",
+        lambda *_args: f"/app/output/{task_id}/final_model",
+    )
+    monkeypatch.setattr(
+        adapter_routes.adapter_service,
+        "load_adapter",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            ReplicaOperationBusyError("deployment replica operation already in progress")
+        ),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_adapter_load_request(endpoint_name, task_id))
+
+    assert exc_info.value.status_code == 409
 
 
 def test_active_training_output_consumers_match_source_or_normalized_path(

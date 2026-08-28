@@ -19,6 +19,7 @@ from train_factory.storage.entities.milvus_collection_entity import (
     CollectionDatasetLinkDB,
     MilvusCollectionDB,
 )
+from train_factory.storage.entities.model_config_entity import ModelConfigDB
 
 
 milvus_module = importlib.import_module(
@@ -44,8 +45,23 @@ def fenced_services(monkeypatch):
             CollectionDatasetLinkDB.__table__,
             GenerationTaskDB.__table__,
             ExternalSyncTaskDB.__table__,
+            ModelConfigDB.__table__,
         ],
     )
+    with Session(engine) as session:
+        for config_id in ("config-1", "config-2"):
+            session.add(
+                ModelConfigDB(
+                    config_id=config_id,
+                    config_name=config_id,
+                    model_type="embedding",
+                    provider="openai-compatible",
+                    api_endpoint="https://embedding.invalid/v1",
+                    model_name=f"embedding-{config_id[-1]}",
+                    user_id="user-1",
+                )
+            )
+        session.commit()
 
     @contextmanager
     def test_session():

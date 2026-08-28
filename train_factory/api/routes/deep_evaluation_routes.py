@@ -53,6 +53,9 @@ from ...storage.services.milvus_collection_service import (
     MilvusCollectionUnavailableError,
     milvus_collection_service,
 )
+from ...storage.services.runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
+)
 from ...storage.services.background_task_admission_service import (
     BackgroundTaskAlreadyExecuting,
     BackgroundTaskCapacityExceeded,
@@ -926,6 +929,8 @@ async def create_deep_evaluation_task(
     except MilvusCollectionUnavailableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except DatasetConsumptionUnavailableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeDependencyUnavailableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     try:

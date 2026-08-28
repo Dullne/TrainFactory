@@ -244,12 +244,8 @@ async def delete_api_config(
     config = external_api_config_service.get_config(config_id)
     config = verify_resource_ownership(config, current_user, "External API config")
 
-    # Check if referenced by sync configs or deployments
-    if external_api_config_service.is_referenced_by_sync(config_id):
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot delete: this API config is referenced by sync configurations or deployments",
-        )
-
-    external_api_config_service.delete_config(config_id)
+    try:
+        external_api_config_service.delete_config(config_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"message": "Config deleted"}

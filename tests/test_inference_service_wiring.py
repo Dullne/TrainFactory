@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ def _deployment(framework: str) -> SimpleNamespace:
     else:
         launch_config["attention_backend"] = "flashinfer"
     return SimpleNamespace(
+        deployment_id=f"{framework}-deployment-id",
         container_name=f"{framework}-deployment",
         port=10001,
         gpu_id=3,
@@ -294,6 +296,9 @@ def test_sglang_generated_uid_is_runtime_and_persisted_config_identity(
             self.status = status
             self.error_message = error_message
 
+        def model_copy(self, *, deep: bool = False):
+            return copy.deepcopy(self) if deep else copy.copy(self)
+
     deployment = Deployment(
         deployment_id="deadbeef-0000-0000-0000-000000000001",
         deployment_name="sglang-test",
@@ -358,6 +363,22 @@ def test_sglang_generated_uid_is_runtime_and_persisted_config_identity(
     )
     monkeypatch.setattr(service, "_require_managed_container", lambda *_args: None)
     monkeypatch.setattr(
+        service,
+        "_claimed_legacy_deployment",
+        lambda *_args, **_kwargs: deployment,
+    )
+    monkeypatch.setattr(service, "_legacy_container_id", lambda *_args: None)
+    monkeypatch.setattr(
+        service,
+        "_require_replica_operation_ownership",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        service,
+        "_mark_adapters_unloaded_after_runtime_reset",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
         deployment_service_module,
         "get_settings",
         lambda: SimpleNamespace(allow_model_remote_code=False),
@@ -392,7 +413,14 @@ def test_sglang_generated_uid_is_runtime_and_persisted_config_identity(
         lambda dep: {"model_uid": dep.model_uid},
     )
 
-    result = service.start_deployment(deployment.deployment_id)
+    claim = deployment_service_module.ReplicaOperationClaim(
+        deployment_id=deployment.deployment_id,
+        token="claim-token",
+        generation=1,
+        operation="start",
+        replica_id=None,
+    )
+    result = service._start_legacy_deployment_claimed(claim, user_id=None)
 
     expected_uid = f"{model_name}-deadbeef"
     server_argv = captured["server_argv"]

@@ -195,8 +195,11 @@ class VLLMClient:
                     })
             return adapters
         except Exception as e:
-            logger.error(f"Failed to list LoRA adapters: {e}")
-            return []
+            logger.error(
+                "Failed to list LoRA adapters (%s)",
+                type(e).__name__,
+            )
+            raise RuntimeError("Failed to list LoRA adapters") from e
 
     # ==================== Inference ====================
 
@@ -241,7 +244,22 @@ class VLLMClient:
         top_n: Optional[int] = None,
         instruction: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Rerank documents using the raw Cohere-compatible wire schema."""
+        """
+        Rerank documents by relevance to query.
+
+        The vLLM server applies any model-specific chat template. The wire request
+        therefore remains compatible with the Cohere rerank schema.
+
+        Args:
+            query: Query text
+            documents: List of documents to rerank
+            model: Optional model/adapter name
+            top_n: Optional limit on number of results
+            instruction: Optional server-side scoring instruction
+
+        Returns:
+            List of {index, relevance_score} dicts, sorted by score descending
+        """
         try:
             payload = {
                 "query": query,

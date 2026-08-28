@@ -38,16 +38,32 @@ import {
   DownOutlined,
   RightOutlined,
   ThunderboltOutlined,
+  ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { useTranslation } from 'react-i18next'
 import { deploymentApi, modelApi, externalApiConfigApi } from '@/services/api'
 import { useList, usePolling } from '@/hooks'
-import { formatDate, copyToClipboard as copyText } from '@/utils'
-import type { Deployment, DeploymentStatus, RegisteredModel, CreateDeploymentRequest, ExternalApiConfig, HealthStatus } from '@/types'
+import { copyToClipboard as copyText } from '@/utils'
+import type {
+  CreateDeploymentRequest,
+  Deployment,
+  DeploymentReplica,
+  DeploymentStatus,
+  ExternalApiConfig,
+  HealthStatus,
+  RegisteredModel,
+} from '@/types'
 import { StatusTag } from '@/components/StatusTag'
 import { StatCard } from '@/components/StatCard'
 import { CreateDeploymentModal } from './CreateDeploymentModal'
+import {
+  buildDeploymentConfigUpdate,
+  getDeploymentLaunchConfig,
+  getManagedDeploymentConfigValue,
+  prepareDeploymentConfigEditor,
+} from './deploymentConfigPolicy'
+import type { DeploymentConfigEditorFields } from './deploymentConfigPolicy'
 import { AdapterManager } from './AdapterManager'
 import { STATUS_SUCCESS, STATUS_ERROR, STATUS_WARNING, STATUS_INFO } from '@/theme'
 
@@ -60,13 +76,6 @@ const getRuntimeAccelerators = (deployment: Deployment): string[] => {
     return accelerators.map((value) => String(value))
   }
   return []
-}
-
-const formatGpuLabel = (deployment: Deployment): string => {
-  const runtimeAccelerators = getRuntimeAccelerators(deployment)
-  if (runtimeAccelerators.length > 0) return `GPU ${runtimeAccelerators.join(',')}`
-  if (deployment.gpu_id !== undefined && deployment.gpu_id !== null) return `GPU ${deployment.gpu_id}`
-  return '-'
 }
 
 const normalizeHealthStatus = (healthStatus?: HealthStatus): 'healthy' | 'unhealthy' | 'unknown' => {
@@ -84,17 +93,17 @@ const canStartDeployment = (status: DeploymentStatus): boolean =>
   status === 'stopped' || status === 'failed'
 
 const canStopDeployment = (status: DeploymentStatus): boolean =>
-  status === 'running' || status === 'pending' || status === 'starting' || status === 'restarting'
+  status === 'running' || status === 'degraded' || status === 'pending' || status === 'starting' || status === 'restarting'
 
 const canRestartDeployment = (status: DeploymentStatus): boolean =>
-  status === 'running'
+  status === 'running' || status === 'degraded'
 
 const canDeleteDeployment = (status: DeploymentStatus): boolean =>
   status === 'stopped' || status === 'failed' || status === 'pending'
 
-// Deployment group (by endpoint/container)
+// One API deployment is one user-visible replica group.
 interface DeploymentGroup {
-  key: string  // endpoint or container_name
+  key: string
   endpoint: string
   port: number | null
   gpu_id: number | null
@@ -113,6 +122,7 @@ interface DeploymentGroup {
 
 export default function DeploymentList() {
   const { t } = useTranslation(['deployments', 'common'])
+  const copyEndpointLabel = `${t('common:action.copy')}: ${t('list.replicaColumns.endpoint')}`
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   // 从模型列表「部署」按钮跳转而来：按 model_id 预过滤
@@ -139,12 +149,14 @@ export default function DeploymentList() {
   const [restarting, setRestarting] = useState(false)
   const [starting, setStarting] = useState<string | null>(null)
   const [stopping, setStopping] = useState<string | null>(null)
+  const [replicaAction, setReplicaAction] = useState<string | null>(null)
   const [adapterVisible, setAdapterVisible] = useState(false)
   const [adapterTarget, setAdapterTarget] = useState<Deployment | null>(null)
 
   const STATUS_FILTER_OPTIONS = [
     { label: t('common:status.pending'), value: 'pending' },
     { label: t('common:status.running'), value: 'running' },
+    { label: t('common:status.degraded'), value: 'degraded' },
     { label: t('common:status.restarting'), value: 'restarting' },
     { label: t('common:status.stopped'), value: 'stopped' },
     { label: t('common:status.failed'), value: 'failed' },
@@ -170,75 +182,38 @@ export default function DeploymentList() {
     { defaultPageSize: 10 }
   )
 
-  // Group deployments by endpoint
+  // Keep deployment groups distinct even when they share an endpoint or container.
   const groupedDeployments = useMemo(() => {
-    const groups = new Map<string, DeploymentGroup>()
-
-    deployments.forEach((dep) => {
-      // Group by container name, but keep endpoint in key to avoid merging different shared services
-      const containerKey = dep.container_name || (dep.deploy_mode === 'shared' ? 'xinference' : dep.deployment_id)
-      const endpointKey = dep.xinference_endpoint || '-'
-      const key = `${containerKey}::${endpointKey}`
-
-      if (!groups.has(key)) {
-        groups.set(key, {
-          key,
-          endpoint: dep.xinference_endpoint,
-          port: dep.port ?? null,
-          gpu_id: dep.gpu_id ?? null,
-          inference_framework: dep.inference_framework,
-          container_name: dep.container_name ?? null,
-          deploy_mode: dep.deploy_mode,
-          deployments: [],
-          status: dep.status,
-          health_status: dep.health_status ?? 'UNKNOWN',
-          running_count: 0,
-          total_memory_mb: null,
-          total_memory_percent: null,
-          total_memory_utilization: null,
-        })
-      }
-
-      const group = groups.get(key)!
-      group.deployments.push(dep)
-
-      // Update aggregated status (running > pending > stopped > failed)
-      if (dep.status === 'running') {
-        group.status = 'running'
-        group.running_count++
-      }
-
-      if (dep.health_status === 'UNHEALTHY') {
-        group.health_status = 'UNHEALTHY'
-      } else if (dep.health_status === 'HEALTHY' && group.health_status !== 'UNHEALTHY') {
-        group.health_status = 'HEALTHY'
-      }
-
-      // Aggregate memory usage (only for running deployments)
-      if (dep.status === 'running') {
-        if (dep.gpu_memory_used_mb) {
-          group.total_memory_mb = (group.total_memory_mb || 0) + dep.gpu_memory_used_mb
-        }
-        if (dep.gpu_memory_used_percent) {
-          group.total_memory_percent = (group.total_memory_percent || 0) + dep.gpu_memory_used_percent
-        }
-
-        // Aggregate configured memory utilization as fallback (only running)
-        if (dep.gpu_memory_utilization) {
-          group.total_memory_utilization = (group.total_memory_utilization || 0) + dep.gpu_memory_utilization
-        }
+    return deployments.map((dep): DeploymentGroup => {
+      const replicas = dep.replica_instances ?? []
+      const runningReplicas = replicas.filter(
+        (replica) => replica.status === 'running' && replica.health_status === 'HEALTHY',
+      ).length
+      return {
+        key: dep.deployment_id,
+        endpoint: dep.xinference_endpoint,
+        port: dep.port ?? null,
+        gpu_id: dep.gpu_id ?? null,
+        inference_framework: dep.inference_framework,
+        container_name: dep.container_name ?? null,
+        deploy_mode: dep.deploy_mode,
+        deployments: [dep],
+        status: dep.status,
+        health_status: dep.health_status ?? 'UNKNOWN',
+        running_count: replicas.length > 0 ? runningReplicas : dep.status === 'running' ? 1 : 0,
+        total_memory_mb: dep.gpu_memory_used_mb ?? null,
+        total_memory_percent: dep.gpu_memory_used_percent ?? null,
+        total_memory_utilization: dep.gpu_memory_utilization ?? null,
       }
     })
-
-    return Array.from(groups.values())
   }, [deployments])
 
   const stats = useMemo(() => {
     const running = deployments.filter((d) => d.status === 'running' || d.status === 'restarting').length
+    const degraded = deployments.filter((d) => d.status === 'degraded').length
     const stopped = deployments.filter((d) => d.status === 'stopped').length
     const failed = deployments.filter((d) => d.status === 'failed').length
-    const pending = deployments.filter((d) => d.status === 'pending').length
-    return { total: deployments.length, running, stopped, failed, pending }
+    return { total: deployments.length, running, degraded, stopped, failed }
   }, [deployments])
 
   const fetchModels = async () => {
@@ -267,7 +242,9 @@ export default function DeploymentList() {
   /* eslint-enable react-hooks/exhaustive-deps */
 
   const hasPending = deployments.some((d) => d.status === 'pending' || d.status === 'starting' || d.status === 'restarting')
-  const hasRunning = deployments.some((d) => d.status === 'running' || d.status === 'restarting')
+  const hasRunning = deployments.some(
+    (d) => d.status === 'running' || d.status === 'degraded' || d.status === 'restarting',
+  )
 
   usePolling(refresh, {
     interval: 5000,
@@ -302,6 +279,34 @@ export default function DeploymentList() {
       message.error(t('list.message.stopFailed'))
     } finally {
       setStopping(null)
+    }
+  }
+
+  const handleReplicaAction = async (
+    action: 'start' | 'stop' | 'restart' | 'recreate',
+    deploymentId: string,
+    replicaId: string,
+  ) => {
+    const actionKey = `${action}:${replicaId}`
+    setReplicaAction(actionKey)
+    try {
+      if (action === 'start') {
+        await deploymentApi.startReplica(deploymentId, replicaId)
+      } else if (action === 'stop') {
+        await deploymentApi.stopReplica(deploymentId, replicaId)
+      } else if (action === 'restart') {
+        await deploymentApi.restartReplica(deploymentId, replicaId)
+      } else {
+        await deploymentApi.recreateReplica(deploymentId, replicaId)
+      }
+      message.success(t('list.message.replicaActionSuccess'))
+      refresh()
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : t('list.message.replicaActionFailed'),
+      )
+    } finally {
+      setReplicaAction(null)
     }
   }
 
@@ -390,26 +395,14 @@ export default function DeploymentList() {
     message.success(t('list.message.copiedToClipboard'))
   }
 
-  // Known config keys managed by form fields (excluded from "other config" JSON)
-  const KNOWN_CONFIG_KEYS = ['external_api_config_id', 'dtype', 'enforce_eager', 'attention_backend', 'docker_cmd']
-
   const openEditConfigModal = (deployment: Deployment) => {
     setEditConfigTarget(deployment)
     const config = deployment.config ?? {}
-    // Split config into known form fields vs other JSON
-    editConfigForm.setFieldsValue({
-      external_api_config_id: (config.external_api_config_id as string) || undefined,
-      dtype: (config.dtype as string) || undefined,
-      enforce_eager: config.enforce_eager === true,
-      attention_backend: (config.attention_backend as string) || undefined,
-    })
-    // Collect remaining keys into "other" JSON
-    const otherConfig: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(config)) {
-      if (!KNOWN_CONFIG_KEYS.includes(k)) {
-        otherConfig[k] = v
-      }
-    }
+    const { fields, otherConfig } = prepareDeploymentConfigEditor(
+      config,
+      deployment.inference_framework,
+    )
+    editConfigForm.setFieldsValue(fields)
     setEditConfigOtherJson(
       Object.keys(otherConfig).length > 0 ? JSON.stringify(otherConfig, null, 2) : ''
     )
@@ -451,32 +444,13 @@ export default function DeploymentList() {
       }
     }
 
-    const formValues = editConfigForm.getFieldsValue()
-
-    // Build merged config: other fields first, then form fields (form wins on conflict)
-    const config: Record<string, unknown> = { ...otherConfig }
-    // Preserve docker_cmd from original config (read-only, auto-generated)
-    const originalDockerCmd = (editConfigTarget.config ?? {} as Record<string, unknown>).docker_cmd
-    if (originalDockerCmd !== undefined) {
-      config.docker_cmd = originalDockerCmd
-    }
-    if (formValues.external_api_config_id) {
-      config.external_api_config_id = formValues.external_api_config_id
-    } else {
-      // 显式置 null 通知后端解除绑定；省略该 key 会被后端当成"保留旧绑定"处理
-      config.external_api_config_id = null
-    }
-    if (formValues.dtype) {
-      config.dtype = formValues.dtype
-    }
-    if (formValues.enforce_eager) {
-      config.enforce_eager = true
-    }
-    if (formValues.attention_backend) {
-      config.attention_backend = formValues.attention_backend
-    }
-
-    const finalConfig = Object.keys(config).length > 0 ? config : null
+    const formValues = editConfigForm.getFieldsValue() as DeploymentConfigEditorFields
+    const finalConfig = buildDeploymentConfigUpdate({
+      originalConfig: editConfigTarget.config ?? {},
+      otherConfig,
+      framework: editConfigTarget.inference_framework,
+      fields: formValues,
+    })
 
     setSavingConfig(true)
     try {
@@ -494,35 +468,21 @@ export default function DeploymentList() {
   // Group columns (main table)
   const groupColumns: ColumnsType<DeploymentGroup> = [
     {
-      title: t('list.groupColumns.containerName'),
+      title: t('list.groupColumns.deploymentGroup'),
       key: 'container_name',
       width: 240,
       ellipsis: true,
       render: (_, group) => {
-        const containerName = group.container_name ||
-          (group.endpoint?.includes('xinference') || group.inference_framework === 'xinference'
-            ? 'xinference'
-            : null)
-
-        if (containerName) {
-          return (
-            <Space size={4}>
-              <Tooltip title={containerName}>
-                <Text code style={{ fontSize: 12 }}>{containerName}</Text>
-              </Tooltip>
-              <Button
-                type="text"
-                size="small"
-                icon={<CopyOutlined />}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  copyToClipboard(containerName)
-                }}
-              />
-            </Space>
-          )
-        }
-        return <Text type="secondary">-</Text>
+        const deployment = group.deployments[0]
+        return (
+          <div>
+            <Text strong>{deployment.deployment_name || '-'}</Text>
+            <br />
+            <Text copyable={{ text: deployment.deployment_id, tooltips: false }} type="secondary">
+              {deployment.deployment_id.slice(0, 8)}
+            </Text>
+          </div>
+        )
       },
     },
     {
@@ -539,8 +499,32 @@ export default function DeploymentList() {
     {
       title: t('list.groupColumns.port'),
       key: 'port',
-      width: 90,
-      render: (_, group) => group.port ? <Text code>{group.port}</Text> : <Text type="secondary">-</Text>,
+      width: 130,
+      render: (_, group) => (
+        <Space size={4}>
+          {group.port ? (
+            <Tooltip title={group.endpoint}>
+              <Text code>{group.port}</Text>
+            </Tooltip>
+          ) : (
+            <Text type="secondary">-</Text>
+          )}
+          {group.endpoint ? (
+            <Tooltip title={copyEndpointLabel}>
+              <Button
+                type="text"
+                size="small"
+                icon={<CopyOutlined />}
+                aria-label={copyEndpointLabel}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  copyToClipboard(group.endpoint)
+                }}
+              />
+            </Tooltip>
+          ) : null}
+        </Space>
+      ),
     },
     {
       title: t('list.groupColumns.status'),
@@ -555,7 +539,7 @@ export default function DeploymentList() {
       render: (_, group) => <StatusTag status={normalizeHealthStatus(group.health_status)} />,
     },
     {
-      title: t('list.groupColumns.modelCount'),
+      title: t('list.groupColumns.replicaCount'),
       key: 'model_count',
       width: 80,
       render: (_, group) => (
@@ -564,7 +548,7 @@ export default function DeploymentList() {
           style={{ backgroundColor: group.running_count > 0 ? '#52c41a' : '#999' }}
           showZero
           overflowCount={999}
-          title={`${group.running_count} / ${group.deployments.length}`}
+          title={`${group.running_count} / ${group.deployments[0].replica_instances?.length || group.deployments[0].replica}`}
         />
       ),
     },
@@ -605,7 +589,7 @@ export default function DeploymentList() {
       key: 'actions',
       width: 160,
       render: (_, group) => {
-        // For single deployment groups, show actions directly
+        // Group-level actions always target all replicas.
         if (group.deployments.length === 1) {
           const record = group.deployments[0]
           const canStart = canStartDeployment(record.status)
@@ -709,191 +693,174 @@ export default function DeploymentList() {
   ]
 
   // Model columns (expanded table)
-  const modelColumns: ColumnsType<Deployment> = [
+  const replicaColumns: ColumnsType<DeploymentReplica> = [
     {
-      title: t('list.modelColumns.deploymentName'),
-      dataIndex: 'deployment_name',
-      key: 'deployment_name',
-      render: (name, record) => (
+      title: t('list.replicaColumns.replica'),
+      key: 'replica',
+      width: 150,
+      render: (_, replica) => (
         <div>
-          <span style={{ fontWeight: 500 }}>{name || '-'}</span>
+          <Text strong>#{replica.replica_index}</Text>
           <br />
-          <Tooltip title={record.deployment_id}>
-            <Text copyable={{ text: record.deployment_id, tooltips: false }} style={{ color: '#888', fontSize: 11 }}>
-              {record.deployment_id?.slice(0, 8)}
+          <Tooltip title={replica.replica_id}>
+            <Text copyable={{ text: replica.replica_id, tooltips: false }} type="secondary">
+              {replica.replica_id.slice(0, 8)}
             </Text>
           </Tooltip>
         </div>
       ),
     },
     {
-      title: t('list.modelColumns.model'),
-      dataIndex: 'model_id',
-      key: 'model',
-      render: (modelId: string) => {
-        const model = modelMap.get(modelId)
-        if (!model) {
-          return <span style={{ color: '#8b949e' }}>{t('list.modelColumns.unknownModel')}</span>
-        }
-        return (
-          <Tooltip title={modelId}>
-            <Button type="link" size="small" style={{ padding: 0 }} onClick={() => navigate(`/models?detail=${modelId}`)}>
-              {model.model_name}
-            </Button>
-          </Tooltip>
-        )
-      },
+      title: t('list.replicaColumns.endpoint'),
+      dataIndex: 'endpoint',
+      key: 'endpoint',
+      render: (endpoint: string) => (
+        <Space size={4}>
+          <Text code>{endpoint}</Text>
+          <Button
+            type="text"
+            size="small"
+            icon={<CopyOutlined />}
+            aria-label={copyEndpointLabel}
+            onClick={() => copyToClipboard(endpoint)}
+          />
+        </Space>
+      ),
     },
     {
-      title: t('list.modelColumns.status'),
+      title: t('list.groupColumns.port'),
+      dataIndex: 'port',
+      key: 'port',
+      width: 90,
+      render: (port: number) => <Text code>{port}</Text>,
+    },
+    {
+      title: 'GPU',
+      dataIndex: 'gpu_ids',
+      key: 'gpu_ids',
+      width: 130,
+      render: (gpuIds: number[]) =>
+        gpuIds.length > 0 ? `GPU ${gpuIds.join(', ')}` : <Text type="secondary">-</Text>,
+    },
+    {
+      title: t('list.groupColumns.status'),
       dataIndex: 'status',
       key: 'status',
       width: 100,
       render: (status: DeploymentStatus) => <StatusTag status={status} />,
     },
     {
-      title: t('list.modelColumns.health'),
+      title: t('list.groupColumns.health'),
       dataIndex: 'health_status',
       key: 'health_status',
       width: 100,
-      render: (healthStatus?: HealthStatus) => <StatusTag status={normalizeHealthStatus(healthStatus)} />,
+      render: (healthStatus: HealthStatus) => (
+        <StatusTag status={normalizeHealthStatus(healthStatus)} />
+      ),
     },
     {
-      title: 'GPU',
-      dataIndex: 'gpu_id',
-      key: 'gpu_id',
-      width: 70,
-      render: (_, record) => formatGpuLabel(record),
-    },
-    {
-      title: t('list.modelColumns.gpuMemory'),
-      key: 'gpu_memory',
-      width: 120,
-      render: (_, record) => {
-        // Only show memory for running deployments
-        if (record.status !== 'running') return '-'
-        if (record.gpu_memory_used_mb !== undefined && record.gpu_memory_used_mb !== null) {
-          const usedGB = (record.gpu_memory_used_mb / 1024).toFixed(1)
-          const percent = record.gpu_memory_used_percent?.toFixed(1) || '?'
-          return <span>{usedGB}GB ({percent}%)</span>
-        }
-        return record.gpu_memory_utilization ? (
-          <span style={{ color: '#999' }}>{Math.round(record.gpu_memory_utilization * 100)}%</span>
-        ) : '-'
-      },
-    },
-    {
-      title: t('list.modelColumns.createdAt'),
-      dataIndex: 'created_at',
-      key: 'created_at',
-      render: (time) => formatDate(time),
-    },
-    {
-      title: t('list.modelColumns.actions'),
+      title: t('list.groupColumns.actions'),
       key: 'actions',
-      width: 160,
-      render: (_, record) => {
-        const canStart = canStartDeployment(record.status)
-        const canStop = canStopDeployment(record.status)
-        const canRestart = canRestartDeployment(record.status)
-        const canDelete = canDeleteDeployment(record.status)
-
-        return (
-          <Space size={4}>
-            <Tooltip title={t('list.tooltip.viewParams')}>
+      width: 180,
+      render: (_, replica) => (
+        <Space size={4}>
+          {canStartDeployment(replica.status) ? (
+            <Tooltip title={t('list.tooltip.startReplica')}>
               <Button
                 type="text"
                 size="small"
-                icon={<CodeOutlined />}
-                onClick={() => handleShowParams(record)}
+                icon={<PlayCircleOutlined />}
+                aria-label={t('list.tooltip.startReplica')}
+                loading={replicaAction === `start:${replica.replica_id}`}
+                onClick={() =>
+                  void handleReplicaAction(
+                    'start',
+                    replica.deployment_id,
+                    replica.replica_id,
+                  )
+                }
               />
             </Tooltip>
-            <Tooltip title={t('list.tooltip.editParams')}>
+          ) : null}
+          {canStopDeployment(replica.status) ? (
+            <Popconfirm
+              title={t('list.confirm.stopReplica')}
+              onConfirm={() =>
+                handleReplicaAction('stop', replica.deployment_id, replica.replica_id)
+              }
+            >
+              <Tooltip title={t('list.tooltip.stopReplica')}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<PauseCircleOutlined />}
+                  aria-label={t('list.tooltip.stopReplica')}
+                  loading={replicaAction === `stop:${replica.replica_id}`}
+                />
+              </Tooltip>
+            </Popconfirm>
+          ) : null}
+          {canRestartDeployment(replica.status) ? (
+            <Tooltip title={t('list.tooltip.restartReplica')}>
               <Button
                 type="text"
                 size="small"
-                icon={<EditOutlined />}
-                onClick={() => openEditConfigModal(record)}
+                icon={<ReloadOutlined />}
+                aria-label={t('list.tooltip.restartReplica')}
+                loading={replicaAction === `restart:${replica.replica_id}`}
+                onClick={() =>
+                  void handleReplicaAction(
+                    'restart',
+                    replica.deployment_id,
+                    replica.replica_id,
+                  )
+                }
               />
             </Tooltip>
-            {canStart && (
-              <Tooltip title={t('list.tooltip.start')}>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<PlayCircleOutlined />}
-                  loading={starting === record.deployment_id}
-                  aria-label={t('list.tooltip.start')}
-                  onClick={() => handleStart(record.deployment_id)}
-                />
-              </Tooltip>
-            )}
-            {canStop && (
-              <Popconfirm title={t('list.confirm.stop')} onConfirm={() => handleStop(record.deployment_id)}>
-                <Tooltip title={t('list.tooltip.stop')}>
-                  <Button type="text" size="small" loading={stopping === record.deployment_id} icon={<PauseCircleOutlined />} aria-label={t('list.tooltip.stop')} />
-                </Tooltip>
-              </Popconfirm>
-            )}
-            {canRestart && (
-              <Tooltip title={t('list.tooltip.restart')}>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  aria-label={t('list.tooltip.restart')}
-                  onClick={() => openRestartModal(record)}
-                />
-              </Tooltip>
-            )}
-            {canRestart && record.enable_lora && (
-              <Tooltip title={t('list.tooltip.adapter')}>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<ThunderboltOutlined />}
-                  aria-label={t('list.tooltip.adapter')}
-                  onClick={() => {
-                    setAdapterTarget(record)
-                    setAdapterVisible(true)
-                  }}
-                />
-              </Tooltip>
-            )}
-            {canDelete && (
-              <Popconfirm title={t('list.confirm.delete')} onConfirm={() => handleDelete(record.deployment_id)}>
-                <Tooltip title={t('list.tooltip.delete')}>
-                  <Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label={t('list.tooltip.delete')} />
-                </Tooltip>
-              </Popconfirm>
-            )}
-          </Space>
-        )
-      },
+          ) : null}
+          <Popconfirm
+            title={t('list.confirm.recreateReplica')}
+            onConfirm={() =>
+              handleReplicaAction('recreate', replica.deployment_id, replica.replica_id)
+            }
+          >
+            <Tooltip title={t('list.tooltip.recreateReplica')}>
+              <Button
+                type="text"
+                size="small"
+                icon={<RocketOutlined />}
+                aria-label={t('list.tooltip.recreateReplica')}
+                loading={replicaAction === `recreate:${replica.replica_id}`}
+              />
+            </Tooltip>
+          </Popconfirm>
+        </Space>
+      ),
     },
   ]
 
   // Expanded row render
   const expandedRowRender = (group: DeploymentGroup) => {
-    if (group.deployments.length <= 1) {
+    const replicas = group.deployments[0].replica_instances ?? []
+    if (replicas.length === 0) {
       return null
     }
     return (
       <Table
-        rowKey="deployment_id"
-        columns={modelColumns}
-        dataSource={group.deployments}
+        rowKey="replica_id"
+        columns={replicaColumns}
+        dataSource={replicas}
         pagination={false}
         size="small"
-        style={{ margin: '0 0 0 48px' }}
+        scroll={{ x: 760 }}
       />
     )
   }
 
   return (
     <div>
-      <Row gutter={16} style={{ marginBottom: 20 }}>
-        <Col span={6}>
+      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
+        <Col xs={24} sm={12} lg={8} xxl={4}>
           <StatCard
             title={t('list.stats.total')}
             value={stats.total}
@@ -901,7 +868,7 @@ export default function DeploymentList() {
             color={STATUS_INFO}
           />
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} lg={8} xxl={4}>
           <StatCard
             title={t('list.stats.running')}
             value={stats.running}
@@ -909,7 +876,15 @@ export default function DeploymentList() {
             color={STATUS_SUCCESS}
           />
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} lg={8} xxl={4}>
+          <StatCard
+            title={t('list.stats.degraded')}
+            value={stats.degraded}
+            icon={<ExclamationCircleOutlined />}
+            color={STATUS_WARNING}
+          />
+        </Col>
+        <Col xs={24} sm={12} lg={8} xxl={4}>
           <StatCard
             title={t('list.stats.stopped')}
             value={stats.stopped}
@@ -917,7 +892,7 @@ export default function DeploymentList() {
             color={STATUS_WARNING}
           />
         </Col>
-        <Col span={6}>
+        <Col xs={24} sm={12} lg={8} xxl={4}>
           <StatCard
             title={t('list.stats.failed')}
             value={stats.failed}
@@ -927,11 +902,20 @@ export default function DeploymentList() {
         </Col>
       </Row>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
         <Title level={4} style={{ margin: 0 }}>
           {t('list.title')}
         </Title>
-        <Space>
+        <Space wrap>
           <Select
             placeholder={t('list.filter.statusPlaceholder')}
             allowClear
@@ -956,20 +940,26 @@ export default function DeploymentList() {
         loading={loading}
         expandable={{
           expandedRowRender,
-          rowExpandable: (group) => group.deployments.length > 1,
+          rowExpandable: (group) =>
+            (group.deployments[0].replica_instances?.length ?? 0) > 0,
           expandedRowKeys: expandedKeys,
           onExpandedRowsChange: (keys) => setExpandedKeys(keys as string[]),
           expandIcon: ({ expanded, onExpand, record }) =>
-            record.deployments.length > 1 ? (
-              expanded ? (
-                <DownOutlined onClick={(e) => onExpand(record, e)} style={{ cursor: 'pointer', marginRight: 8 }} />
-              ) : (
-                <RightOutlined onClick={(e) => onExpand(record, e)} style={{ cursor: 'pointer', marginRight: 8 }} />
-              )
+            (record.deployments[0].replica_instances?.length ?? 0) > 0 ? (
+              <Button
+                type="text"
+                size="small"
+                icon={expanded ? <DownOutlined /> : <RightOutlined />}
+                aria-label={
+                  expanded ? t('list.tooltip.collapseReplicas') : t('list.tooltip.expandReplicas')
+                }
+                onClick={(event) => onExpand(record, event)}
+              />
             ) : (
               <span style={{ width: 16, marginRight: 8, display: 'inline-block' }} />
             ),
         }}
+        scroll={{ x: 1120 }}
         pagination={{
           current: page,
           pageSize,
@@ -1172,6 +1162,7 @@ export default function DeploymentList() {
         {paramsDeployment && (() => {
           const dep = paramsDeployment
           const config = dep.config || {}
+          const launchConfig = getDeploymentLaunchConfig(config)
           const dockerCmd = config.docker_cmd as string | undefined
           const model = modelMap.get(dep.model_id)
           const runtimeInfo = dep.runtime_info as Record<string, unknown> | undefined
@@ -1188,11 +1179,36 @@ export default function DeploymentList() {
             return !!dockerCmd?.includes(flag)
           }
 
-          const dtype = (config.dtype as string) || parseFromCmd('--dtype') || '-'
-          const enforceEager = config.enforce_eager === true || hasFlagInCmd('--enforce-eager')
-          const attentionBackend = (config.attention_backend as string) || parseFromCmd('--attention-backend') || '-'
-          const maxModelLen = parseFromCmd('--max-model-len') || parseFromCmd('--max_model_len')
-          const tensorParallelSize = parseFromCmd('--tensor-parallel-size') || parseFromCmd('--tp')
+          const managedDtype = getManagedDeploymentConfigValue(config, 'dtype')
+          const managedEnforceEager = getManagedDeploymentConfigValue(
+            config,
+            'enforce_eager',
+          )
+          const managedAttentionBackend = getManagedDeploymentConfigValue(
+            config,
+            'attention_backend',
+          )
+          const dtype =
+            (typeof managedDtype === 'string' ? managedDtype : undefined) ||
+            (!launchConfig ? parseFromCmd('--dtype') : undefined) ||
+            '-'
+          const enforceEager =
+            managedEnforceEager === true ||
+            (!launchConfig && hasFlagInCmd('--enforce-eager'))
+          const attentionBackend =
+            (typeof managedAttentionBackend === 'string'
+              ? managedAttentionBackend
+              : undefined) ||
+            (!launchConfig ? parseFromCmd('--attention-backend') : undefined) ||
+            '-'
+          const maxModelLen =
+            (launchConfig?.max_context_length as number | undefined)?.toString() ||
+            (!launchConfig ? parseFromCmd('--max-model-len') : undefined) ||
+            (!launchConfig ? parseFromCmd('--max_model_len') : undefined)
+          const tensorParallelSize =
+            (launchConfig?.tensor_parallel_size as number | undefined)?.toString() ||
+            (!launchConfig ? parseFromCmd('--tensor-parallel-size') : undefined) ||
+            (!launchConfig ? parseFromCmd('--tp') : undefined)
           const chatTemplate = parseFromCmd('--chat-template')
 
           const runtimeAccelerators = getRuntimeAccelerators(dep)
@@ -1265,7 +1281,7 @@ export default function DeploymentList() {
                   </Descriptions.Item>
                 )}
                 {isSglang && (
-                  <Descriptions.Item label={t('paramsModal.enforceEager')}>
+                  <Descriptions.Item label={t('paramsModal.attentionBackend')}>
                     <Tag color={attentionBackend !== '-' ? 'processing' : 'default'}>{attentionBackend}</Tag>
                   </Descriptions.Item>
                 )}

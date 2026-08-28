@@ -66,6 +66,8 @@
     "sourceDeployment": "已部署模型",
     "sourceCustom": "自定义端点",
     "selectDeployment": "选择已部署的模型",
+    "selectReplica": "选择要评测的副本",
+    "replicas": "个副本",
     "endpointPlaceholder": "端点地址 (例如: http://localhost:9997)",
     "displayNamePlaceholder": "显示名称",
     "datasetConfig": "数据集配置",

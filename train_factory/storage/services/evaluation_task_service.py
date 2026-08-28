@@ -24,6 +24,12 @@ from .dataset_service import (
     storage_reference_sets_overlap,
 )
 from .background_task_admission_service import background_task_admission_service
+from .runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
+    evaluation_runtime_dependency_references,
+    lock_runtime_dependencies,
+    lock_runtime_task_for_transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +170,10 @@ class EvaluationTaskService:
                 status="pending",
                 run_token=str(uuid4()),
             )
+            lock_runtime_dependencies(
+                session,
+                evaluation_runtime_dependency_references(task),
+            )
             dataset_ids, dataset_paths = _persisted_evaluation_dataset_references(task)
             lock_datasets_for_consumption(
                 session,
@@ -268,13 +278,26 @@ class EvaluationTaskService:
         now = now_naive()
         legacy_run_token = str(uuid4())
         with get_session() as session:
+            conditions = (
+                EvaluationTaskDB.task_id == task_id,
+                EvaluationTaskDB.eval_framework == EvaluationFramework.MTEB,
+                EvaluationTaskDB.status == EvaluationStatus.PENDING,
+            )
+            try:
+                task = lock_runtime_task_for_transition(
+                    session,
+                    entity=EvaluationTaskDB,
+                    conditions=conditions,
+                    reference_parser=evaluation_runtime_dependency_references,
+                )
+            except RuntimeDependencyUnavailableError:
+                session.rollback()
+                return False
+            if task is None:
+                return False
             result = session.exec(
                 update(EvaluationTaskDB)
-                .where(
-                    EvaluationTaskDB.task_id == task_id,
-                    EvaluationTaskDB.eval_framework == EvaluationFramework.MTEB,
-                    EvaluationTaskDB.status == EvaluationStatus.PENDING,
-                )
+                .where(*conditions)
                 .values(
                     status=EvaluationStatus.RUNNING,
                     run_token=func.coalesce(
@@ -332,6 +355,20 @@ class EvaluationTaskService:
                 ]
                 if run_token is not _RUN_TOKEN_UNSET:
                     conditions.append(EvaluationTaskDB.run_token == run_token)
+                try:
+                    task = lock_runtime_task_for_transition(
+                        session,
+                        entity=EvaluationTaskDB,
+                        conditions=tuple(conditions),
+                        reference_parser=(
+                            evaluation_runtime_dependency_references
+                        ),
+                    )
+                except RuntimeDependencyUnavailableError:
+                    session.rollback()
+                    return False
+                if task is None:
+                    return False
                 result = session.exec(
                     update(EvaluationTaskDB)
                     .where(*conditions)
@@ -506,18 +543,41 @@ class EvaluationTaskService:
     ) -> bool:
         """Atomically persist a resume snapshot and move it back to pending."""
         with get_session() as session:
-            task = session.exec(
-                select(EvaluationTaskDB)
-                .where(
-                    EvaluationTaskDB.task_id == task_id,
-                    EvaluationTaskDB.eval_framework == EvaluationFramework.MTEB,
+            conditions = (
+                EvaluationTaskDB.task_id == task_id,
+                EvaluationTaskDB.eval_framework == EvaluationFramework.MTEB,
+                EvaluationTaskDB.status.in_(
+                    (
+                        EvaluationStatus.FAILED,
+                        EvaluationStatus.CANCELLED,
+                    )
+                ),
+            )
+
+            def resume_references(candidate: EvaluationTaskDB):
+                return evaluation_runtime_dependency_references(
+                    {
+                        "eval_framework": EvaluationFramework.MTEB,
+                        "model_configs": (
+                            candidate.model_configs
+                            if model_configs is None
+                            else model_configs
+                        ),
+                    }
                 )
-                .with_for_update()
-            ).first()
-            if not task or task.status not in {
-                EvaluationStatus.FAILED,
-                EvaluationStatus.CANCELLED,
-            }:
+
+            try:
+                task = lock_runtime_task_for_transition(
+                    session,
+                    entity=EvaluationTaskDB,
+                    conditions=conditions,
+                    reference_parser=evaluation_runtime_dependency_references,
+                    dependency_reference_builder=resume_references,
+                )
+            except RuntimeDependencyUnavailableError:
+                session.rollback()
+                return False
+            if task is None:
                 return False
             snapshot_model_configs = deepcopy(
                 task.model_configs if model_configs is None else model_configs

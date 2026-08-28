@@ -10,6 +10,7 @@ import type {
   UpdateDatasetRequest,
   RegisteredModel,
   Deployment,
+  DeploymentReplica,
   CreateDeploymentRequest,
   CreateContainerDeploymentRequest,
   RestartDeploymentRequest,
@@ -587,6 +588,29 @@ export const deploymentApi = {
   restart: (deploymentId: string, data: RestartDeploymentRequest = { reset_gpu: false }) =>
     api.post<never, Deployment>(`/deployments/${deploymentId}/restart`, data),
 
+  listReplicas: (deploymentId: string) =>
+    api.get<never, DeploymentReplica[]>(`/deployments/${deploymentId}/replicas`),
+
+  startReplica: (deploymentId: string, replicaId: string) =>
+    api.post<never, DeploymentReplica>(
+      `/deployments/${deploymentId}/replicas/${replicaId}/start`
+    ),
+
+  stopReplica: (deploymentId: string, replicaId: string) =>
+    api.post<never, DeploymentReplica>(
+      `/deployments/${deploymentId}/replicas/${replicaId}/stop`
+    ),
+
+  restartReplica: (deploymentId: string, replicaId: string) =>
+    api.post<never, DeploymentReplica>(
+      `/deployments/${deploymentId}/replicas/${replicaId}/restart`
+    ),
+
+  recreateReplica: (deploymentId: string, replicaId: string) =>
+    api.post<never, DeploymentReplica>(
+      `/deployments/${deploymentId}/replicas/${replicaId}/recreate`
+    ),
+
   updateConfig: (deploymentId: string, data: UpdateDeploymentConfigRequest) =>
     api.patch<never, Deployment>(`/deployments/${deploymentId}/config`, data),
 
@@ -615,9 +639,9 @@ export const deploymentApi = {
 // Adapter API
 export const adapterApi = {
   // List loaded adapters on a deployment
-  listLoaded: (deploymentId: string, includeUnloaded?: boolean) =>
+  listLoaded: (deploymentId: string, includeUnloaded?: boolean, replicaId?: string) =>
     api.get<never, { adapters: LoadedAdapter[] }>(`/deployments/${deploymentId}/adapters`, {
-      params: { include_unloaded: includeUnloaded },
+      params: { include_unloaded: includeUnloaded, replica_id: replicaId },
     }),
 
   // Load an adapter onto a deployment
@@ -628,23 +652,37 @@ export const adapterApi = {
       adapter_path: string
       source_task_id?: string
       source_model_id?: string
+      replica_id?: string
     }
   ) => api.post<never, LoadedAdapter>(`/deployments/${deploymentId}/adapters`, data),
 
   // Load adapter from a training task
-  loadFromTask: (deploymentId: string, taskId: string, adapterName?: string) =>
+  loadFromTask: (
+    deploymentId: string,
+    taskId: string,
+    adapterName?: string,
+    replicaId?: string
+  ) =>
     api.post<never, LoadedAdapter>(`/deployments/${deploymentId}/adapters/from-task`, {
       task_id: taskId,
       adapter_name: adapterName,
+      replica_id: replicaId,
     }),
 
   // Unload an adapter
-  unload: (deploymentId: string, adapterName: string) =>
-    api.delete<never, { message: string }>(`/deployments/${deploymentId}/adapters/${adapterName}`),
+  unload: (deploymentId: string, adapterName: string, replicaId?: string) =>
+    api.delete<never, { message: string }>(
+      `/deployments/${deploymentId}/adapters/${adapterName}`,
+      { params: { replica_id: replicaId } }
+    ),
 
   // Sync loaded adapters with actual state
-  sync: (deploymentId: string) =>
-    api.post<never, { message: string }>(`/deployments/${deploymentId}/adapters/sync`),
+  sync: (deploymentId: string, replicaId?: string) =>
+    api.post<never, { message: string }>(
+      `/deployments/${deploymentId}/adapters/sync`,
+      undefined,
+      { params: { replica_id: replicaId } }
+    ),
 
   // List available adapters
   listAvailable: (baseModelId?: string) =>
@@ -719,7 +757,7 @@ export const configApi = {
       }
     >('/configs/check-all'),
 
-  // API 测试代理（后端自动处理 vLLM reranker 预格式化）
+  // API 测试代理（后端按 vLLM reranker 的 Cohere 兼容格式转发）
   test: (configId: string, path: string, body: Record<string, unknown>) =>
     api.post<
       never,
@@ -1467,7 +1505,7 @@ export const syncApi = {
   getTask: (taskId: string) =>
     api.get<never, { task: import('@/types').SyncConfig }>(`/sync/tasks/${taskId}`),
 
-  updateTask: (taskId: string, data: Partial<import('@/types').CreateSyncConfigRequest>) =>
+  updateTask: (taskId: string, data: import('@/types').UpdateSyncConfigRequest) =>
     api.patch<never, { message: string; task: import('@/types').SyncConfig }>(
       `/sync/tasks/${taskId}`,
       data
@@ -1549,13 +1587,17 @@ export const syncApi = {
       `/sync/tasks/${taskId}/targets`
     ),
 
-  createTarget: (taskId: string, data: Record<string, unknown>) =>
+  createTarget: (taskId: string, data: import('@/types').CreateSyncTrainingTargetRequest) =>
     api.post<never, { message: string; target: SyncTrainingTarget }>(
       `/sync/tasks/${taskId}/targets`,
       data
     ),
 
-  updateTarget: (taskId: string, targetId: string, data: Record<string, unknown>) =>
+  updateTarget: (
+    taskId: string,
+    targetId: string,
+    data: import('@/types').CreateSyncTrainingTargetRequest
+  ) =>
     api.patch<never, { message: string; target: SyncTrainingTarget }>(
       `/sync/tasks/${taskId}/targets/${targetId}`,
       data

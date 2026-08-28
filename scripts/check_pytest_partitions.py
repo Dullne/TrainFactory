@@ -66,6 +66,10 @@ from collections.abc import Callable, Sequence  # noqa: E402
 
 ROOT_DIR = Path(_root_entry)
 MYSQL_TEST = "tests/integration/test_mysql_migrations.py"
+MYSQL_TESTS = (
+    MYSQL_TEST,
+    "tests/integration/test_mysql_sync_lock_order.py",
+)
 COLLECT_TIMEOUT_SECONDS = 300
 TOTAL_TIMEOUT_SECONDS = 900
 COLLECT_TIMEOUT_RETURN_CODE = 124
@@ -416,12 +420,12 @@ def check_partitions(
         (
             "-m",
             "not host_tools",
-            f"--ignore={MYSQL_TEST}",
+            *(f"--ignore={test_path}" for test_path in MYSQL_TESTS),
             "tests",
         ),
     )
     host_tools = collect(("-m", "host_tools", "tests"))
-    mysql_migrations = collect((MYSQL_TEST,))
+    mysql_migrations = collect(MYSQL_TESTS)
     partitions = (backend, host_tools, mysql_migrations)
     if any(not partition for partition in partitions):
         raise PartitionError("pytest partition validation failed")

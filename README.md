@@ -160,6 +160,21 @@ Shared/dedicated GPU modes with flexible port and resource configuration
 
 </details>
 
+For vLLM and SGLang container deployments, the creation form exposes common
+runtime controls without requiring operators to write raw command lines:
+
+- Independent replica count, port, and GPU assignment per replica
+- Tensor, pipeline, and data parallel sizes (`TP`, `PP`, `DP`)
+- Context length, maximum concurrent requests, dtype, and quantization
+- KV-cache dtype and GPU memory utilization
+- Expert parallelism and eager execution for vLLM
+- Expert parallelism and attention backend for SGLang
+
+Each replica is an independent inference instance with its own endpoint and
+lifecycle actions. TrainFactory does not add an application-level load balancer;
+operators can publish the selected endpoints through Kubernetes, an ingress, or
+another load-balancing layer.
+
 ### Model Configs
 
 <details>
@@ -438,11 +453,6 @@ never by passing `.runtime/release.env` to an ad hoc base Compose command.
 python -I scripts/build_release.py --check
 python -I scripts/build_release.py --build
 ```
-
-For an API-preserving Web-only promotion, follow the
-[production Web-only release runbook](docs/production-web-release.md). The
-runbook defines the immutable-image command, transaction recovery rules, and
-the exact boundary of the HTTP verification.
 
 Migration `053_validate_lifecycle_schema` has a deliberately non-destructive
 `downgrade()`: moving the Alembic revision backward does not remove repaired

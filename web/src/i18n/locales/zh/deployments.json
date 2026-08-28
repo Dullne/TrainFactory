@@ -2,6 +2,7 @@
   "list": {
     "title": "部署列表",
     "stats": {
+      "degraded": "部分可用",
       "total": "总部署数",
       "running": "运行中",
       "stopped": "已停止",
@@ -17,13 +18,19 @@
     },
     "groupColumns": {
       "containerName": "容器名称",
+      "deploymentGroup": "部署组",
       "framework": "框架",
       "port": "端口",
       "status": "状态",
       "health": "健康",
       "modelCount": "模型数",
+      "replicaCount": "健康副本",
       "gpuMemory": "显存使用",
       "actions": "操作"
+    },
+    "replicaColumns": {
+      "replica": "副本",
+      "endpoint": "访问端点"
     },
     "modelColumns": {
       "deploymentName": "部署名称",
@@ -36,6 +43,8 @@
       "actions": "操作"
     },
     "tooltip": {
+      "expandReplicas": "展开副本",
+      "collapseReplicas": "收起副本",
       "viewParams": "查看参数",
       "editParams": "编辑参数",
       "start": "启动",
@@ -43,10 +52,16 @@
       "restart": "重启",
       "delete": "删除",
       "adapter": "Adapter 管理"
+      ,"startReplica": "启动副本"
+      ,"stopReplica": "停止副本"
+      ,"restartReplica": "重启副本"
+      ,"recreateReplica": "重建副本"
     },
     "confirm": {
       "stop": "确定停止此部署？",
       "delete": "确定删除此部署？"
+      ,"stopReplica": "确定停止此副本？"
+      ,"recreateReplica": "确定重建此副本容器？"
     },
     "message": {
       "startSuccess": "启动请求已发送",
@@ -65,6 +80,8 @@
       "configInvalidJson": "配置不是有效的 JSON",
       "configSaved": "配置已保存，重启后生效",
       "configSaveFailed": "保存失败"
+      ,"replicaActionSuccess": "副本操作已完成"
+      ,"replicaActionFailed": "副本操作失败"
     }
   },
   "restart": {
@@ -119,6 +136,7 @@
     "enforceEager": "Enforce Eager",
     "enforceEagerYes": "是 (禁用 CUDA Graph)",
     "enforceEagerNo": "否",
+    "attentionBackend": "Attention 后端",
     "gpu": "GPU",
     "gpuShared": "共享",
     "lora": "LoRA",
@@ -133,6 +151,7 @@
     "startupCommand": "启动命令"
   },
   "create": {
+    "sglangRerankerLoraUnsupported": "SGLang v0.5.17 的 /v1/rerank 无法选择 LoRA adapter，因此 SGLang 重排模型部署已禁用 LoRA。",
     "title": "创建部署",
     "deployMode": "部署模式",
     "deployModeNew": "部署新模型",
@@ -166,6 +185,36 @@
     "maxLoraRank": "最大 LoRA Rank",
     "maxLoraRankHint": "支持的最大 LoRA rank 值",
     "replica": "副本数",
+    "parallelSettings": "并行与性能参数",
+    "tensorParallelSize": "张量并行 (TP)",
+    "pipelineParallelSize": "流水线并行 (PP)",
+    "dataParallelSize": "数据并行 (DP)",
+    "expertParallelSize": "专家并行 (EP)",
+    "expertParallelSizeHint": "SGLang 第一版仅支持 1 或与 TP 相同的值",
+    "expertParallelSizeInvalid": "专家并行必须为 1 或与张量并行相同",
+    "enableExpertParallel": "启用专家并行 (EP)",
+    "maxContextLength": "最大上下文长度",
+    "maxContextLengthHint": "留空使用模型或框架默认值",
+    "maxConcurrentRequests": "最大并发请求数",
+    "maxConcurrentRequestsHint": "限制单个副本同时运行的请求数量",
+    "quantization": "量化方式",
+    "quantizationAuto": "自动识别",
+    "kvCacheDtype": "KV Cache 精度",
+    "gpuAllocation": "GPU 分配",
+    "gpuPool": "GPU 池",
+    "gpuPoolHint": "按选择顺序为未覆盖的副本分配；留空则由后端自动选择",
+    "allowGpuReuse": "允许副本复用 GPU",
+    "allowGpuReuseHint": "默认禁止不同副本使用同一块 GPU",
+    "gpuReuseWarning": "GPU 复用可能造成显存争用和性能不稳定，请确认这是有意配置。",
+    "replicaIndex": "副本序号",
+    "replicaGpuIds": "指定 GPU",
+    "addReplicaOverride": "添加副本 GPU 覆盖",
+    "removeReplicaOverride": "删除副本 GPU 覆盖",
+    "topologyPreview": "拓扑预览：{{replicas}} 个独立副本，每个副本需要 {{gpus}} 块 GPU",
+    "topologyReplica": "副本 {{index}}：GPU {{gpus}}（{{mode}}）",
+    "topologyAutomatic": "后端自动分配",
+    "topologyManual": "手动覆盖",
+    "topologyPool": "GPU 池",
     "gpuSelect": "GPU 选择",
     "gpuSelectHint": "留空自动分配",
     "gpuMemoryUtilization": "GPU 显存利用率",
@@ -211,7 +260,14 @@
     "submitBind": "绑定"
   },
   "adapter": {
+    "noHealthyReplicaMessage": "没有健康副本可用",
+    "noHealthyReplicaDesc": "请先启动或恢复至少一个副本，再管理 Adapter。",
     "title": "LoRA Adapter 管理",
+    "replica": "目标副本",
+    "replicaPlaceholder": "请选择要管理的副本",
+    "replicaRequiredHint": "多副本部署必须明确选择一个副本，不会自动使用副本 0",
+    "replicaSingleHint": "单副本部署已自动选择唯一副本",
+    "selectReplicaFirst": "请先选择要管理 LoRA Adapter 的副本",
     "notSupportedMessage": "当前推理框架不支持 LoRA 热加载",
     "notSupportedDesc": "当前部署使用 {{framework}} 框架。只有 vLLM 和 SGLang 支持运行时 adapter 热加载。如需使用此功能，请重新创建部署并选择 vLLM 或 SGLang 框架。",
     "notRunningMessage": "部署未运行",

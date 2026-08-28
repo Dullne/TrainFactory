@@ -937,6 +937,605 @@ test.describe('ExternalApiConfigList Tab', () => {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 test.describe('SyncConfigCreate Page', () => {
+  test('3.0 validates every training target before creating the parent task', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    let createRequests = 0
+    await page.route('**/api/sync/tasks', async (route) => {
+      if (route.request().method() === 'POST') createRequests += 1
+      await route.fallback()
+    })
+
+    await page.goto('/sync/create')
+    const apiConfig = page.locator('.ant-select').first()
+    await apiConfig.click()
+    await page.locator('.ant-select-dropdown:visible .ant-select-item-option').first().click()
+    await page
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Config Name' })
+      .locator('input')
+      .fill('invalid-target')
+    await page.locator('.ant-card').filter({ hasText: 'Level 2' }).locator('.ant-switch').click()
+    await page.getByRole('button', { name: 'Add Training Target' }).click()
+    await page.getByRole('button', { name: 'Create Config' }).click()
+
+    await expect(page.getByText('Training target 1 requires a target name')).toBeVisible()
+    expect(createRequests).toBe(0)
+  })
+
+  test('3.0b creates training targets atomically in the parent request', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    let submittedBody: Record<string, unknown> | undefined
+    let targetRequests = 0
+    await page.route('**/api/sync/tasks**', async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (request.method() === 'POST' && url.pathname === '/api/sync/tasks') {
+        submittedBody = request.postDataJSON() as Record<string, unknown>
+        return route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'created', task: { task_id: 'sync-atomic' } }),
+        })
+      }
+      if (request.method() === 'POST' && /\/api\/sync\/tasks\/[^/]+\/targets$/.test(url.pathname)) {
+        targetRequests += 1
+      }
+      return route.fallback()
+    })
+
+    await page.goto('/sync/create')
+    const apiConfig = page.locator('.ant-select').first()
+    await apiConfig.click()
+    await page.locator('.ant-select-dropdown:visible .ant-select-item-option').first().click()
+    await page
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Config Name' })
+      .locator('input')
+      .fill('atomic-target')
+    await page.locator('.ant-card').filter({ hasText: 'Level 2' }).locator('.ant-switch').click()
+    await page.getByRole('button', { name: 'Add Training Target' }).click()
+    await page.locator('.ant-collapse-header').filter({ hasText: 'Training Targets 1' }).click()
+    await page.getByPlaceholder('Target Name').fill('embedding-target')
+    await page.getByText('Base Model', { exact: true }).last().locator('..').getByRole('combobox').click()
+    await page.locator('.ant-select-dropdown:visible .ant-select-item-option').first().click()
+    await page.getByRole('button', { name: 'Create Config' }).click()
+
+    await expect.poll(() => submittedBody).toBeTruthy()
+    expect(submittedBody?.training_targets).toEqual([
+      expect.objectContaining({
+        target_name: 'embedding-target',
+        base_model_path: 'BAAI/bge-base-zh-v1.5',
+      }),
+    ])
+    expect(targetRequests).toBe(0)
+  })
+
+  test('3.0c editing disabled stages sends explicit nulls', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    let submittedBody: Record<string, unknown> | undefined
+    await page.route('**/api/sync/tasks/sync-001', async (route) => {
+      if (route.request().method() !== 'PATCH') return route.fallback()
+      submittedBody = route.request().postDataJSON() as Record<string, unknown>
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ message: 'updated', task: {} }),
+      })
+    })
+
+    await page.goto('/sync/sync-001/edit')
+    const trainingCard = page.locator('.ant-card').filter({ hasText: 'Level 2' })
+    await expect(trainingCard.locator('.ant-switch')).toHaveClass(/ant-switch-checked/)
+    await trainingCard.locator('.ant-switch').click()
+    await page.getByRole('button', { name: 'Save' }).click()
+
+    await expect.poll(() => submittedBody).toBeTruthy()
+    expect(submittedBody).toMatchObject({
+      training_config: null,
+      base_deployment_id: null,
+      base_deployment_replica_id: null,
+    })
+  })
+
+  test('3.0c2 edits task and complete target set with one atomic PATCH', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    const targets = [
+      {
+        target_id: 'target-a',
+        task_id: 'sync-001',
+        target_name: 'remove-me',
+        model_type: 'embedding',
+        data_phase: 'final',
+        training_method: 'sft',
+        training_config: { lora_r: 16, lora_alpha: 32 },
+        base_model_path: 'BAAI/bge-base-zh-v1.5',
+        base_deployment_id: null,
+        base_deployment_replica_id: null,
+        training_threshold: 100,
+        pending_training_samples: 0,
+        total_training_samples: 0,
+        total_trainings: 0,
+        current_adapter_name: null,
+        current_adapter_id: null,
+        current_training_id: null,
+        priority: 0,
+        status: 'idle',
+        is_active: true,
+        sort_order: 0,
+        created_at: '2026-08-20T00:00:00',
+        updated_at: '2026-08-20T00:00:00',
+      },
+      {
+        target_id: 'target-b',
+        task_id: 'sync-001',
+        target_name: 'keep-me',
+        model_type: 'embedding',
+        data_phase: 'final',
+        training_method: 'sft',
+        training_config: { lora_r: 16, lora_alpha: 32 },
+        base_model_path: 'BAAI/bge-base-zh-v1.5',
+        base_deployment_id: null,
+        base_deployment_replica_id: null,
+        training_threshold: 100,
+        pending_training_samples: 0,
+        total_training_samples: 0,
+        total_trainings: 0,
+        current_adapter_name: null,
+        current_adapter_id: null,
+        current_training_id: null,
+        priority: 0,
+        status: 'idle',
+        is_active: true,
+        sort_order: 1,
+        created_at: '2026-08-20T00:00:00',
+        updated_at: '2026-08-20T00:00:00',
+      },
+    ]
+    let parentPatchBody: Record<string, unknown> | undefined
+    let parentPatchCount = 0
+    let independentTargetMutations = 0
+    await page.route('**/api/sync/tasks/sync-001**', async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (request.method() === 'GET' && url.pathname === '/api/sync/tasks/sync-001') {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            task: {
+              task_id: 'sync-001',
+              task_name: 'atomic-edit',
+              user_id: 'user-1',
+              external_api_config_id: 'apicfg-001',
+              external_api_url: '',
+              sync_interval_seconds: 300,
+              generation_threshold: 100,
+              generation_mode: 'doc_to_training',
+              generation_config: {},
+              training_threshold: 0,
+              training_config: null,
+              base_deployment_id: null,
+              base_deployment_replica_id: null,
+              is_active: false,
+              status: 'idle',
+              training_targets: targets,
+            },
+          }),
+        })
+      }
+      if (request.method() === 'PATCH' && url.pathname === '/api/sync/tasks/sync-001') {
+        parentPatchCount += 1
+        parentPatchBody = request.postDataJSON() as Record<string, unknown>
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'updated', task: {} }),
+        })
+      }
+      if (/\/api\/sync\/tasks\/sync-001\/targets\//.test(url.pathname)) {
+        independentTargetMutations += 1
+        if (request.method() === 'PATCH' && url.pathname.endsWith('/target-b')) {
+          return route.fulfill({
+            status: 409,
+            contentType: 'application/json',
+            body: JSON.stringify({ detail: 'target conflict' }),
+          })
+        }
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'deleted' }),
+        })
+      }
+      return route.fallback()
+    })
+
+    await page.goto('/sync/sync-001/edit')
+    const removedPanel = page.locator('.ant-collapse-item').filter({ hasText: 'remove-me' })
+    await removedPanel.locator('button').click()
+    const keptPanel = page.locator('.ant-collapse-item').filter({ hasText: 'keep-me' })
+    await keptPanel.locator('.ant-collapse-header').click()
+    await keptPanel.getByPlaceholder('Target Name').fill('kept-atomically')
+    await page.getByRole('button', { name: 'Save' }).click()
+
+    await expect.poll(() => parentPatchBody).toBeTruthy()
+    expect(parentPatchCount).toBe(1)
+    expect(independentTargetMutations).toBe(0)
+    expect(parentPatchBody?.training_targets).toEqual([
+      expect.objectContaining({
+        target_id: 'target-b',
+        target_name: 'kept-atomically',
+      }),
+    ])
+  })
+
+  test('3.0d allows a healthy replica from a degraded training deployment', async ({ page }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    await page.route('**/api/deployments**', async (route) => {
+      const request = route.request()
+      const url = new URL(request.url())
+      if (request.method() !== 'GET' || url.pathname !== '/api/deployments') {
+        return route.fallback()
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          deployments: [
+            {
+              deployment_id: 'dep-degraded',
+              model_id: 'model-001',
+              model_uid: 'qwen3-reranker',
+              deployment_name: 'degraded-reranker',
+              xinference_endpoint: 'http://127.0.0.1:8000',
+              replica: 2,
+              gpu_memory_utilization: 0.9,
+              deploy_mode: 'container',
+              container_name: 'vllm-degraded-r0',
+              gpu_id: 0,
+              port: 8000,
+              inference_framework: 'vllm',
+              enable_lora: true,
+              max_loras: 4,
+              max_lora_rank: 64,
+              status: 'degraded',
+              replica_instances: [
+                {
+                  replica_id: 'replica-healthy',
+                  deployment_id: 'dep-degraded',
+                  replica_index: 0,
+                  endpoint: 'http://127.0.0.1:8000',
+                  port: 8000,
+                  gpu_ids: [0],
+                  status: 'running',
+                  health_status: 'HEALTHY',
+                },
+                {
+                  replica_id: 'replica-unhealthy',
+                  deployment_id: 'dep-degraded',
+                  replica_index: 1,
+                  endpoint: 'http://127.0.0.1:8001',
+                  port: 8001,
+                  gpu_ids: [1],
+                  status: 'running',
+                  health_status: 'UNHEALTHY',
+                },
+              ],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            {
+              deployment_id: 'dep-no-healthy',
+              model_id: 'model-001',
+              model_uid: 'qwen3-reranker',
+              deployment_name: 'no-healthy-reranker',
+              xinference_endpoint: 'http://127.0.0.1:8100',
+              replica: 1,
+              gpu_memory_utilization: 0.9,
+              deploy_mode: 'container',
+              container_name: 'vllm-no-healthy-r0',
+              gpu_id: 2,
+              port: 8100,
+              inference_framework: 'vllm',
+              enable_lora: true,
+              max_loras: 4,
+              max_lora_rank: 64,
+              status: 'running',
+              replica_instances: [
+                {
+                  replica_id: 'replica-only-unhealthy',
+                  deployment_id: 'dep-no-healthy',
+                  replica_index: 0,
+                  endpoint: 'http://127.0.0.1:8100',
+                  port: 8100,
+                  gpu_ids: [2],
+                  status: 'running',
+                  health_status: 'UNHEALTHY',
+                },
+              ],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          ],
+          total: 2,
+        }),
+      })
+    })
+
+    await page.goto('/sync/create')
+    await page.locator('.ant-card').filter({ hasText: 'Level 2' }).locator('.ant-switch').click()
+    await page.getByRole('button', { name: 'Add Training Target' }).click()
+    const targetPanel = page.getByRole('button', { name: /Training Targets 1/ })
+    if ((await targetPanel.getAttribute('aria-expanded')) !== 'true') {
+      await targetPanel.click()
+    }
+    await expect(targetPanel).toHaveAttribute('aria-expanded', 'true')
+
+    const targetContent = page.locator('.ant-collapse-content-active')
+    const deploymentSelect = targetContent.locator('.ant-select').first()
+    await deploymentSelect.click()
+    await expect(
+      page.locator('.ant-select-dropdown:visible').getByText('degraded-reranker'),
+    ).toBeVisible()
+    await expect(
+      page.locator('.ant-select-dropdown:visible').getByText('no-healthy-reranker'),
+    ).toHaveCount(0)
+    await page.locator('.ant-select-dropdown:visible').getByText('degraded-reranker').click()
+
+    const replicaSelect = targetContent.locator('.ant-select').nth(1)
+    await expect(replicaSelect.locator('.ant-select-selection-item')).toContainText('GPU 0')
+    await replicaSelect.click()
+    const options = page.locator('.ant-select-dropdown:visible .ant-select-item-option')
+    await expect(options.filter({ hasText: 'GPU 0' })).not.toHaveClass(/ant-select-item-option-disabled/)
+    await expect(options.filter({ hasText: 'GPU 1' })).toHaveClass(/ant-select-item-option-disabled/)
+    await page.keyboard.press('Escape')
+
+    const deploymentCard = page
+      .locator('.ant-card')
+      .filter({ has: page.getByText('Deployment Config', { exact: true }) })
+      .last()
+    await deploymentCard.locator('.ant-card-head').getByRole('switch').click()
+    const groupSelect = deploymentCard
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Target Deployment' })
+      .locator('.ant-select')
+    await groupSelect.click()
+    const groupDropdown = page.locator('.ant-select-dropdown:visible')
+    await expect(
+      groupDropdown.getByText(
+        'degraded-reranker [vllm] [degraded] LoRA',
+        { exact: true },
+      ),
+    ).toBeVisible()
+    await expect(
+      groupDropdown.getByText(
+        'no-healthy-reranker [vllm] [running] LoRA',
+        { exact: true },
+      ),
+    ).toHaveCount(0)
+    await groupDropdown
+      .getByText('degraded-reranker [vllm] [degraded] LoRA', { exact: true })
+      .click()
+    const groupReplicaSelect = deploymentCard
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Deployment Instance' })
+      .locator('.ant-select')
+    await expect(groupReplicaSelect.locator('.ant-select-selection-item')).toContainText('GPU 0')
+  })
+
+  test('3.0e refreshes replica health and blocks a stale binding before submit', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    let deploymentListRequests = 0
+    let createRequests = 0
+    let returnUnhealthy = false
+    await page.route('**/api/deployments**', async (route) => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      if (request.method() !== 'GET' || path !== '/api/deployments') {
+        return route.fallback()
+      }
+      deploymentListRequests += 1
+      const healthStatus = returnUnhealthy ? 'UNHEALTHY' : 'HEALTHY'
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          deployments: [
+            {
+              deployment_id: 'dep-health-drift',
+              model_id: 'model-001',
+              model_uid: 'bge-base-zh',
+              deployment_name: 'health-drift-vllm',
+              xinference_endpoint: 'http://127.0.0.1:8300',
+              replica: 1,
+              gpu_memory_utilization: 0.8,
+              deploy_mode: 'container',
+              container_name: 'health-drift-vllm-r0',
+              port: 8300,
+              inference_framework: 'vllm',
+              enable_lora: true,
+              max_loras: 4,
+              max_lora_rank: 64,
+              status: 'running',
+              replica_instances: [
+                {
+                  replica_id: 'health-drift-replica',
+                  deployment_id: 'dep-health-drift',
+                  replica_index: 0,
+                  endpoint: 'http://127.0.0.1:8300',
+                  port: 8300,
+                  gpu_ids: [0],
+                  status: 'running',
+                  health_status: healthStatus,
+                },
+              ],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          ],
+          total: 1,
+        }),
+      })
+    })
+    await page.route('**/api/sync/tasks', async (route) => {
+      if (route.request().method() === 'POST') createRequests += 1
+      return route.fallback()
+    })
+
+    await page.goto('/sync/create')
+    const apiConfigSelect = page.locator('.ant-select').first()
+    await apiConfigSelect.click()
+    await page.getByText('业务系统A').first().click()
+    await page
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Config Name' })
+      .locator('input')
+      .fill('health-drift-task')
+
+    const deploymentCard = page
+      .locator('.ant-card')
+      .filter({ has: page.getByText('Deployment Config', { exact: true }) })
+      .last()
+    await deploymentCard.locator('.ant-card-head').getByRole('switch').click()
+    const deploymentSelect = deploymentCard
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Target Deployment' })
+      .locator('.ant-select')
+    await deploymentSelect.click()
+    await page
+      .locator('.ant-select-dropdown:visible')
+      .getByText(/health-drift-vllm/)
+      .click()
+    await expect(
+      deploymentCard
+        .locator('.ant-form-item')
+        .filter({ hasText: 'Deployment Instance' })
+        .locator('.ant-select-selection-item'),
+    ).toContainText('GPU 0')
+
+    const requestsBeforeSubmit = deploymentListRequests
+    returnUnhealthy = true
+    await page.getByRole('button', { name: 'Create Config' }).click()
+
+    await expect.poll(() => deploymentListRequests).toBeGreaterThan(requestsBeforeSubmit)
+    await expect(
+      page.getByText(
+        'The selected deployment instance is missing, unhealthy, or does not belong to this deployment',
+      ),
+    ).toBeVisible()
+    expect(createRequests).toBe(0)
+    await expect(page).toHaveURL(/\/sync\/create$/)
+  })
+
+  test('3.0f serializes submit while deployment health refresh is delayed', async ({
+    page,
+  }) => {
+    await page.addInitScript(() => window.localStorage.setItem('tf_language', 'en'))
+    let deploymentListRequests = 0
+    let delayDeploymentRefresh = false
+    let createRequests = 0
+    await page.route('**/api/deployments**', async (route) => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      if (request.method() !== 'GET' || path !== '/api/deployments') {
+        return route.fallback()
+      }
+      deploymentListRequests += 1
+      if (delayDeploymentRefresh) {
+        await new Promise((resolve) => setTimeout(resolve, 400))
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          deployments: [
+            {
+              deployment_id: 'dep-submit-lock',
+              model_id: 'model-001',
+              model_uid: 'bge-base-zh',
+              deployment_name: 'submit-lock-vllm',
+              xinference_endpoint: 'http://127.0.0.1:8400',
+              replica: 1,
+              gpu_memory_utilization: 0.8,
+              deploy_mode: 'container',
+              container_name: 'submit-lock-vllm-r0',
+              port: 8400,
+              inference_framework: 'vllm',
+              enable_lora: true,
+              max_loras: 4,
+              max_lora_rank: 64,
+              status: 'running',
+              replica_instances: [
+                {
+                  replica_id: 'submit-lock-replica',
+                  deployment_id: 'dep-submit-lock',
+                  replica_index: 0,
+                  endpoint: 'http://127.0.0.1:8400',
+                  port: 8400,
+                  gpu_ids: [0],
+                  status: 'running',
+                  health_status: 'HEALTHY',
+                },
+              ],
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+          ],
+          total: 1,
+        }),
+      })
+    })
+    await page.route('**/api/sync/tasks', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      createRequests += 1
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      return route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          message: 'created',
+          task: { task_id: 'sync-submit-lock', task_name: 'submit-lock-task' },
+        }),
+      })
+    })
+
+    await page.goto('/sync/create')
+    const apiConfigSelect = page.locator('.ant-select').first()
+    await apiConfigSelect.click()
+    await page.getByText('业务系统A').first().click()
+    await page
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Config Name' })
+      .locator('input')
+      .fill('submit-lock-task')
+
+    const deploymentCard = page
+      .locator('.ant-card')
+      .filter({ has: page.getByText('Deployment Config', { exact: true }) })
+      .last()
+    await deploymentCard.locator('.ant-card-head').getByRole('switch').click()
+    const deploymentSelect = deploymentCard
+      .locator('.ant-form-item')
+      .filter({ hasText: 'Target Deployment' })
+      .locator('.ant-select')
+    await deploymentSelect.click()
+    await page
+      .locator('.ant-select-dropdown:visible')
+      .getByText('submit-lock-vllm [vllm] [running] LoRA', { exact: true })
+      .click()
+
+    const requestsBeforeSubmit = deploymentListRequests
+    delayDeploymentRefresh = true
+    await page.getByRole('button', { name: 'Create Config' }).dblclick({ delay: 10 })
+
+    await expect.poll(() => createRequests).toBeGreaterThan(0)
+    await page.waitForTimeout(700)
+    expect(deploymentListRequests - requestsBeforeSubmit).toBe(1)
+    expect(createRequests).toBe(1)
+  })
+
   test('3.1 renders create page structure', async ({ page }) => {
     await page.goto('/sync/create')
     await expect(page.getByText('创建同步任务').first()).toBeVisible()

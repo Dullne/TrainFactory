@@ -88,7 +88,7 @@ LOCK_KEYS = {
     "MINIO_IMAGE",
     "MILVUS_IMAGE",
 }
-ALEMBIC_HEAD = "053_validate_lifecycle_schema"
+ALEMBIC_HEAD = "058_add_model_artifact_membership_gate"
 BUILD_TIMEOUT = 1800
 COMMAND_TIMEOUT = 900
 PROBE_TIMEOUT = 30

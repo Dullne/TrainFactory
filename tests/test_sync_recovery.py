@@ -27,6 +27,9 @@ from train_factory.storage.services.external_sync_service import (
     ExternalSyncService,
     external_sync_service,
 )
+from train_factory.storage.services.runtime_dependency_service import (
+    RuntimeDependencyUnavailableError,
+)
 from train_factory.sync import level2_handler
 from train_factory.sync import sync_worker
 
@@ -592,8 +595,23 @@ def test_create_batch_rejects_parent_with_durable_delete_intent(
         assert session.exec(select(ExternalSyncBatchDB)).all() == []
 
 
-@pytest.mark.parametrize("parent_state", ["missing", "foreign", "deleting"])
-def test_create_training_target_requires_mutable_owned_parent(parent_state):
+@pytest.mark.parametrize(
+    ("parent_state", "error_type", "error_pattern"),
+    (
+        ("missing", ValueError, "sync task|Sync task"),
+        (
+            "foreign",
+            RuntimeDependencyUnavailableError,
+            "^Runtime dependency is unavailable$",
+        ),
+        ("deleting", ValueError, "sync task|Sync task"),
+    ),
+)
+def test_create_training_target_requires_mutable_owned_parent(
+    parent_state,
+    error_type,
+    error_pattern,
+):
     service, engine = _sync_recovery_service()
     task_id = f"sync-target-parent-{parent_state}"
     expected_user_id = "user-target-parent"
@@ -617,7 +635,7 @@ def test_create_training_target_requires_mutable_owned_parent(parent_state):
             )
             session.commit()
 
-    with pytest.raises(ValueError, match="sync task|Sync task"):
+    with pytest.raises(error_type, match=error_pattern):
         service.create_training_target(
             task_id=task_id,
             target_name="Blocked target",
@@ -715,7 +733,17 @@ def test_training_target_mutation_rejects_parent_identity_drift(operation, drift
         session.commit()
 
     if drift == "owner":
-        with pytest.raises(ValueError, match="ownership mismatch"):
+        error_type = (
+            RuntimeDependencyUnavailableError
+            if operation == "update"
+            else ValueError
+        )
+        error_pattern = (
+            "^Runtime dependency is unavailable$"
+            if operation == "update"
+            else "ownership mismatch"
+        )
+        with pytest.raises(error_type, match=error_pattern):
             if operation == "update":
                 service.update_training_target(
                     target_id,
@@ -730,15 +758,13 @@ def test_training_target_mutation_rejects_parent_identity_drift(operation, drift
                     expected_user_id=expected_user_id,
                 )
     elif operation == "update":
-        assert (
+        with pytest.raises(ValueError, match="another sync task"):
             service.update_training_target(
                 target_id,
                 task_id=task_id,
                 expected_user_id=expected_user_id,
                 target_name="Changed target",
             )
-            is None
-        )
     else:
         assert not service.delete_training_target(
             target_id,

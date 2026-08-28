@@ -17,6 +17,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+/debug.log
 /web/dist/
 /web/playwright-report/
 /web/test-results/
@@ -33,3 +34,6 @@ pnpm-debug.log*
 .env
 .env.local
 .env.*.local
+
+# Local AI/developer tooling (never publish repository-specific state)
+.claude/
