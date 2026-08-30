@@ -442,6 +442,9 @@ python -I scripts/build_release.py --check
 python -I scripts/build_release.py --build
 ```
 
+公开 GHCR 镜像采用独立的、失败即停止且不接触注册表凭据的准备阶段，具体见
+[公开镜像发布准备说明](docs/public-image-release.md)。
+
 迁移 `053_validate_lifecycle_schema` 的 `downgrade()` 特意保持非破坏：回退
 Alembic revision 不会删除已修复的 schema 或数据。它不是生产回滚机制；生产
 回滚必须使用已验证备份。标准 CI 使用 CPU 镜像和

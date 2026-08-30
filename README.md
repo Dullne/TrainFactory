@@ -454,6 +454,9 @@ python -I scripts/build_release.py --check
 python -I scripts/build_release.py --build
 ```
 
+Public GHCR image preparation uses a separate fail-closed, registry-credential-free
+phase. See [Public Image Release Preparation](docs/public-image-release.md).
+
 Migration `053_validate_lifecycle_schema` has a deliberately non-destructive
 `downgrade()`: moving the Alembic revision backward does not remove repaired
 schema or data. It is not a production rollback mechanism; use a verified

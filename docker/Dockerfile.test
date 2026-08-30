@@ -31,7 +31,7 @@ COPY tests/ tests/
 COPY .github/workflows/ci.yml .github/workflows/ci.yml
 COPY scripts/check_base_image_providers.py scripts/check_dependency_locks.py scripts/snapshot_base_providers.py scripts/
 COPY scripts/materialize_compose_secrets.py scripts/scan_tracked_secrets.py scripts/validate_compose_config.py scripts/
-COPY scripts/build_release.py scripts/
+COPY scripts/build_release.py scripts/prepare_public_release.py scripts/
 COPY scripts/run_mysql_migration_tests.py scripts/compose_manifest.py scripts/compose_release.py scripts/promote_web_release.py scripts/verify_deployment.py scripts/
 COPY scripts/check_pytest_partitions.py scripts/validate_test_report.py scripts/run_compose_smoke.py scripts/
 COPY scripts/verify_inference_upstream.py scripts/

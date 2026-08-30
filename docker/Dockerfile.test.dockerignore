@@ -30,6 +30,7 @@ scripts/*
 !scripts/scan_tracked_secrets.py
 !scripts/validate_compose_config.py
 !scripts/build_release.py
+!scripts/prepare_public_release.py
 !scripts/run_mysql_migration_tests.py
 !scripts/compose_manifest.py
 !scripts/compose_release.py
