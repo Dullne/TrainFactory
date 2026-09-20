@@ -32,6 +32,8 @@ pytestmark = pytest.mark.skipif(
 BASE = os.getenv("TEST_API_BASE", "http://localhost:18000/api").rstrip("/")
 EXTERNAL_API_HOST = os.getenv("TEST_EXTERNAL_API_HOST", "localhost")
 MOCK_PORT = 19877
+TEST_USER_ID = os.getenv("TEST_SYNC_USER_ID", "pytest-user")
+OTHER_USER_ID = os.getenv("TEST_SYNC_OTHER_USER_ID", "pytest-other-user")
 
 
 # ── Mock External API Server ─────────────────────────────
@@ -41,7 +43,7 @@ def _make_mock_data(count=30):
     data = []
     now = now_naive()
     for i in range(count):
-        ts = (now - timedelta(hours=24 - i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        ts = (now - timedelta(hours=count - i)).strftime("%Y-%m-%dT%H:%M:%SZ")
         data.append(
             {
                 "id": f"pipe-{i:04d}",
@@ -103,8 +105,12 @@ def pipeline_mock_server():
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     time.sleep(0.5)
-    yield f"http://{EXTERNAL_API_HOST}:{MOCK_PORT}/api/pipeline"
-    server.shutdown()
+    try:
+        yield f"http://{EXTERNAL_API_HOST}:{MOCK_PORT}/api/pipeline"
+    finally:
+        server.shutdown()
+        server.server_close()
+        t.join(timeout=5)
 
 
 # ── Helpers ──────────────────────────────────────────────
@@ -129,7 +135,7 @@ def _create_sync_config(
     r = requests.post(
         f"{BASE}/sync/tasks",
         json={
-            "task_name": "pytest-pipeline-sync",
+            "task_name": f"pytest-pipeline-sync-{uuid.uuid4().hex[:12]}",
             "external_api_config_id": api_config_id,
             "generation_threshold": generation_threshold,
             "training_threshold": training_threshold,
@@ -144,10 +150,62 @@ def _create_sync_config(
 
 def _cleanup(sync_id=None, api_id=None):
     if sync_id:
-        requests.post(f"{BASE}/sync/tasks/{sync_id}/stop")
-        requests.delete(f"{BASE}/sync/tasks/{sync_id}")
+        stopped = requests.post(f"{BASE}/sync/tasks/{sync_id}/stop")
+        assert stopped.status_code == 200, stopped.text
+        deleted = requests.delete(f"{BASE}/sync/tasks/{sync_id}")
+        assert deleted.status_code == 200, deleted.text
     if api_id:
-        requests.delete(f"{BASE}/sync/api-configs/{api_id}")
+        deleted = requests.delete(f"{BASE}/sync/api-configs/{api_id}")
+        assert deleted.status_code == 200, deleted.text
+
+
+def _create_owned_input_batch(task, tmp_path, record_count=50):
+    """Create real input rows for callback tests without launching a model."""
+    from train_factory.storage.services.external_sync_service import external_sync_service
+
+    path = tmp_path / f"{task['task_id']}.jsonl"
+    path.write_text(
+        "".join(json.dumps({"content": f"input-{index}"}) + "\n" for index in range(record_count)),
+        encoding="utf-8",
+    )
+    batch, created = external_sync_service.create_batch(
+        task_id=task["task_id"],
+        user_id=task["user_id"],
+        record_count=record_count,
+        storage_path=str(path),
+        since_time=None,
+    )
+    assert created is True
+    return batch
+
+
+def _claim_generation_batches(task_id, generation_task_id, batches):
+    """Use the production atomic claim, including its actual batch side effects."""
+    from train_factory.storage.services.external_sync_service import external_sync_service
+
+    task = external_sync_service.get_task_raw(task_id)
+    assert task is not None and batches
+    external_sync_service.update_task(task_id, status="generating")
+    generation = external_sync_service.create_generation_and_claim_batches(
+        task_id=task_id,
+        generation_task_id=generation_task_id,
+        user_id=task["user_id"],
+        input_batch_ids=[batch["batch_id"] for batch in batches],
+        input_record_count=sum(batch["record_count"] for batch in batches),
+    )
+    stored, _ = external_sync_service.list_batches(task_id)
+    expected_batch_ids = {batch["batch_id"] for batch in batches}
+    assert set(generation["input_batch_ids"]) == expected_batch_ids
+    assert {
+        batch["batch_id"] for batch in stored
+        if batch["generation_task_id"] == generation_task_id
+    } == expected_batch_ids
+    for batch in stored:
+        if batch["batch_id"] in generation["input_batch_ids"]:
+            assert batch["status"] == "generation_queued"
+            assert batch["generation_task_id"] == generation_task_id
+            assert batch["user_id"] == task["user_id"]
+    return generation
 
 
 # ── Counter Lifecycle Tests ──────────────────────────────
@@ -210,7 +268,7 @@ class TestCounterLifecycle:
 
         cfg = external_sync_service.create_task(
             task_name="pytest-counter-test",
-            user_id="pytest-user",
+            user_id=TEST_USER_ID,
             external_api_url="http://unused",
             external_auth_config={"token": "x"},
             training_threshold=100,
@@ -274,32 +332,30 @@ class TestLevel2Handler:
             config_id = sync_cfg["task_id"]
 
             # Sync to create batches
-            requests.post(f"{BASE}/sync/tasks/{config_id}/sync-now")
+            synced = requests.post(f"{BASE}/sync/tasks/{config_id}/sync-now")
+            assert synced.status_code == 200, synced.text
 
             # Get the batches
             batches_resp = requests.get(f"{BASE}/sync/tasks/{config_id}/batches")
             batches = batches_resp.json()["batches"]
             batch_ids = [b["batch_id"] for b in batches]
+            assert batches and sum(batch["record_count"] for batch in batches) == 30
 
-            # Create a generation tracking record (simulates what _trigger_generation does)
-            external_sync_service.create_generation(
-                task_id=config_id,
-                generation_task_id=gen_task_id,
-                user_id="pytest-user",
-                input_batch_ids=batch_ids,
-                input_record_count=30,
-            )
+            _claim_generation_batches(config_id, gen_task_id, batches)
 
             # Before callback: training samples = 0
             before = external_sync_service.get_task_raw(config_id)
             assert before["pending_training_samples"] == 0
 
             # Call the Level 2 callback
-            on_generation_completed(
+            completion = on_generation_completed(
                 generation_task_id=gen_task_id,
                 output_dataset_id="fake-output-ds",
                 output_sample_count=150,
             )
+            assert completion["completed"] is True
+            assert completion["credited_sample_count"] == 150
+            assert completion["completed_batch_count"] == len(batch_ids)
 
             # After callback: training samples should be incremented
             after = external_sync_service.get_task_raw(config_id)
@@ -320,7 +376,7 @@ class TestLevel2Handler:
         finally:
             _cleanup(sync_cfg["task_id"], api_cfg["config_id"])
 
-    def test_training_threshold_check(self):
+    def test_training_threshold_check(self, tmp_path):
         """on_generation_completed should trigger training when threshold reached."""
         from train_factory.storage.services.external_sync_service import (
             external_sync_service,
@@ -332,7 +388,7 @@ class TestLevel2Handler:
 
         cfg = external_sync_service.create_task(
             task_name="pytest-l2-threshold",
-            user_id="pytest-user",
+            user_id=TEST_USER_ID,
             external_api_url="http://unused",
             external_auth_config={"token": "x"},
             generation_threshold=99999,
@@ -341,25 +397,21 @@ class TestLevel2Handler:
         try:
             config_id = cfg["task_id"]
 
-            # Create a generation record
-            external_sync_service.create_generation(
-                task_id=config_id,
-                generation_task_id=gen_task_id,
-                user_id="pytest-user",
-                input_batch_ids=[],
-                input_record_count=50,
-            )
+            batch = _create_owned_input_batch(cfg, tmp_path)
+            _claim_generation_batches(config_id, gen_task_id, [batch])
 
             # Mock _trigger_training to verify it's called
             with patch(
                 "train_factory.sync.level2_handler._trigger_training"
             ) as mock_train:
                 # 150 samples >= 100 threshold → should trigger
-                on_generation_completed(
+                completion = on_generation_completed(
                     generation_task_id=gen_task_id,
                     output_dataset_id="ds-output",
                     output_sample_count=150,
                 )
+                assert completion["completed"] is True
+                assert completion["credited_sample_count"] == 150
                 mock_train.assert_called_once()
 
             after = external_sync_service.get_task_raw(config_id)
@@ -367,7 +419,7 @@ class TestLevel2Handler:
         finally:
             external_sync_service.delete_task(config_id)
 
-    def test_training_not_triggered_below_threshold(self):
+    def test_training_not_triggered_below_threshold(self, tmp_path):
         """on_generation_completed should NOT trigger training when below threshold."""
         from train_factory.storage.services.external_sync_service import (
             external_sync_service,
@@ -379,7 +431,7 @@ class TestLevel2Handler:
 
         cfg = external_sync_service.create_task(
             task_name="pytest-l2-below",
-            user_id="pytest-user",
+            user_id=TEST_USER_ID,
             external_api_url="http://unused",
             external_auth_config={"token": "x"},
             generation_threshold=99999,
@@ -388,28 +440,26 @@ class TestLevel2Handler:
         try:
             config_id = cfg["task_id"]
 
-            external_sync_service.create_generation(
-                task_id=config_id,
-                generation_task_id=gen_task_id,
-                user_id="pytest-user",
-                input_batch_ids=[],
-                input_record_count=50,
-            )
+            batch = _create_owned_input_batch(cfg, tmp_path)
+            _claim_generation_batches(config_id, gen_task_id, [batch])
 
             with patch(
                 "train_factory.sync.level2_handler._trigger_training"
             ) as mock_train:
                 # 50 samples < 1000 threshold → should NOT trigger
-                on_generation_completed(
+                completion = on_generation_completed(
                     generation_task_id=gen_task_id,
                     output_dataset_id="ds-below",
                     output_sample_count=50,
                 )
+                assert completion["completed"] is True
+                assert completion["credited_sample_count"] == 50
                 mock_train.assert_not_called()
+            assert external_sync_service.get_task_raw(config_id)["pending_training_samples"] == 50
         finally:
             external_sync_service.delete_task(config_id)
 
-    def test_training_skipped_when_already_in_progress(self):
+    def test_training_skipped_when_already_in_progress(self, tmp_path):
         """on_generation_completed should skip training if status is 'training'."""
         from train_factory.storage.services.external_sync_service import (
             external_sync_service,
@@ -421,7 +471,7 @@ class TestLevel2Handler:
 
         cfg = external_sync_service.create_task(
             task_name="pytest-l2-busy",
-            user_id="pytest-user",
+            user_id=TEST_USER_ID,
             external_api_url="http://unused",
             external_auth_config={"token": "x"},
             generation_threshold=99999,
@@ -430,29 +480,58 @@ class TestLevel2Handler:
         try:
             config_id = cfg["task_id"]
 
-            # Set status to "training" (already in progress)
+            batch = _create_owned_input_batch(cfg, tmp_path)
+            _claim_generation_batches(config_id, gen_task_id, [batch])
+            # Another training is active by the time this claimed generation completes.
             external_sync_service.update_task(config_id, status="training")
-
-            external_sync_service.create_generation(
-                task_id=config_id,
-                generation_task_id=gen_task_id,
-                user_id="pytest-user",
-                input_batch_ids=[],
-                input_record_count=50,
-            )
 
             with patch(
                 "train_factory.sync.level2_handler._trigger_training"
             ) as mock_train:
                 # 100 samples >= 10 threshold, but status="training" → skip
-                on_generation_completed(
+                completion = on_generation_completed(
                     generation_task_id=gen_task_id,
                     output_dataset_id="ds-busy",
                     output_sample_count=100,
                 )
+                assert completion["completed"] is True
+                assert completion["credited_sample_count"] == 100
                 mock_train.assert_not_called()
+            after = external_sync_service.get_task_raw(config_id)
+            assert after["pending_training_samples"] == 100
+            assert after["status"] == "training"
         finally:
             external_sync_service.delete_task(config_id)
+
+    def test_generation_claim_rejects_wrong_owner_without_consuming_batch(self, tmp_path):
+        from train_factory.storage.services.external_sync_service import external_sync_service
+
+        task = external_sync_service.create_task(
+            task_name=f"pytest-owner-fence-{uuid.uuid4().hex[:12]}",
+            user_id=TEST_USER_ID,
+            external_api_url="http://unused",
+            external_auth_config={"token": "x"},
+        )
+        generation_id = f"test-gen-{uuid.uuid4().hex[:12]}"
+        try:
+            batch = _create_owned_input_batch(task, tmp_path)
+            external_sync_service.update_task(task["task_id"], status="generating")
+            with pytest.raises(ValueError, match="batches are no longer available"):
+                external_sync_service.create_generation_and_claim_batches(
+                    task_id=task["task_id"],
+                    generation_task_id=generation_id,
+                    user_id=OTHER_USER_ID,
+                    input_batch_ids=[batch["batch_id"]],
+                    input_record_count=50,
+                )
+            assert external_sync_service.get_generation_by_task_id(generation_id) is None
+            batches, _ = external_sync_service.list_batches(task["task_id"])
+            assert len(batches) == 1
+            assert batches[0]["status"] == "fetched"
+            assert batches[0]["generation_task_id"] is None
+            assert external_sync_service.get_task_raw(task["task_id"])["pending_training_samples"] == 0
+        finally:
+            external_sync_service.delete_task(task["task_id"])
 
 
 # ── Manual Trigger API Tests ─────────────────────────────
@@ -460,6 +539,30 @@ class TestLevel2Handler:
 
 class TestManualTriggerAPI:
     """Verify sync-now, trigger-generation, trigger-training endpoints do real work."""
+
+    def test_sync_now_rejects_future_records_without_advancing_checkpoint(
+        self, pipeline_mock_server, monkeypatch,
+    ):
+        data = _make_mock_data(2)
+        data[-1]["created_at"] = (now_naive() + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        monkeypatch.setitem(globals(), "MOCK_DATA", data)
+        api_cfg = _create_api_config(pipeline_mock_server)
+        sync_cfg = _create_sync_config(api_cfg["config_id"])
+        try:
+            response = requests.post(f"{BASE}/sync/tasks/{sync_cfg['task_id']}/sync-now")
+            assert response.status_code == 200
+            status = requests.get(f"{BASE}/sync/tasks/{sync_cfg['task_id']}/status").json()
+            assert status["status"] == "error"
+            detail = requests.get(f"{BASE}/sync/tasks/{sync_cfg['task_id']}")
+            assert detail.status_code == 200
+            assert "future skew limit" in detail.json()["task"]["error_message"]
+            assert status["pending_record_count"] == 0
+            assert status["total_record_count"] == 0
+            assert status["last_sync_at"] is None
+            batches = requests.get(f"{BASE}/sync/tasks/{sync_cfg['task_id']}/batches").json()
+            assert batches["total"] == 0
+        finally:
+            _cleanup(sync_cfg["task_id"], api_cfg["config_id"])
 
     def test_sync_now_creates_batch(self, pipeline_mock_server):
         """POST sync-now should fetch data from external API and create a batch record."""

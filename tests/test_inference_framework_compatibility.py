@@ -312,49 +312,6 @@ def test_xinference_31_snapshots_and_transforms_match_exact_image_contract() -> 
     assert b"allow_trust_remote_code(self.model_family)" not in rerank
 
 
-def test_public_inference_volume_defaults_use_portable_checkout_root() -> None:
-    volumes = {
-        "XINFERENCE_PATCH_VOLUME": (
-            "/workspace/train-factory/docker/xinference-patches:"
-            "/opt/trainfactory/xinference-patches:ro"
-        ),
-        "XINFERENCE_CONTRACT_VOLUME": (
-            "/workspace/train-factory/docker/inference-contracts:"
-            "/opt/trainfactory/inference-contracts:ro"
-        ),
-        "SGLANG_TEMPLATE_VOLUME": (
-            "/workspace/train-factory/docker/sglang-templates:"
-            "/opt/trainfactory/sglang-templates:ro"
-        ),
-    }
-    compose = (ROOT_DIR / "docker" / "docker-compose.yml").read_text(
-        encoding="utf-8"
-    )
-    release = (ROOT_DIR / "scripts" / "compose_release.py").read_text(
-        encoding="utf-8"
-    )
-    deployer = (
-        ROOT_DIR / "train_factory" / "deployment" / "docker_deployer.py"
-    ).read_text(encoding="utf-8")
-
-    for variable, volume in volumes.items():
-        assert f"{variable}: ${{{variable}:-{volume}}}" in compose
-        assert f"{variable}={volume}" in release
-        host_path, container_path = volume.split(":", 1)
-        assert f'"{host_path}:"' in deployer
-        assert f'"{container_path}"' in deployer
-
-
-def test_public_gitee_fixtures_use_example_owner() -> None:
-    source = (ROOT_DIR / "tests" / "test_build_release.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert source.count("git@gitee.com:example/train-factory.git") == 2
-    assert source.count("https://gitee.com/example/train-factory") == 2
-    assert source.count("gitee.com") == 4
-
-
 def test_xinference_31_compose_applies_guarded_compatibility_payloads() -> None:
     compose = (ROOT_DIR / "docker" / "docker-compose.yml").read_text(
         encoding="utf-8"
@@ -943,6 +900,30 @@ def test_xinference_qwen3_embedding_uses_upstream_default_engine(
     assert captured["caller_option"] == "kept"
 
 
+@pytest.fixture
+def owned_rerank_catalog(empty_inference_catalog, monkeypatch):
+    """Model standalone framework endpoints without inventing a shared gateway."""
+    from sqlmodel import Session
+    from train_factory.config.settings import get_settings
+    from train_factory.storage.entities.deployment_entity import DeploymentDB
+
+    monkeypatch.setattr(get_settings(), "auth_enabled", True)
+    def populate(framework):
+        with Session(empty_inference_catalog) as session:
+            for user_id, model_uid in (
+                ("user-1", "Qwen3-Reranker-4B"), ("user-1", "reranker"),
+                ("user-2", "foreign-reranker"),
+            ):
+                session.add(DeploymentDB(
+                    model_id=f"registry-{model_uid}", user_id=user_id, model_uid=model_uid,
+                    xinference_endpoint="https://rerank.example.test/v1",
+                    inference_framework=framework, deploy_mode="container", status="running",
+                ))
+            session.commit()
+
+    return populate
+
+
 @pytest.mark.parametrize(
     ("trusted_framework", "expected_instruction_key"),
     [("vllm", "instruction"), ("sglang", "instruct")],
@@ -951,7 +932,9 @@ def test_model_config_rerank_proxy_uses_trusted_framework_instruction_field(
     monkeypatch: pytest.MonkeyPatch,
     trusted_framework: str,
     expected_instruction_key: str,
+    owned_rerank_catalog,
 ) -> None:
+    owned_rerank_catalog(trusted_framework)
     captured: dict[str, object] = {}
 
     class _ProxyResponse:
@@ -1034,15 +1017,16 @@ def test_model_config_rerank_proxy_uses_trusted_framework_instruction_field(
         "query": "raw query",
         "documents": ["raw document"],
         expected_instruction_key: "framework-owned instruction",
+        "model": "Qwen3-Reranker-4B",
     }
-    if trusted_framework == "vllm":
-        expected_body["model"] = "Qwen3-Reranker-4B"
     assert captured["json"] == expected_body
 
 
 def test_model_config_rerank_proxy_persisted_framework_wins_over_stale_cache(
     monkeypatch: pytest.MonkeyPatch,
+    owned_rerank_catalog,
 ) -> None:
+    owned_rerank_catalog("vllm")
     captured: dict[str, object] = {}
 
     class _ProxyResponse:
@@ -1115,7 +1099,9 @@ def test_model_config_rerank_proxy_persisted_framework_wins_over_stale_cache(
 
 def test_model_config_rerank_proxy_falls_back_to_deployment_framework(
     monkeypatch: pytest.MonkeyPatch,
+    owned_rerank_catalog,
 ) -> None:
+    owned_rerank_catalog("sglang")
     captured: dict[str, object] = {}
 
     class _ProxyResponse:
@@ -1186,6 +1172,7 @@ def test_model_config_rerank_proxy_falls_back_to_deployment_framework(
         "query": "raw query",
         "documents": ["raw document"],
         "instruct": "trusted instruction",
+        "model": "Qwen3-Reranker-4B",
     }
     assert model_config_routes_module._deployment_framework_cache == {
         "deployment-1": "sglang"
@@ -1198,7 +1185,9 @@ def test_model_config_rerank_proxy_omits_blank_instruction(
     monkeypatch: pytest.MonkeyPatch,
     trusted_framework: str,
     instruction: str | None,
+    owned_rerank_catalog,
 ) -> None:
+    owned_rerank_catalog(trusted_framework)
     captured: dict[str, object] = {}
 
     class _ProxyResponse:

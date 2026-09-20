@@ -91,13 +91,13 @@ class DeploymentDB(SQLModel, table=True):
 
     # Valid status transitions
     VALID_TRANSITIONS: ClassVar[Dict[str, Set[str]]] = {
-        "pending": {"starting", "failed", "stopped", "restarting"},  # stopped: user cancel before start
+        "pending": {"starting", "failed", "stopping", "stopped", "restarting"},  # stopping: verify legacy runtime cleanup
         "starting": {"running", "degraded", "failed", "stopping", "stopped", "restarting"},  # stopping: user abort during startup
         "running": {"degraded", "stopping", "stopped", "failed", "restarting"},  # stopped: for shared stop detection (auto-sync)
         "degraded": {"starting", "running", "stopping", "stopped", "failed", "restarting"},
         "stopping": {"stopped", "degraded", "failed", "restarting"},
         "stopped": {"starting", "pending", "restarting", "degraded"},  # Allow restart or reset
-        "failed": {"pending", "starting", "restarting", "degraded"},  # Allow retry from failed state
+        "failed": {"pending", "starting", "stopping", "restarting", "degraded"},  # Failed runtime still requires verified cleanup
         "restarting": {"running", "degraded", "failed", "stopped"},
     }
 

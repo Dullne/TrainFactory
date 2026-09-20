@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Header, Query
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
+from ..concurrency import threadpool_endpoint
 from ...auth.dependencies import get_current_user, verify_resource_ownership, validate_storage_path
 from ...auth.resource_provenance import (
     ResourceProvenanceError,
@@ -1241,6 +1242,20 @@ def _run_training_task_worker(
 
         _validate_training_resource_limits(training_config)
 
+        # The API can die immediately after spawn, before its PID commit.
+        # The child must establish its own durable identity before touching a
+        # model/GPU; startup recovery fences its no-process snapshot against
+        # this same registration. A lost/failed registration never trains.
+        child_pid = os.getpid()
+        if not training_task_service.register_training_process(
+            task_id,
+            child_pid,
+            capture_process_create_time(child_pid),
+            run_token=run_token,
+        ):
+            logger.info("Training task %s child registration was rejected", task_id)
+            return
+
         # Progress callback to update task progress
         def progress_callback(progress: float):
             try:
@@ -1653,10 +1668,13 @@ def run_training_task(task_id: str, training_config: Dict[str, Any]):
             return
         _start_training_process(process, task_id, cuda_visible)
         process_create_time = capture_process_create_time(process.pid)
-        process_info_persisted = training_task_service.update_process_info(
+        # The child may have registered (or even finished) before this parent
+        # reaches the commit. Cleanup is fenced to this exact child identity,
+        # including when the parent's registration loses to a terminal state.
+        process_info_owned = True
+        process_info_persisted = training_task_service.register_training_process(
             task_id,
             process_pid=process.pid,
-            process_status="running",
             process_create_time=process_create_time,
             run_token=run_token,
         )
@@ -1667,7 +1685,6 @@ def run_training_task(task_id: str, training_config: Dict[str, Any]):
             )
             process_exit_confirmed = _cleanup_training_process(process, task_id)
             return
-        process_info_owned = True
         try:
             running_persisted = training_task_service.update_task_status(
                 task_id,
@@ -1724,6 +1741,31 @@ def run_training_task(task_id: str, training_config: Dict[str, Any]):
         cleanup_attempt_allowed = bool(
             process_exit_confirmed and terminal_persistence_error is None
         )
+        if (
+            cleanup_attempt_allowed
+            and not process_info_owned
+            and process is not None
+            and process.pid is not None
+        ):
+            # A self-registered child can exit before the parent's OS identity
+            # lookup. Only after this owned Process is confirmed exited may we
+            # adopt its durable identity for fenced cleanup of this attempt.
+            try:
+                registered = training_task_service.get_task(task_id)
+                if (
+                    registered
+                    and registered.get("run_token") == run_token
+                    and registered.get("process_pid") == process.pid
+                    and registered.get("process_create_time") is not None
+                ):
+                    process_create_time = registered["process_create_time"]
+                    process_info_owned = True
+            except Exception as identity_error:
+                logger.warning(
+                    "Could not reconcile exited child identity for task %s: %s",
+                    task_id,
+                    identity_error,
+                )
         if process_info_owned and cleanup_attempt_allowed:
             try:
                 cleared = training_task_service.update_process_info(
@@ -2182,7 +2224,8 @@ def _build_task_response(task: Dict[str, Any]) -> TaskStatusResponse:
 
 
 @router.get("/train/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(
+@threadpool_endpoint
+def get_task_status(
     task_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -2195,7 +2238,8 @@ async def get_task_status(
 
 
 @router.get("/train/{task_id}/events", response_model=TrainingTaskEventListResponse)
-async def list_task_events(
+@threadpool_endpoint
+def list_task_events(
     task_id: str,
     limit: int = Query(default=200, ge=1, le=500),
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -2222,7 +2266,8 @@ async def list_task_events(
 
 
 @router.get("/train", response_model=TaskListResponse)
-async def list_tasks(
+@threadpool_endpoint
+def list_tasks(
     status: Optional[str] = None,
     model_type: Optional[str] = None,
     training_method: Optional[str] = None,
@@ -2594,7 +2639,8 @@ async def delete_task(
 
 
 @router.get("/train/{task_id}/metrics", response_model=TrainingMetricsResponse)
-async def get_training_metrics(
+@threadpool_endpoint
+def get_training_metrics(
     task_id: str,
     limit: Optional[int] = Query(
         default=DEFAULT_METRICS_HISTORY_RECORDS,

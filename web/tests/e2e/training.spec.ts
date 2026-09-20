@@ -7,20 +7,25 @@ test.beforeEach(async ({ page }) => {
 
 test('create training form supports model type switching', async ({ page }) => {
   await page.goto('/training/create')
+  await page.getByRole('button', { name: '全部展开', exact: true }).click()
 
   const modelTypeForm = page.locator('.ant-form-item:has-text("模型类型") .ant-select').first()
   await expect(modelTypeForm).toBeVisible()
   await modelTypeForm.click()
   await page.locator('.ant-select-item-option:has-text("Decoder Reranker")').click()
 
-  const selectedModelType = page.locator('.ant-form-item:has-text("模型类型") .ant-select-selection-item')
+  const selectedModelType = page.locator(
+    '.ant-form-item:has-text("模型类型") .ant-select-selection-item'
+  )
   await expect(selectedModelType).toHaveText(/Decoder Reranker/)
 
   const methodSelect = page.locator('.ant-form-item:has-text("训练方法") .ant-select').first()
   await methodSelect.click()
   await page.locator('.ant-select-item-option[title="GRPO"]').click()
 
-  const selectedMethod = page.locator('.ant-form-item:has-text("训练方法") .ant-select-selection-item')
+  const selectedMethod = page.locator(
+    '.ant-form-item:has-text("训练方法") .ant-select-selection-item'
+  )
   await expect(selectedMethod).toHaveText(/GRPO/)
 })
 
@@ -32,6 +37,7 @@ test('can open deployment modal', async ({ page }) => {
 
 test('create training form supports multiple datasets with train/eval split', async ({ page }) => {
   await page.goto('/training/create')
+  await page.getByRole('button', { name: '全部展开', exact: true }).click()
 
   // Wait for page to load
   await expect(page.locator('text=数据集配置')).toBeVisible()
@@ -74,18 +80,27 @@ test('create training form supports multiple datasets with train/eval split', as
 
 test('create training form shows existing datasets in dropdown', async ({ page }) => {
   await page.goto('/training/create')
+  await page.getByRole('button', { name: '全部展开', exact: true }).click()
 
   // Wait for datasets to load from mock API
   await page.waitForTimeout(800)
 
   // Find and click on the dataset path selector by placeholder text
-  const pathSelector = page.locator('.ant-select').filter({ has: page.locator('[class*="ant-select-selection-placeholder"]:has-text("选择数据集或输入路径")') })
+  const pathSelector = page
+    .locator('.ant-select')
+    .filter({
+      has: page.locator(
+        '[class*="ant-select-selection-placeholder"]:has-text("选择数据集或输入路径")'
+      ),
+    })
   await expect(pathSelector).toBeVisible()
   await pathSelector.click()
 
   // Verify mock datasets appear in dropdown (format: "name (dataset_type)")
   await expect(page.locator('.ant-select-item-option:has-text("example-dataset")')).toBeVisible()
-  await expect(page.locator('.ant-select-item-option:has-text("eval-rerank-dataset")')).toBeVisible()
+  await expect(
+    page.locator('.ant-select-item-option:has-text("eval-rerank-dataset")')
+  ).toBeVisible()
 })
 
 test('llm dpo and orpo expose beta and submit rl_config', async ({ page }) => {
@@ -106,6 +121,7 @@ test('llm dpo and orpo expose beta and submit rl_config', async ({ page }) => {
   })
 
   await page.goto('/training/create')
+  await page.getByRole('button', { name: '全部展开', exact: true }).click()
   await expect(page.locator('text=数据集配置')).toBeVisible()
 
   const modelTypeForm = page.locator('.ant-form-item:has-text("模型类型") .ant-select').first()
@@ -127,7 +143,9 @@ test('llm dpo and orpo expose beta and submit rl_config', async ({ page }) => {
   await methodSelect.click()
   await page.locator('.ant-select-item-option[title="DPO"]').click()
 
-  const rankingsDirectionSelect = page.locator('.ant-form-item:has-text("排序方向") .ant-select').first()
+  const rankingsDirectionSelect = page
+    .locator('.ant-form-item:has-text("排序方向") .ant-select')
+    .first()
   await rankingsDirectionSelect.click()
   await page.locator('.ant-select-item-option[title="排名越小越好"]').click()
 
@@ -136,9 +154,14 @@ test('llm dpo and orpo expose beta and submit rl_config', async ({ page }) => {
   await page.keyboard.type('/models/Qwen3-0.6B')
   await page.keyboard.press('Enter')
 
-  const datasetPathSelect = page.locator('.ant-select').filter({
-    has: page.locator('[class*="ant-select-selection-placeholder"]:has-text("选择数据集或输入路径")'),
-  }).first()
+  const datasetPathSelect = page
+    .locator('.ant-select')
+    .filter({
+      has: page.locator(
+        '[class*="ant-select-selection-placeholder"]:has-text("选择数据集或输入路径")'
+      ),
+    })
+    .first()
   await datasetPathSelect.click()
   await page.keyboard.type('/tmp/dpo.jsonl')
   await page.keyboard.press('Enter')
@@ -181,6 +204,7 @@ test('decoder reranker dpo exposes beta and submits rl_config', async ({ page })
   })
 
   await page.goto('/training/create')
+  await page.getByRole('button', { name: '全部展开', exact: true }).click()
   await expect(page.locator('text=数据集配置')).toBeVisible()
 
   const modelTypeForm = page.locator('.ant-form-item:has-text("模型类型") .ant-select').first()
@@ -206,9 +230,14 @@ test('decoder reranker dpo exposes beta and submits rl_config', async ({ page })
 
   await page.getByLabel('SFT 模型路径').fill('/app/output/sft-task/checkpoint-10')
 
-  const datasetPathSelect = page.locator('.ant-select').filter({
-    has: page.locator('[class*="ant-select-selection-placeholder"]:has-text("选择数据集或输入路径")'),
-  }).first()
+  const datasetPathSelect = page
+    .locator('.ant-select')
+    .filter({
+      has: page.locator(
+        '[class*="ant-select-selection-placeholder"]:has-text("选择数据集或输入路径")'
+      ),
+    })
+    .first()
   await datasetPathSelect.click()
   await page.keyboard.type('/tmp/decoder-dpo.jsonl')
   await page.keyboard.press('Enter')

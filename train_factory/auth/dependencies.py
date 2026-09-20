@@ -14,6 +14,7 @@ from typing import Optional, Dict, Any, List
 
 from fastapi import Depends, HTTPException, status, Request, Cookie
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.concurrency import run_in_threadpool
 
 from ..config.settings import get_settings
 from .jwt_handler import TokenError, decode_token
@@ -87,7 +88,7 @@ async def resolve_current_user(token: str) -> Dict[str, Any]:
     ):
         raise _invalid_token_error()
 
-    user = user_service.get_user(user_id)
+    user = await run_in_threadpool(user_service.get_user, user_id)
     if not user:
         raise _invalid_token_error()
 

@@ -3,6 +3,16 @@ import pytest
 from train_factory.evaluation import secure_api_reranker as secure_module
 
 
+@pytest.fixture(autouse=True)
+def external_inference_catalog(monkeypatch):
+    from train_factory.storage.services import inference_authorization_service
+
+    monkeypatch.setattr(
+        inference_authorization_service, "registered_shared_models_for_endpoint",
+        lambda *_args: (False, set()),
+    )
+
+
 class _Response:
     def __init__(self, payload):
         self._payload = payload

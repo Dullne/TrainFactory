@@ -1,0 +1,6 @@
+{
+  "runningReplicas": "Healthy replicas: {{running}} / {{total}}",
+  "replicas": "Replicas",
+  "details": "Task details",
+  "loading": "Loading results"
+}

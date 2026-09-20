@@ -7,21 +7,30 @@ Provides endpoints for managing external model API configurations.
 import logging
 import time
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlsplit
 
 import httpx
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from ...auth.dependencies import get_current_user
 from ...config.settings import get_settings
+from ...storage.services.inference_authorization_service import (
+    authorize_inference_config,
+    authorize_inference_model,
+    canonical_model_endpoint,
+    owned_model_uids_for_endpoint,
+)
 from ...storage.services.outbound_endpoint_policy import (
     async_request_user_outbound,
     validate_user_outbound_url,
 )
 from ...storage.services.milvus_collection_service import milvus_collection_service
-from ...storage.services.model_config_service import model_config_service
+from ...storage.services.model_config_service import (
+    model_config_service,
+    normalize_api_endpoint_url,
+)
 from ...storage.services.runtime_dependency_service import (
     RuntimeDependencyUnavailableError,
 )
@@ -191,36 +200,17 @@ def _verify_model_config_access(
     )
 
 
-def _canonical_model_endpoint(endpoint: str) -> str:
+def _canonical_model_endpoint(endpoint: str, provider: str = "xinference") -> str:
     """Canonicalize an API base URL for deployment ownership comparisons."""
-    parsed = urlsplit((endpoint or "").strip())
-    path = parsed.path.rstrip("/")
-    if path.endswith("/v1"):
-        path = path[:-3]
-    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}"
+    return canonical_model_endpoint(endpoint, provider)
 
 
 def _owned_model_uids_for_endpoint(
     endpoint: str,
     current_user: Dict[str, Any],
+    provider: str = "xinference",
 ) -> set[str]:
-    deployments, _ = deployment_service.list_deployments(
-        user_id=current_user.get("user_id"),
-        limit=1000,
-    )
-    canonical_endpoint = _canonical_model_endpoint(endpoint)
-    return {
-        deployment.get("model_uid")
-        for deployment in deployments
-        if deployment.get("model_uid")
-        and deployment.get("status") == "running"
-        and (deployment.get("inference_framework") or "xinference")
-        == "xinference"
-        and _canonical_model_endpoint(
-            deployment.get("xinference_endpoint") or ""
-        )
-        == canonical_endpoint
-    }
+    return owned_model_uids_for_endpoint(endpoint, current_user.get("user_id"), provider)
 
 
 def _authorize_shared_model_listing(
@@ -234,22 +224,12 @@ def _authorize_shared_model_listing(
     if not get_settings().auth_enabled or current_user.get("is_admin"):
         return None
 
-    owned_model_uids = _owned_model_uids_for_endpoint(endpoint, current_user)
-    protected_listing = (
-        provider.lower() == "xinference"
-        or _canonical_model_endpoint(endpoint)
-        == _canonical_model_endpoint(get_default_xinference_endpoint())
-        or bool(owned_model_uids)
+    owned_model_uids = _owned_model_uids_for_endpoint(endpoint, current_user, provider)
+    return authorize_inference_model(
+        endpoint, model_name, current_user.get("user_id"), provider=provider,
+        current_user=current_user, owned_model_uids=owned_model_uids,
+        default_endpoint=get_default_xinference_endpoint(),
     )
-    if not protected_listing:
-        return None
-
-    if not model_name or model_name not in owned_model_uids:
-        raise HTTPException(
-            status_code=403,
-            detail="Shared model discovery is limited to owned deployments",
-        )
-    return {model_name}
 
 
 def _filter_shared_model_listing(
@@ -289,6 +269,18 @@ def _filter_shared_model_listing(
     if filtered.get("error"):
         filtered["error"] = "Authorized model is unavailable"
     return filtered
+
+
+def _authorize_config_model(
+    config: Dict[str, Any], current_user: Dict[str, Any]
+) -> Optional[set[str]]:
+    """Authorize the config owner and its trusted deployment/model binding."""
+    if not get_settings().auth_enabled or current_user.get("is_admin"):
+        return None
+    _verify_model_config_access(config, current_user)
+    return authorize_inference_config(
+        config, current_user.get("user_id"), current_user=current_user,
+    )
 
 
 def _config_to_response(config: Dict[str, Any], mask_key: bool = True) -> ConfigResponse:
@@ -382,7 +374,8 @@ async def validate_config(
     - Retry on connection errors
     - Structured error types
     """
-    allowed_model_uids = _authorize_shared_model_listing(
+    allowed_model_uids = await run_in_threadpool(
+        _authorize_shared_model_listing,
         provider=request.provider,
         endpoint=request.api_endpoint,
         model_name=request.model_name,
@@ -424,14 +417,13 @@ async def create_config(
             detail=f"Invalid model_type: {request.model_type}. Must be one of {valid_types}"
         )
 
-    allowed_model_uids = None
-    if request.validate_api:
-        allowed_model_uids = _authorize_shared_model_listing(
-            provider=request.provider,
-            endpoint=request.api_endpoint,
-            model_name=request.model_name,
-            current_user=current_user,
-        )
+    allowed_model_uids = await run_in_threadpool(
+        _authorize_shared_model_listing,
+        provider=request.provider,
+        endpoint=request.api_endpoint,
+        model_name=request.model_name,
+        current_user=current_user,
+    )
 
     try:
         config = await model_config_service.create_config_async(
@@ -662,6 +654,21 @@ async def update_config(
             or existing_config.get("deployment_replica_id")
         )
     )
+    if not has_local_binding:
+        effective = dict(existing_config)
+        for field in ("provider", "api_endpoint", "model_name"):
+            value = getattr(request, field)
+            if value is not None:
+                effective[field] = value
+        await run_in_threadpool(
+            _authorize_shared_model_listing,
+            provider=effective.get("provider", ""),
+            endpoint=effective.get("api_endpoint", ""),
+            model_name=effective.get("model_name"),
+            current_user=current_user,
+        )
+    # Bound local configs keep their server-controlled connection identity.
+    # Metadata edits must still work while the deployment is stopped.
     success = model_config_service.update_config(
         config_id=config_id,
         config_name=request.config_name,
@@ -730,12 +737,7 @@ async def check_connectivity(
         config.get("api_endpoint", ""),
         current_user.get("user_id"),
     )
-    allowed_model_uids = _authorize_shared_model_listing(
-        provider=config.get("provider", ""),
-        endpoint=config.get("api_endpoint", ""),
-        model_name=config.get("model_name"),
-        current_user=current_user,
-    )
+    allowed_model_uids = await run_in_threadpool(_authorize_config_model, config, current_user)
 
     result = await model_config_service.check_connectivity(config_id)
     result = _filter_shared_model_listing(result, allowed_model_uids)
@@ -1048,12 +1050,21 @@ async def test_api_proxy(
             except Exception:
                 pass
     inference_framework = inference_framework.lower()
+    config["inference_framework"] = inference_framework
     model_type = config.get('model_type', '')
     model_name = config.get('model_name', '')
     proxy_path = _validate_test_proxy_path(request.path, model_type)
 
     # 构建请求体
     body = request.body.copy()
+    allowed_model_uids = await run_in_threadpool(_authorize_config_model, config, current_user)
+    if allowed_model_uids is not None:
+        if "model" in body and body["model"] != model_name:
+            raise HTTPException(
+                status_code=403,
+                detail="Shared model requests must use the authorized config model",
+            )
+        body["model"] = model_name
     body.pop("framework", None)
     body.pop("inference_framework", None)
     mode = body.pop("mode", None)
@@ -1284,12 +1295,7 @@ async def check_all_connectivity(
     results = {}
     for config in configs:
         try:
-            allowed_model_uids = _authorize_shared_model_listing(
-                provider=config.get("provider", ""),
-                endpoint=config.get("api_endpoint", ""),
-                model_name=config.get("model_name"),
-                current_user=current_user,
-            )
+            allowed_model_uids = await run_in_threadpool(_authorize_config_model, config, current_user)
         except HTTPException as exc:
             results[config["config_id"]] = {
                 "config_name": config["config_name"],

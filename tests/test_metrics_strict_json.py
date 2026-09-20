@@ -164,6 +164,7 @@ def test_metrics_callback_sanitizes_nested_log_epoch_and_db_payloads():
         epoch=1.5,
         log_history=[
             {
+                "step": 3,
                 "loss": {"branches": [float("nan"), 0.75]},
                 "eval_loss": {"branches": [float("inf"), 0.5]},
             }
@@ -182,6 +183,8 @@ def test_metrics_callback_sanitizes_nested_log_epoch_and_db_payloads():
         },
     )
     callback.on_epoch_end(args, state, SimpleNamespace())
+    # Epoch-strategy logs arrive after on_epoch_end; the next boundary flushes.
+    callback.on_epoch_begin(args, state, SimpleNamespace())
 
     assert saved[0]["metrics"] == {
         "train_loss": None,
@@ -191,10 +194,11 @@ def test_metrics_callback_sanitizes_nested_log_epoch_and_db_payloads():
     assert db_updates[0]["eval_nested"] == {"scores": [None, None, 1.0]}
     assert epochs == [
         (
-            1,
+            2,
             {
                 "total_steps_in_epoch": 3,
-                "avg_train_loss": {"branches": [None, 0.75]},
+                # Structured/non-scalar loss is not a numeric epoch average.
+                "avg_train_loss": None,
                 "eval_loss": {"branches": [None, 0.5]},
             },
         )

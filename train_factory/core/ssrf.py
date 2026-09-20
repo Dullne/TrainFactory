@@ -125,10 +125,16 @@ def _check_ip_address(
         or ip_obj.is_reserved
     ):
         raise SSRFError(f"禁止访问敏感地址: {hostname}", status_code=403)
+    # RFC 6598 shared address space is neither private nor global according to
+    # ipaddress, but may route to internal services (including cloud metadata).
+    is_cgnat = (
+        isinstance(ip_obj, ipaddress.IPv4Address)
+        and ip_obj in ipaddress.ip_network("100.64.0.0/10")
+    )
     if allow_private_all and ip_obj.is_private:
         return
     if (
-        ip_obj.is_private
+        (ip_obj.is_private or is_cgnat)
         and hostname not in allowed_private_hosts
         and str(ip_obj) not in allowed_private_hosts
         and (hostname, port) not in allowed_destinations

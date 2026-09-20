@@ -1,0 +1,30 @@
+{
+  "events": {
+    "task_created": "任务已创建",
+    "status_changed": "状态已变更",
+    "progress_updated": "训练进度已更新",
+    "result_updated": "训练结果已更新",
+    "model_registered": "模型已注册",
+    "task_completed": "训练已结束",
+    "task_deleted": "任务已删除",
+    "metrics_updated": "训练指标已更新",
+    "output_dir_updated": "输出目录已更新",
+    "unknown": "其他事件：{{type}}",
+    "transition": "{{from}} → {{to}}",
+    "showMore": "查看更多事件",
+    "loadOlder": "加载更早的事件",
+    "shown": "已显示 {{visible}} / {{loaded}} 条已加载事件",
+    "limit": "仅提供最近 500 条事件，较早记录不在此列表中。",
+    "failed": "事件加载失败，已保留上次加载的记录。",
+    "retry": "重试加载事件"
+  },
+  "loss": {
+    "pending": "任务尚未开始记录 Loss。训练开始后，此处会自动更新。",
+    "active": "尚未收到可绘制的 Loss 记录。训练期间会自动刷新；也可查看任务事件确认当前进度。",
+    "finished": "任务已结束，但没有可绘制的 Loss 记录。请检查任务事件和训练参数中的日志记录间隔。",
+    "failed": "任务已失败，尚无可绘制的 Loss 记录。请查看上方错误信息和任务事件。",
+    "unavailable": "训练指标加载失败，暂时无法判断是否有 Loss 数据。",
+    "retry": "重新加载指标"
+  },
+  "loadingTable": "正在加载数据表…"
+}

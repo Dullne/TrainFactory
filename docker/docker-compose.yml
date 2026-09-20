@@ -28,6 +28,7 @@ services:
     environment:
       - API_HOST=${API_HOST:-train-factory-api}
       - API_PORT=${API_PORT:-18000}
+      - MAX_UPLOAD_SIZE=${MAX_UPLOAD_SIZE:-524288000}
     depends_on:
       - train-factory-api
     healthcheck:
@@ -148,6 +149,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
       MINIO_BUCKET: ${MINIO_BUCKET:-trainfactory}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-524288000}
       HOST_IP: ${HOST_IP:-172.17.0.1}
       HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
       VLLM_IMAGE: ${VLLM_IMAGE:-vllm/vllm-openai:v0.26.0@sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52}
@@ -337,6 +339,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
       MINIO_BUCKET: ${MINIO_BUCKET:-trainfactory}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      MAX_UPLOAD_SIZE: ${MAX_UPLOAD_SIZE:-524288000}
       DOCKER_NETWORK_NAME: ${DOCKER_NETWORK_NAME:-trainfactory_network}
       PORT_RANGE_START: ${PORT_RANGE_START:-9997}
       PORT_RANGE_END: ${PORT_RANGE_END:-10100}

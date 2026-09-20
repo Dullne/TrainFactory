@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from ...storage.services.outbound_endpoint_policy import create_pinned_async_client
+from ...storage.services.inference_authorization_service import authorize_inference_model
 
 
 def _resolve_rerank_text(item: Dict[str, Any], documents: List[str]) -> str:
@@ -170,6 +171,10 @@ class RerankClient:
         top_k: int,
     ) -> List[RerankResult]:
         """单批次 rerank 请求"""
+        await asyncio.to_thread(
+            authorize_inference_model, self.config.endpoint,
+            self.config.model, self.config.user_id,
+        )
         client = self._get_client()
         urls = self._build_rerank_urls()
 

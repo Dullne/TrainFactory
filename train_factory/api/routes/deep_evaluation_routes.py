@@ -4,6 +4,7 @@ Deep Evaluation API routes.
 Provides endpoints for deep evaluation of embedding/reranker models.
 """
 
+import asyncio
 import logging
 from typing import Annotated, Any, Dict, List, Literal, Optional
 from uuid import uuid4
@@ -18,6 +19,7 @@ from ...auth.dependencies import (
 )
 from ...auth.resource_provenance import ResourceProvenanceError
 from ...core.ssrf import SSRFError
+from ...storage.services.inference_authorization_service import authorize_inference_config
 from ...deep_evaluation import (
     DeepEvaluator,
     EvaluationSample,
@@ -102,8 +104,11 @@ def _run_claimed_deep_evaluation_task(
 ) -> None:
     """Claim a pending task and recheck cancellation before entering the runner."""
     clear_cancellation = False
+    claimed = False
+    runner_started = False
+    run_token = str(uuid4())
     try:
-        if not deep_evaluation_task_service.claim_running(task_id):
+        if not deep_evaluation_task_service.claim_running(task_id, run_token=run_token):
             task = deep_evaluation_task_service.get_task(task_id)
             clear_cancellation = bool(
                 task and task.get("status") == DeepEvaluationStatus.CANCELLED
@@ -115,6 +120,7 @@ def _run_claimed_deep_evaluation_task(
             )
             return
 
+        claimed = True
         clear_cancellation = True
         task = deep_evaluation_task_service.get_task(task_id)
         if not task or task.get("status") != DeepEvaluationStatus.RUNNING:
@@ -123,7 +129,17 @@ def _run_claimed_deep_evaluation_task(
                 task_id,
             )
             return
-        run_deep_evaluation_task(task_id, existing_results=existing_results)
+        runner_started = True
+        run_deep_evaluation_task(
+            task_id, existing_results=existing_results, expected_run_token=run_token,
+        )
+    except Exception:
+        if claimed and not runner_started:
+            try:
+                deep_evaluation_task_service.fail_claimed_startup(task_id, run_token)
+            except Exception:
+                logger.exception("Failed to finalize deep evaluation startup for %s", task_id)
+        raise
     finally:
         if clear_cancellation:
             clear_deep_cancellation(task_id)
@@ -781,6 +797,15 @@ async def create_deep_evaluation_task(
                 detail=f"模型组 '{group_cfg.group_name}' 至少需要配置一个模型"
             )
 
+        for model_config in (
+            resolved_group.get("embedding"), resolved_group.get("rerank"),
+            resolved_group.get("llm"),
+        ):
+            if model_config:
+                await asyncio.to_thread(
+                    authorize_inference_config, model_config, current_user.get("user_id"),
+                    current_user=current_user,
+                )
         resolved_model_groups.append(resolved_group)
 
     # 验证指标和模型配置的一致性
@@ -881,6 +906,11 @@ async def create_deep_evaluation_task(
     elif has_llm_model and not has_embedding and not has_rerank:
         eval_type = "llm"
 
+    if resolved_retrieval_emb:
+        await asyncio.to_thread(
+            authorize_inference_config, resolved_retrieval_emb, current_user.get("user_id"),
+            current_user=current_user,
+        )
     worker_groups = _build_worker_groups(request, resolved_retrieval_emb)
     if request.retrieval_mode == "online":
         worker_groups["evaluation_mode"] = "fallback" if mismatch_reason else "strict"
@@ -1225,6 +1255,10 @@ async def evaluate_sample(
                 current_user.get("user_id"),
             )
         llm_config_dict["user_id"] = current_user.get("user_id")
+        await asyncio.to_thread(
+            authorize_inference_config, llm_config_dict, current_user.get("user_id"),
+            current_user=current_user,
+        )
         llm_judge = create_llm_judge_from_dict(llm_config_dict)
 
         evaluator = DeepEvaluator(

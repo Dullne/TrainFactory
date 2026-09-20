@@ -5,6 +5,7 @@
 """
 import hashlib
 import logging
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Query
 from typing import Dict, Any, List, Optional
@@ -48,6 +49,8 @@ from ...evaluation.dataset_access import (
     resolve_managed_local_evaluation_dataset,
 )
 from ...storage.services.outbound_endpoint_policy import validate_user_outbound_url
+from ...storage.services.inference_authorization_service import authorize_inference_config
+from starlette.concurrency import run_in_threadpool
 from ...deployment.deployment_service import deployment_service
 from ...storage.services.dataset_service import (
     DatasetConsumptionUnavailableError,
@@ -237,8 +240,11 @@ def _run_claimed_evaluation_task(
 ) -> None:
     """Claim a pending task and recheck cancellation before entering the runner."""
     clear_cancellation = False
+    claimed = False
+    runner_started = False
+    run_token = str(uuid4())
     try:
-        if not evaluation_task_service.claim_running(task_id):
+        if not evaluation_task_service.claim_running(task_id, run_token=run_token):
             task = evaluation_task_service.get_task(task_id)
             clear_cancellation = bool(task and task.get("status") == "cancelled")
             logger.info(
@@ -248,6 +254,7 @@ def _run_claimed_evaluation_task(
             )
             return
 
+        claimed = True
         clear_cancellation = True
         task = evaluation_task_service.get_task(task_id)
         if not task or task.get("status") != "running":
@@ -262,7 +269,15 @@ def _run_claimed_evaluation_task(
                 task_id,
             )
             return
-        run_evaluation_task(task_id, config)
+        runner_started = True
+        run_evaluation_task(task_id, config, expected_run_token=run_token)
+    except Exception:
+        if claimed and not runner_started:
+            try:
+                evaluation_task_service.fail_claimed_startup(task_id, run_token)
+            except Exception:
+                logger.exception("Failed to finalize evaluation startup for %s", task_id)
+        raise
     finally:
         if clear_cancellation:
             clear_evaluation_cancellation(task_id)
@@ -436,6 +451,7 @@ def _validate_model_configs(
                 config.get("endpoint", ""),
                 user_id,
             )
+        authorize_inference_config(config, user_id)
         validated.append(config)
     return canonicalize_evaluation_model_configs(validated)
 
@@ -575,8 +591,8 @@ async def create_evaluation_task(
 
     # Serialize configs once
     try:
-        model_configs_data = _validate_model_configs(
-            [mc.model_dump() for mc in request.model_configs],
+        model_configs_data = await run_in_threadpool(
+            _validate_model_configs, [mc.model_dump() for mc in request.model_configs],
             current_user.get("user_id"),
         )
     except HTTPException:
@@ -780,8 +796,8 @@ async def resume_evaluation_task(
         )
 
     try:
-        model_configs_data = _validate_model_configs(
-            task["model_configs"],
+        model_configs_data = await run_in_threadpool(
+            _validate_model_configs, task["model_configs"],
             current_user.get("user_id"),
         )
         dataset_configs_data = _validate_dataset_configs(

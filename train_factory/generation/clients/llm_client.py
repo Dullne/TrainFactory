@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Callable
 import httpx
 
 from ...storage.services.outbound_endpoint_policy import create_pinned_async_client
+from ...storage.services.inference_authorization_service import authorize_inference_model
 
 
 @dataclass
@@ -97,6 +98,10 @@ class LLMClient:
         max_tokens: int,
     ) -> str:
         """调用 LLM API"""
+        await asyncio.to_thread(
+            authorize_inference_model, self.config.endpoint,
+            self.config.model, self.config.user_id,
+        )
         client = self._get_client()
         url = f"{self.config.endpoint.rstrip('/')}/chat/completions"
 

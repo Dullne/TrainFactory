@@ -18,6 +18,16 @@ from train_factory.storage.services.background_task_admission_service import (
 CURRENT_USER = {"user_id": "user-1", "username": "alice", "role": "user"}
 
 
+@pytest.fixture(autouse=True)
+def external_inference_catalog(monkeypatch):
+    from train_factory.storage.services import inference_authorization_service
+
+    monkeypatch.setattr(
+        inference_authorization_service, "registered_shared_models_for_endpoint",
+        lambda *_args: (False, set()),
+    )
+
+
 def _quick_request(**overrides):
     payload = {
         "input": "How does admission control work?",

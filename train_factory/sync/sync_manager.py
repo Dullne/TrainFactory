@@ -461,7 +461,7 @@ class SyncManager:
             self._launch_generation(gen_result)
 
     def _launch_generation(self, gen_result: dict):
-        """Launch a generation pipeline on the main event loop.
+        """Schedule a generation worker from the main event loop.
 
         Called from _run_worker (which is already on the main loop) after
         _run_sync_cycle returns generation task info.
@@ -506,7 +506,7 @@ class SyncManager:
                 "Sync generation stopped before manager launch",
             )
             return
-        logger.info(f"Launching generation pipeline {gen_task_id[:8]} on main event loop")
+        logger.info(f"Launching generation pipeline {gen_task_id[:8]} on a worker event loop")
         coroutine = background_task_admission_service.run_async(
             execution_lease,
             _run_generation_task,

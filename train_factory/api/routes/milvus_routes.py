@@ -1,11 +1,14 @@
 """Milvus 向量库管理 API 路由"""
 
+import asyncio
 import hashlib
 import logging
 import socket
+from functools import wraps
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from ...auth.dependencies import get_current_user
@@ -450,8 +453,18 @@ def _info_to_summary(
 
 # ── API Endpoints ────────────────────────────────────────────
 
+def _offload_sync_route(function):
+    """Keep blocking DB/RPC work and client cleanup in one worker thread."""
+    @wraps(function)
+    async def offloaded(*args, **kwargs):
+        return await run_in_threadpool(function, *args, **kwargs)
+
+    return offloaded
+
+
 @router.get("/status")
-async def get_milvus_status(
+@_offload_sync_route
+def get_milvus_status(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """获取 Milvus 连接状态"""
@@ -511,7 +524,8 @@ async def get_milvus_status(
 
 
 @router.get("/collections")
-async def list_collections(
+@_offload_sync_route
+def list_collections(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """列出所有 Milvus 集合（合并注册表元数据 + Milvus 实时状态）"""
@@ -541,7 +555,8 @@ async def list_collections(
 
 
 @router.get("/collections/{collection_name}")
-async def get_collection(
+@_offload_sync_route
+def get_collection(
     collection_name: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -602,7 +617,8 @@ async def get_collection(
 
 
 @router.post("/collections")
-async def create_collection(
+@_offload_sync_route
+def create_collection(
     request: CreateCollectionRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -766,7 +782,8 @@ async def create_collection(
 
 
 @router.delete("/collections/{collection_name}")
-async def delete_collection(
+@_offload_sync_route
+def delete_collection(
     collection_name: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -877,7 +894,8 @@ async def delete_collection(
 
 
 @router.get("/collections/{collection_name}/entities")
-async def browse_entities(
+@_offload_sync_route
+def browse_entities(
     collection_name: str,
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
@@ -923,7 +941,8 @@ async def browse_entities(
 
 
 @router.post("/collections/{collection_name}/search")
-async def search_collection(
+@_offload_sync_route
+def search_collection(
     collection_name: str,
     request: SearchRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -981,9 +1000,15 @@ async def search_collection(
                 api_key=config.get("api_key"),
                 user_id=current_user.get("user_id"),
             )
-            try:
+
+            async def embed_query():
                 async with EmbeddingClient(emb_config) as embedding_client:
-                    query_vector = await embedding_client.embed(request.query_text)
+                    return await embedding_client.embed(request.query_text)
+
+            try:
+                # Client setup includes synchronous endpoint policy/DB/DNS.
+                # Keep its entire lifecycle on this request's worker thread.
+                query_vector = asyncio.run(embed_query())
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Embedding 失败: {e}")
 
@@ -1039,7 +1064,8 @@ async def search_collection(
 
 
 @router.post("/collections/{collection_name}/load")
-async def load_collection(
+@_offload_sync_route
+def load_collection(
     collection_name: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -1059,7 +1085,8 @@ async def load_collection(
 
 
 @router.post("/collections/{collection_name}/release")
-async def release_collection(
+@_offload_sync_route
+def release_collection(
     collection_name: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -1081,7 +1108,8 @@ async def release_collection(
 # ── Dataset Link Endpoints ───────────────────────────────────
 
 @router.get("/collections/{collection_name}/datasets")
-async def get_linked_datasets(
+@_offload_sync_route
+def get_linked_datasets(
     collection_name: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -1092,7 +1120,8 @@ async def get_linked_datasets(
 
 
 @router.post("/collections/{collection_name}/datasets")
-async def link_dataset_to_collection(
+@_offload_sync_route
+def link_dataset_to_collection(
     collection_name: str,
     request: LinkDatasetRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -1130,7 +1159,8 @@ async def link_dataset_to_collection(
 
 
 @router.delete("/collections/{collection_name}/datasets/{dataset_id}")
-async def unlink_dataset_from_collection(
+@_offload_sync_route
+def unlink_dataset_from_collection(
     collection_name: str,
     dataset_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),

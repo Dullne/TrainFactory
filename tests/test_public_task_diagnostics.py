@@ -336,6 +336,7 @@ def test_deep_evaluation_list_and_detail_redact_diagnostics(monkeypatch):
 
 def test_quick_deep_evaluation_redacts_failed_metric_without_losing_success_reason(
     monkeypatch,
+    empty_inference_catalog,
 ):
     _admit_quick_evaluation(monkeypatch)
 
@@ -400,6 +401,7 @@ def test_quick_deep_evaluation_never_returns_internal_exception_detail(
     monkeypatch,
     exception,
     expected_status,
+    empty_inference_catalog,
 ):
     _admit_quick_evaluation(monkeypatch)
     monkeypatch.setattr(

@@ -56,6 +56,7 @@ import type {
   UpdateSyncConfigRequest,
 } from '@/types'
 import { TEXT_SECONDARY, BG_ELEVATED } from '@/theme'
+import './SyncConfigCreate.css'
 import {
   getAutomaticHealthyReplicaId,
   getHealthyDeploymentReplicas,
@@ -271,7 +272,7 @@ function populateTrainingFields(
 }
 
 function buildTrainingTargetPayload(
-  target: TrainingTargetFormState,
+  target: TrainingTargetFormState
 ): CreateSyncTrainingTargetRequest {
   const trainingConfig: Record<string, unknown> = {
     lora_r: target.lora_r,
@@ -316,10 +317,7 @@ export default function SyncConfigCreate() {
   const { t } = useTranslation(['sync', 'common'])
   const [form] = Form.useForm()
   const watchedBaseDeploymentId = Form.useWatch('base_deployment_id', form)
-  const watchedBaseDeploymentReplicaId = Form.useWatch(
-    'base_deployment_replica_id',
-    form,
-  )
+  const watchedBaseDeploymentReplicaId = Form.useWatch('base_deployment_replica_id', form)
   const [loading, setLoading] = useState(false)
   const submitInFlightRef = useRef(false)
   const [initialLoading, setInitialLoading] = useState(false)
@@ -474,23 +472,17 @@ export default function SyncConfigCreate() {
   useEffect(() => {
     if (!baseDataReady || !watchedBaseDeploymentId) return
     const selected = deployments.find(
-      (deployment) => deployment.deployment_id === watchedBaseDeploymentId,
+      (deployment) => deployment.deployment_id === watchedBaseDeploymentId
     )
     const currentIsHealthy = getHealthyDeploymentReplicas(selected).some(
-      (replica) => replica.replica_id === watchedBaseDeploymentReplicaId,
+      (replica) => replica.replica_id === watchedBaseDeploymentReplicaId
     )
     if (currentIsHealthy) return
     const nextReplicaId = getAutomaticHealthyReplicaId(selected)
     if (watchedBaseDeploymentReplicaId !== nextReplicaId) {
       form.setFieldValue('base_deployment_replica_id', nextReplicaId)
     }
-  }, [
-    baseDataReady,
-    deployments,
-    form,
-    watchedBaseDeploymentId,
-    watchedBaseDeploymentReplicaId,
-  ])
+  }, [baseDataReady, deployments, form, watchedBaseDeploymentId, watchedBaseDeploymentReplicaId])
 
   const fetchApiConfigs = () => {
     externalApiConfigApi
@@ -671,10 +663,7 @@ export default function SyncConfigCreate() {
 
   const handleDeploymentChange = (deploymentId: string | undefined) => {
     const selected = deployments.find((d) => d.deployment_id === deploymentId)
-    form.setFieldValue(
-      'base_deployment_replica_id',
-      getAutomaticHealthyReplicaId(selected),
-    )
+    form.setFieldValue('base_deployment_replica_id', getAutomaticHealthyReplicaId(selected))
     if (!deploymentId) {
       clearDeploymentDerivedModelState()
       return
@@ -820,8 +809,7 @@ export default function SyncConfigCreate() {
     setLoading(true)
     try {
       const baseDeploymentId = (values.base_deployment_id as string) || ''
-      const baseDeploymentReplicaId =
-        (values.base_deployment_replica_id as string) || ''
+      const baseDeploymentReplicaId = (values.base_deployment_replica_id as string) || ''
       let deploymentsForValidation = deployments
       const hasDeploymentBinding =
         (enableDeployment && Boolean(baseDeploymentId)) ||
@@ -845,7 +833,7 @@ export default function SyncConfigCreate() {
       const validateReplicaBinding = (
         deploymentId: string,
         replicaId: string,
-        targetIndex?: number,
+        targetIndex?: number
       ): string | undefined => {
         if (!deploymentId) {
           return replicaId
@@ -855,13 +843,7 @@ export default function SyncConfigCreate() {
         if (!replicaId) {
           return t('create.fields.deploymentReplicaRequired')
         }
-        if (
-          !isHealthyDeploymentReplicaBinding(
-            deploymentsForValidation,
-            deploymentId,
-            replicaId,
-          )
-        ) {
+        if (!isHealthyDeploymentReplicaBinding(deploymentsForValidation, deploymentId, replicaId)) {
           return t('create.fields.deploymentReplicaInvalid', { index: targetIndex })
         }
         return undefined
@@ -885,7 +867,7 @@ export default function SyncConfigCreate() {
         const replicaError = validateReplicaBinding(
           target.base_deployment_id,
           target.base_deployment_replica_id,
-          index + 1,
+          index + 1
         )
         if (replicaError) {
           message.error(replicaError)
@@ -986,8 +968,7 @@ export default function SyncConfigCreate() {
 
       if (enableDeployment) {
         data.base_deployment_id = baseDeploymentId || (isEditMode ? null : undefined)
-        data.base_deployment_replica_id =
-          baseDeploymentReplicaId || (isEditMode ? null : undefined)
+        data.base_deployment_replica_id = baseDeploymentReplicaId || (isEditMode ? null : undefined)
       } else if (isEditMode) {
         data.base_deployment_id = null
         data.base_deployment_replica_id = null
@@ -1036,8 +1017,8 @@ export default function SyncConfigCreate() {
   }
 
   return (
-    <div>
-      <Space style={{ marginBottom: 16 }}>
+    <div className="sync-config-create-page">
+      <div className="page-toolbar">
         <Button
           icon={<ArrowLeftOutlined />}
           onClick={() => (isEditMode ? navigate(`/sync/${taskId}`) : navigate('/sync'))}
@@ -1047,7 +1028,7 @@ export default function SyncConfigCreate() {
         <Title level={4} style={{ margin: 0 }}>
           {isEditMode ? t('create.editTitle') : t('create.title')}
         </Title>
-      </Space>
+      </div>
 
       <Form
         form={form}
@@ -1089,9 +1070,9 @@ export default function SyncConfigCreate() {
           mixed_precision: 'none',
         }}
       >
-        <Row gutter={24}>
+        <Row gutter={[16, 16]}>
           {/* Left column: Basic + External API + Generation */}
-          <Col span={12}>
+          <Col xs={24} xl={12}>
             <Card title={t('create.basicInfo')} size="small" style={{ marginBottom: 16 }}>
               <Form.Item
                 name="task_name"
@@ -1109,7 +1090,7 @@ export default function SyncConfigCreate() {
               <Form.Item label={t('apiConfig.select')} required>
                 <Space.Compact style={{ width: '100%' }}>
                   <Select
-                    style={{ flex: 1 }}
+                    style={{ flex: 1, minWidth: 0 }}
                     placeholder={t('apiConfig.selectPlaceholder')}
                     value={selectedApiConfigId || undefined}
                     onChange={(v) => setSelectedApiConfigId(v || '')}
@@ -1142,7 +1123,7 @@ export default function SyncConfigCreate() {
                     <div
                       style={{
                         background: BG_ELEVATED,
-                        border: '1px solid #30363d',
+                        border: '1px solid var(--tf-border-secondary)',
                         borderRadius: 6,
                         padding: '8px 12px',
                         marginBottom: 16,
@@ -1216,7 +1197,7 @@ export default function SyncConfigCreate() {
                         children: (
                           <>
                             <Row gutter={16}>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item
                                   name="generation_threshold"
                                   label={t('create.fields.generationThreshold')}
@@ -1225,7 +1206,7 @@ export default function SyncConfigCreate() {
                                   <InputNumber min={1} style={{ width: '100%' }} />
                                 </Form.Item>
                               </Col>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item
                                   name="generation_mode"
                                   label={t('create.fields.generationMode')}
@@ -1278,7 +1259,7 @@ export default function SyncConfigCreate() {
                         children: (
                           <>
                             <Row gutter={16}>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item
                                   name="pos_neg_method"
                                   label={t('create.fields.posNegMethod')}
@@ -1294,7 +1275,7 @@ export default function SyncConfigCreate() {
                                   />
                                 </Form.Item>
                               </Col>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item
                                   name="output_format"
                                   label={t('create.fields.outputFormat')}
@@ -1308,7 +1289,7 @@ export default function SyncConfigCreate() {
                               {t('create.fields.workerConfig')}
                             </Divider>
                             <Row gutter={16}>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item
                                   name="llm_concurrency"
                                   label={t('create.fields.llmConcurrency')}
@@ -1316,7 +1297,7 @@ export default function SyncConfigCreate() {
                                   <InputNumber min={1} max={100} style={{ width: '100%' }} />
                                 </Form.Item>
                               </Col>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item
                                   name="timeout_per_doc"
                                   label={t('create.fields.timeoutPerDoc')}
@@ -1338,7 +1319,7 @@ export default function SyncConfigCreate() {
                                   label: t('create.fields.docQuality'),
                                   children: (
                                     <Row gutter={16} align="middle">
-                                      <Col span={8}>
+                                      <Col xs={24} sm={8}>
                                         <Form.Item
                                           name="doc_quality_enabled"
                                           valuePropName="checked"
@@ -1347,7 +1328,7 @@ export default function SyncConfigCreate() {
                                           <Switch size="small" />
                                         </Form.Item>
                                       </Col>
-                                      <Col span={16}>
+                                      <Col xs={24} sm={16}>
                                         <Form.Item
                                           name="doc_quality_min_score"
                                           label={t('create.fields.docQualityMinScore')}
@@ -1369,7 +1350,7 @@ export default function SyncConfigCreate() {
                                   label: t('create.fields.keypointGen'),
                                   children: (
                                     <Row gutter={16} align="middle">
-                                      <Col span={8}>
+                                      <Col xs={24} sm={8}>
                                         <Form.Item
                                           name="keypoint_gen_enabled"
                                           valuePropName="checked"
@@ -1378,7 +1359,7 @@ export default function SyncConfigCreate() {
                                           <Switch size="small" />
                                         </Form.Item>
                                       </Col>
-                                      <Col span={16}>
+                                      <Col xs={24} sm={16}>
                                         <Form.Item
                                           name="keypoint_gen_max"
                                           label={t('create.fields.keypointGenMax')}
@@ -1395,7 +1376,7 @@ export default function SyncConfigCreate() {
                                   label: t('create.fields.qaGen'),
                                   children: (
                                     <Row gutter={16} align="middle">
-                                      <Col span={8}>
+                                      <Col xs={24} sm={8}>
                                         <Form.Item
                                           name="qa_gen_enabled"
                                           valuePropName="checked"
@@ -1404,7 +1385,7 @@ export default function SyncConfigCreate() {
                                           <Switch size="small" />
                                         </Form.Item>
                                       </Col>
-                                      <Col span={16}>
+                                      <Col xs={24} sm={16}>
                                         <Form.Item
                                           name="qa_gen_count"
                                           label={t('create.fields.qaGenCount')}
@@ -1421,7 +1402,7 @@ export default function SyncConfigCreate() {
                                   label: t('create.fields.posNeg'),
                                   children: (
                                     <Row gutter={16}>
-                                      <Col span={8}>
+                                      <Col xs={24} sm={12} xxl={8}>
                                         <Form.Item
                                           name="pos_neg_enabled"
                                           valuePropName="checked"
@@ -1430,7 +1411,7 @@ export default function SyncConfigCreate() {
                                           <Switch size="small" />
                                         </Form.Item>
                                       </Col>
-                                      <Col span={8}>
+                                      <Col xs={24} sm={12} xxl={8}>
                                         <Form.Item
                                           name="pos_neg_positive_count"
                                           label={t('create.fields.posNegPositiveCount')}
@@ -1439,7 +1420,7 @@ export default function SyncConfigCreate() {
                                           <InputNumber min={1} max={20} style={{ width: '100%' }} />
                                         </Form.Item>
                                       </Col>
-                                      <Col span={8}>
+                                      <Col xs={24} sm={12} xxl={8}>
                                         <Form.Item
                                           name="pos_neg_negative_count"
                                           label={t('create.fields.posNegNegativeCount')}
@@ -1494,7 +1475,7 @@ export default function SyncConfigCreate() {
           </Col>
 
           {/* Right column: Training + Deployment */}
-          <Col span={12}>
+          <Col xs={24} xl={12}>
             {/* Training Config (optional) */}
             <Card
               title={
@@ -1555,7 +1536,7 @@ export default function SyncConfigCreate() {
                               <div
                                 style={{
                                   background: BG_ELEVATED,
-                                  border: '1px solid #30363d',
+                                  border: '1px solid var(--tf-border-secondary)',
                                   borderRadius: 6,
                                   padding: '8px 12px',
                                   marginBottom: 16,
@@ -1563,7 +1544,13 @@ export default function SyncConfigCreate() {
                                 }}
                               >
                                 {modelFromDeployment && (
-                                  <div style={{ color: '#58a6ff', fontSize: 12, marginBottom: 4 }}>
+                                  <div
+                                    style={{
+                                      color: 'var(--tf-primary-text)',
+                                      fontSize: 12,
+                                      marginBottom: 4,
+                                    }}
+                                  >
                                     {t('create.fields.modelFromDeployment')}
                                   </div>
                                 )}
@@ -1599,12 +1586,12 @@ export default function SyncConfigCreate() {
                               <InputNumber min={1} style={{ width: '100%' }} />
                             </Form.Item>
                             <Row gutter={16}>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item name="lora_r" label={t('create.fields.loraR')}>
                                   <InputNumber min={1} max={256} style={{ width: '100%' }} />
                                 </Form.Item>
                               </Col>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item name="lora_alpha" label={t('create.fields.loraAlpha')}>
                                   <InputNumber min={1} max={512} style={{ width: '100%' }} />
                                 </Form.Item>
@@ -1619,7 +1606,7 @@ export default function SyncConfigCreate() {
                         children: (
                           <>
                             <Row gutter={16}>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item name="model_type" label={t('create.fields.modelType')}>
                                   <Select
                                     options={[
@@ -1637,7 +1624,7 @@ export default function SyncConfigCreate() {
                                   />
                                 </Form.Item>
                               </Col>
-                              <Col span={12}>
+                              <Col xs={24} sm={12}>
                                 <Form.Item
                                   name="training_method"
                                   label={t('create.fields.trainingMethod')}
@@ -1710,7 +1697,7 @@ export default function SyncConfigCreate() {
                                             return (
                                               <Row gutter={16}>
                                                 {showScale && (
-                                                  <Col span={12}>
+                                                  <Col xs={24} sm={12}>
                                                     <Form.Item
                                                       name={['loss_config', 'scale']}
                                                       label="Scale"
@@ -1727,7 +1714,7 @@ export default function SyncConfigCreate() {
                                                   </Col>
                                                 )}
                                                 {showMiniBatch && (
-                                                  <Col span={12}>
+                                                  <Col xs={24} sm={12}>
                                                     <Form.Item
                                                       name={['loss_config', 'mini_batch_size']}
                                                       label="Mini Batch Size"
@@ -1744,7 +1731,7 @@ export default function SyncConfigCreate() {
                                                   </Col>
                                                 )}
                                                 {showNegatives && (
-                                                  <Col span={12}>
+                                                  <Col xs={24} sm={12}>
                                                     <Form.Item
                                                       name={['loss_config', 'num_negatives']}
                                                       label="Num Negatives"
@@ -1761,7 +1748,7 @@ export default function SyncConfigCreate() {
                                                   </Col>
                                                 )}
                                                 {showTopK && (
-                                                  <Col span={12}>
+                                                  <Col xs={24} sm={12}>
                                                     <Form.Item
                                                       name={['loss_config', 'k']}
                                                       label="Top K"
@@ -1777,7 +1764,7 @@ export default function SyncConfigCreate() {
                                                   </Col>
                                                 )}
                                                 {showSigma && (
-                                                  <Col span={12}>
+                                                  <Col xs={24} sm={12}>
                                                     <Form.Item
                                                       name={['loss_config', 'sigma']}
                                                       label="Sigma"
@@ -1794,7 +1781,7 @@ export default function SyncConfigCreate() {
                                                   </Col>
                                                 )}
                                                 {showRespectInputOrder && (
-                                                  <Col span={12}>
+                                                  <Col xs={24} sm={12}>
                                                     <Form.Item
                                                       name={['loss_config', 'respect_input_order']}
                                                       label="Respect Input Order"
@@ -1817,7 +1804,7 @@ export default function SyncConfigCreate() {
                                 if (mt === 'decoder_reranker') {
                                   return (
                                     <Row gutter={16}>
-                                      <Col span={12}>
+                                      <Col xs={24} sm={12}>
                                         <Form.Item
                                           name={['loss_config', 'name']}
                                           label={t('create.fields.lossFunction')}
@@ -1826,7 +1813,7 @@ export default function SyncConfigCreate() {
                                           <Select options={decoderRerankerLossOptions} />
                                         </Form.Item>
                                       </Col>
-                                      <Col span={12}>
+                                      <Col xs={24} sm={12}>
                                         <Form.Item
                                           name={['loss_config', 'n_docs']}
                                           label={t('create.fields.decoderRerankerNDocs')}
@@ -1844,7 +1831,7 @@ export default function SyncConfigCreate() {
 
                             <Divider style={{ margin: '12px 0' }} />
                             <Row gutter={16}>
-                              <Col span={8}>
+                              <Col xs={24} sm={12} xxl={8}>
                                 <Form.Item
                                   name="num_train_epochs"
                                   label={t('create.fields.numTrainEpochs')}
@@ -1852,7 +1839,7 @@ export default function SyncConfigCreate() {
                                   <InputNumber min={1} max={100} style={{ width: '100%' }} />
                                 </Form.Item>
                               </Col>
-                              <Col span={8}>
+                              <Col xs={24} sm={12} xxl={8}>
                                 <Form.Item
                                   name="per_device_train_batch_size"
                                   label={t('create.fields.batchSize')}
@@ -1860,7 +1847,7 @@ export default function SyncConfigCreate() {
                                   <InputNumber min={1} max={256} style={{ width: '100%' }} />
                                 </Form.Item>
                               </Col>
-                              <Col span={8}>
+                              <Col xs={24} sm={12} xxl={8}>
                                 <Form.Item
                                   name="learning_rate"
                                   label={t('create.fields.learningRate')}
@@ -1875,7 +1862,7 @@ export default function SyncConfigCreate() {
                               </Col>
                             </Row>
                             <Row gutter={16}>
-                              <Col span={8}>
+                              <Col xs={24} sm={12} xxl={8}>
                                 <Form.Item
                                   name="warmup_ratio"
                                   label={t('create.fields.warmupRatio')}
@@ -1888,7 +1875,7 @@ export default function SyncConfigCreate() {
                                   />
                                 </Form.Item>
                               </Col>
-                              <Col span={8}>
+                              <Col xs={24} sm={12} xxl={8}>
                                 <Form.Item
                                   name="gradient_accumulation_steps"
                                   label={t('create.fields.gradAccumSteps')}
@@ -1902,7 +1889,7 @@ export default function SyncConfigCreate() {
                               >
                                 {({ getFieldValue }) =>
                                   getFieldValue('model_type') !== 'embedding' ? (
-                                    <Col span={8}>
+                                    <Col xs={24} sm={12} xxl={8}>
                                       <Form.Item
                                         name="max_length"
                                         label={t('create.fields.maxLength')}
@@ -1921,7 +1908,7 @@ export default function SyncConfigCreate() {
 
                             <Divider style={{ margin: '12px 0' }} />
                             <Row gutter={16}>
-                              <Col span={8}>
+                              <Col xs={24} sm={12} xxl={8}>
                                 <Form.Item
                                   name="lora_dropout"
                                   label={t('create.fields.loraDropout')}
@@ -1934,7 +1921,7 @@ export default function SyncConfigCreate() {
                                   />
                                 </Form.Item>
                               </Col>
-                              <Col span={8}>
+                              <Col xs={24} sm={12} xxl={8}>
                                 <Form.Item
                                   name="mixed_precision"
                                   label={t('create.fields.mixedPrecision')}
@@ -1948,7 +1935,7 @@ export default function SyncConfigCreate() {
                                   />
                                 </Form.Item>
                               </Col>
-                              <Col span={8}>
+                              <Col xs={24} sm={12} xxl={8}>
                                 <Form.Item name="gpu_ids" label={t('create.fields.gpuIds')}>
                                   <GpuSelect allowClear />
                                 </Form.Item>
@@ -2064,12 +2051,10 @@ export default function SyncConfigCreate() {
                       allowClear
                       placeholder={t('create.fields.baseDeploymentPlaceholder')}
                       onChange={handleDeploymentChange}
-                      options={deployments
-                        .filter(isSelectableSyncDeployment)
-                        .map((d) => ({
-                          label: `${d.deployment_name || d.deployment_id.slice(0, 8)} [${d.inference_framework}] [${d.status}]${d.enable_lora ? ' LoRA' : ''}`,
-                          value: d.deployment_id,
-                        }))}
+                      options={deployments.filter(isSelectableSyncDeployment).map((d) => ({
+                        label: `${d.deployment_name || d.deployment_id.slice(0, 8)} [${d.inference_framework}] [${d.status}]${d.enable_lora ? ' LoRA' : ''}`,
+                        value: d.deployment_id,
+                      }))}
                     />
                   </Form.Item>
                   {(() => {
@@ -2094,8 +2079,7 @@ export default function SyncConfigCreate() {
                             label: `#${replica.replica_index} · ${replica.endpoint} · GPU ${replica.gpu_ids.join(',')}`,
                             value: replica.replica_id,
                             disabled:
-                              replica.status !== 'running' ||
-                              replica.health_status !== 'HEALTHY',
+                              replica.status !== 'running' || replica.health_status !== 'HEALTHY',
                           }))}
                         />
                       </Form.Item>
@@ -2116,13 +2100,11 @@ export default function SyncConfigCreate() {
           </Col>
         </Row>
 
-        <div style={{ marginTop: 24, textAlign: 'center' }}>
-          <Space size="large">
-            <Button onClick={() => navigate('/sync')}>{t('common:action.cancel')}</Button>
-            <Button type="primary" htmlType="submit" loading={loading} disabled={loading}>
-              {isEditMode ? t('common:action.save') : t('create.submitButton')}
-            </Button>
-          </Space>
+        <div className="page-form-actions">
+          <Button onClick={() => navigate('/sync')}>{t('common:action.cancel')}</Button>
+          <Button type="primary" htmlType="submit" loading={loading} disabled={loading}>
+            {isEditMode ? t('common:action.save') : t('create.submitButton')}
+          </Button>
         </div>
       </Form>
 

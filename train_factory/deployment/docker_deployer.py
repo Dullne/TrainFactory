@@ -59,7 +59,7 @@ PORT_RANGE_START = int(os.environ.get("PORT_RANGE_START", "9997"))
 PORT_RANGE_END = int(os.environ.get("PORT_RANGE_END", "10100"))
 
 # Volume mounts for containers
-DEFAULT_DATA_VOLUME = os.environ.get("DATA_VOLUME", "/data/train_res:/data")
+DEFAULT_DATA_VOLUME = os.environ.get("DATA_VOLUME", "/workspace/train-factory/data:/data")
 DEFAULT_MODELS_VOLUME = os.environ.get("MODELS_VOLUME", "/workspace/train-factory/models:/app/models")
 DEFAULT_OUTPUT_VOLUME = os.environ.get("OUTPUT_VOLUME", "/workspace/train-factory/output:/app/output")
 # 额外的 volume 挂载：外部模型目录（如 ModelScope/HuggingFace 下载的原始模型）

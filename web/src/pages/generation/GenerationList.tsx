@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useListWorkspace, useListScroll } from '@/hooks/useListWorkspace'
+import { usePolling } from '@/hooks/usePolling'
 import { useNavigate } from 'react-router-dom'
 import {
   Table,
@@ -13,6 +15,7 @@ import {
   Row,
   Col,
   Tooltip,
+  Alert,
 } from 'antd'
 import {
   PlusOutlined,
@@ -77,11 +80,14 @@ const statusColorMap: Record<string, string> = {
 export default function GenerationList() {
   const { t } = useTranslation(['generation', 'common'])
   const navigate = useNavigate()
+  const workspace = useListWorkspace({ prefix: 'generation_', defaultPageSize: DEFAULT_PAGE_SIZE })
   const [tasks, setTasks] = useState<GenerationTask[]>([])
   const [loading, setLoading] = useState(false)
+  const [requestFailed, setRequestFailed] = useState(false)
+  const [hasLoaded, setHasLoaded] = useState(false)
   const [pagination, setPagination] = useState({
-    current: 1,
-    pageSize: DEFAULT_PAGE_SIZE,
+    current: workspace.page,
+    pageSize: workspace.pageSize,
     total: 0,
   })
   const [stats, setStats] = useState<GenerationTaskStats>({
@@ -98,8 +104,16 @@ export default function GenerationList() {
   })
   const tasksRef = useRef<GenerationTask[]>([])
   const paginationRef = useRef(pagination)
+  const requestedPaginationRef = useRef({ current: workspace.page, pageSize: workspace.pageSize })
+  const urlPaginationRef = useRef({ current: workspace.page, pageSize: workspace.pageSize })
+  urlPaginationRef.current = { current: workspace.page, pageSize: workspace.pageSize }
+  const setUrlPaginationRef = useRef(workspace.setPagination)
+  setUrlPaginationRef.current = workspace.setPagination
+  const normalizedQueryRef = useRef<string | null>(null)
   const requestGenerationRef = useRef(0)
   const loadingOwnerRef = useRef(0)
+  const foregroundOwnerRef = useRef<number | null>(null)
+  useListScroll(tasks.length > 0)
 
   // 保持 tasksRef 同步
   useEffect(() => {
@@ -112,33 +126,57 @@ export default function GenerationList() {
 
   const fetchTasks = useCallback(
     async (requestedPage?: number, requestedPageSize?: number, silent = false) => {
+      if (silent && foregroundOwnerRef.current !== null) return
       const requestGeneration = ++requestGenerationRef.current
       const loadingOwner = silent ? null : ++loadingOwnerRef.current
-      const currentPage = requestedPage ?? paginationRef.current.current
-      const pageSize = requestedPageSize ?? paginationRef.current.pageSize
+      if (!silent) foregroundOwnerRef.current = requestGeneration
+      let currentPage = requestedPage ?? requestedPaginationRef.current.current
+      const pageSize = requestedPageSize ?? requestedPaginationRef.current.pageSize
       if (loadingOwner !== null) setLoading(true)
       try {
-        const data = await generationApi.listTasks(
-          {
-            limit: pageSize,
-            offset: (currentPage - 1) * pageSize,
-          },
-          silent ? SILENT_REQUEST_CONFIG : undefined
-        )
-        if (requestGenerationRef.current !== requestGeneration) return
-        setTasks(data.tasks)
-        setStats(data.stats)
-        const nextPagination = {
-          current: currentPage,
-          pageSize: data.limit,
-          total: data.total,
+        while (requestGenerationRef.current === requestGeneration) {
+          const data = await generationApi.listTasks(
+            {
+              limit: pageSize,
+              offset: (currentPage - 1) * pageSize,
+            },
+            silent ? SILENT_REQUEST_CONFIG : undefined
+          )
+          if (requestGenerationRef.current !== requestGeneration) return
+          const lastPage = Math.max(1, Math.ceil(data.total / pageSize))
+          if (currentPage > lastPage) {
+            currentPage = lastPage
+            requestedPaginationRef.current = { current: currentPage, pageSize }
+            continue
+          }
+          setTasks(data.tasks)
+          setStats(data.stats)
+          const nextPagination = {
+            current: currentPage,
+            pageSize: data.limit,
+            total: data.total,
+          }
+          paginationRef.current = nextPagination
+          setPagination(nextPagination)
+          setHasLoaded(true)
+          setRequestFailed(false)
+          // Keep the last successful rows and URL until the corrected page succeeds.
+          if (
+            currentPage !== urlPaginationRef.current.current ||
+            pageSize !== urlPaginationRef.current.pageSize
+          ) {
+            normalizedQueryRef.current = `${currentPage}:${pageSize}`
+            setUrlPaginationRef.current(currentPage, pageSize, true)
+          }
+          break
         }
-        paginationRef.current = nextPagination
-        setPagination(nextPagination)
       } catch (error) {
         if (requestGenerationRef.current !== requestGeneration) return
+        setRequestFailed(true)
         if (!silent) message.error(t('list.message.fetchFailed'))
       } finally {
+        if (!silent && foregroundOwnerRef.current === requestGeneration)
+          foregroundOwnerRef.current = null
         if (loadingOwner !== null && loadingOwnerRef.current === loadingOwner) {
           setLoading(false)
         }
@@ -148,19 +186,28 @@ export default function GenerationList() {
   )
 
   useEffect(() => {
-    fetchTasks(1, DEFAULT_PAGE_SIZE)
-    // 定期刷新运行中的任务
-    const interval = setInterval(() => {
-      if (tasksRef.current.some((task) => ACTIVE_GENERATION_STATUSES.has(task.status))) {
-        fetchTasks(undefined, undefined, true)
-      }
-    }, 5000)
+    requestedPaginationRef.current = { current: workspace.page, pageSize: workspace.pageSize }
+    if (normalizedQueryRef.current === `${workspace.page}:${workspace.pageSize}`) {
+      normalizedQueryRef.current = null
+      return
+    }
+    normalizedQueryRef.current = null
+    fetchTasks(workspace.page, workspace.pageSize)
+  }, [fetchTasks, workspace.page, workspace.pageSize])
+
+  const hasActiveTasks = tasks.some((task) => ACTIVE_GENERATION_STATUSES.has(task.status))
+  usePolling(() => fetchTasks(undefined, undefined, true), {
+    interval: 5000,
+    enabled: hasActiveTasks,
+  })
+
+  useEffect(() => {
     return () => {
-      clearInterval(interval)
       requestGenerationRef.current += 1
       loadingOwnerRef.current += 1
+      foregroundOwnerRef.current = null
     }
-  }, [fetchTasks])
+  }, [])
 
   const handleStop = async (taskId: string) => {
     try {
@@ -178,7 +225,8 @@ export default function GenerationList() {
       message.success(t('list.message.deleteSuccess'))
       const { current, pageSize } = paginationRef.current
       const nextPage = tasksRef.current.length === 1 && current > 1 ? current - 1 : current
-      fetchTasks(nextPage, pageSize)
+      if (nextPage !== current) workspace.setPagination(nextPage, pageSize, true)
+      else fetchTasks(nextPage, pageSize)
     } catch (error) {
       message.error(t('list.message.deleteFailed'))
     }
@@ -263,7 +311,7 @@ export default function GenerationList() {
             size="small"
             status={record.status === 'failed' ? 'exception' : undefined}
           />
-          <span style={{ fontSize: 12, color: '#666' }}>
+          <span style={{ fontSize: 12, color: 'var(--tf-text-secondary)' }}>
             {record.processed_docs} / {record.total_docs}
           </span>
         </div>
@@ -381,7 +429,7 @@ export default function GenerationList() {
           <Card size="small">
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 24, fontWeight: 'bold' }}>{stats.total}</div>
-              <div style={{ color: '#666' }}>{t('list.stats.total')}</div>
+              <div style={{ color: 'var(--tf-text-secondary)' }}>{t('list.stats.total')}</div>
             </div>
           </Card>
         </Col>
@@ -395,7 +443,7 @@ export default function GenerationList() {
                   (stats.publishing ?? 0) +
                   (stats.restarting ?? 0)}
               </div>
-              <div style={{ color: '#666' }}>{t('list.stats.running')}</div>
+              <div style={{ color: 'var(--tf-text-secondary)' }}>{t('list.stats.running')}</div>
             </div>
           </Card>
         </Col>
@@ -405,7 +453,7 @@ export default function GenerationList() {
               <div style={{ fontSize: 24, fontWeight: 'bold', color: '#52c41a' }}>
                 {stats.completed}
               </div>
-              <div style={{ color: '#666' }}>{t('list.stats.completed')}</div>
+              <div style={{ color: 'var(--tf-text-secondary)' }}>{t('list.stats.completed')}</div>
             </div>
           </Card>
         </Col>
@@ -415,12 +463,29 @@ export default function GenerationList() {
               <div style={{ fontSize: 24, fontWeight: 'bold', color: '#ff4d4f' }}>
                 {stats.failed}
               </div>
-              <div style={{ color: '#666' }}>{t('list.stats.failed')}</div>
+              <div style={{ color: 'var(--tf-text-secondary)' }}>{t('list.stats.failed')}</div>
             </div>
           </Card>
         </Col>
       </Row>
 
+      {(requestFailed ||
+        (hasLoaded &&
+          (pagination.current !== workspace.page ||
+            pagination.pageSize !== workspace.pageSize))) && (
+        <Alert
+          showIcon
+          type={requestFailed ? 'warning' : 'info'}
+          style={{ marginBottom: 16 }}
+          message={t(
+            requestFailed
+              ? hasLoaded
+                ? 'common:listState.refreshFailed'
+                : 'common:listState.loadFailed'
+              : 'common:listState.showingPrevious'
+          )}
+        />
+      )}
       <Table
         columns={columns}
         dataSource={tasks}
@@ -433,14 +498,7 @@ export default function GenerationList() {
           showSizeChanger: true,
           pageSizeOptions: [10, 20, 50, 100],
           onChange: (page, pageSize) => {
-            const nextPagination = {
-              current: page,
-              pageSize,
-              total: paginationRef.current.total,
-            }
-            paginationRef.current = nextPagination
-            setPagination(nextPagination)
-            fetchTasks(page, pageSize)
+            workspace.setPagination(page, pageSize)
           },
         }}
       />

@@ -291,6 +291,324 @@ def _canonical_vllm_launch_config(**overrides):
     ).model_dump(mode="json")
 
 
+@pytest.mark.parametrize("initial_status", ["failed", "pending"])
+@pytest.mark.parametrize("deploy_mode", ["container", "shared"])
+@pytest.mark.parametrize("runtime_absent", [False, True])
+@pytest.mark.parametrize("operation", ["stop", "delete"])
+def test_legacy_failed_or_pending_stop_requires_verified_runtime_cleanup(
+    lifecycle_service, monkeypatch, initial_status, deploy_mode, runtime_absent, operation,
+):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, docker, engine = lifecycle_service
+    _make_legacy_deployment(engine, status=initial_status, framework="xinference")
+    with Session(engine) as session:
+        parent = session.exec(select(DeploymentDB)).one()
+        parent.deploy_mode = deploy_mode
+        session.add(parent)
+        session.commit()
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    runtime_calls = []
+
+    class Client:
+        def terminate_model(self, model_uid):
+            runtime_calls.append(("terminate", model_uid))
+            raise RuntimeError("termination uncertain")
+
+        def get_model(self, model_uid):
+            runtime_calls.append(("get", model_uid))
+            return None if runtime_absent else {"model_uid": model_uid}
+
+    monkeypatch.setattr(service, "_get_xinference_client", lambda *_args, **_kwargs: Client())
+    if not runtime_absent:
+        docker.existing.add("trainfactory-xf-model-deployme")
+        docker.fail_stop_ids.add("sha256:legacy")
+        docker.fail_remove_ids.add("sha256:legacy")
+
+    operate = service.stop_deployment if operation == "stop" else service.delete_deployment
+
+    if runtime_absent:
+        result = operate("deployment-1", user_id="user-1")
+        assert result["status"] == "stopped" if operation == "stop" else result is True
+        assert manager.allocate_gpus_for_task("after-stop", "cuda:0") == "cuda:0"
+    else:
+        with pytest.raises(RuntimeError):
+            operate("deployment-1", user_id="user-1")
+        with Session(engine) as session:
+            persisted = session.exec(select(DeploymentDB)).one()
+            assert persisted.status == ("stopping" if operation == "stop" else initial_status)
+        assert manager.allocate_gpus_for_task("after-uncertain-stop", "cuda:0") is None
+
+    if deploy_mode == "container":
+        assert ("exists-authoritative", "trainfactory-xf-model-deployme") in docker.calls
+    else:
+        assert runtime_calls == [("terminate", "served-model"), ("get", "served-model")]
+
+
+@pytest.mark.parametrize("operation", ["start", "restart"])
+def test_local_shared_restart_launches_on_its_reserved_gpu(lifecycle_service, monkeypatch, operation):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, _docker, engine = lifecycle_service
+    _make_legacy_deployment(engine, status="running" if operation == "restart" else "stopped", framework="xinference")
+    with Session(engine) as session:
+        parent = session.exec(select(DeploymentDB)).one()
+        parent.deploy_mode = "shared"
+        parent.gpu_id = 1
+        parent.config = {**parent.config, "gpu_idx": 0}
+        session.add(parent)
+        session.commit()
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") == "cuda:0"
+    launches = []
+    client = SimpleNamespace(
+        terminate_model=lambda _uid: None,
+        launch_model=lambda **kwargs: launches.append(kwargs),
+    )
+    monkeypatch.setattr(service, "_get_xinference_client", lambda *_args, **_kwargs: client)
+    monkeypatch.setattr(service, "_get_xinference_model_name", lambda _model: "model")
+    monkeypatch.setattr(service, "_create_config_for_deployment", lambda *_args: None)
+    monkeypatch.setattr(service, "_sync_configs_from_deployments", lambda *_args: None)
+    monkeypatch.setattr(service_module.docker_deployer, "wait_for_model", lambda *_args, **_kwargs: True, raising=False)
+
+    operate = service.restart_deployment if operation == "restart" else service.start_deployment
+    operate("deployment-1", user_id="user-1")
+
+    assert len(launches) == 1
+    assert launches[0]["gpu_idx"] == 1
+
+
+def test_shared_launch_persists_runtime_identity_before_external_io(lifecycle_service, monkeypatch):
+    service, _docker, engine = lifecycle_service
+    _make_legacy_deployment(engine, status="stopped", framework="xinference")
+    with Session(engine) as session:
+        parent = session.exec(select(DeploymentDB)).one()
+        parent.deploy_mode = "shared"
+        parent.model_uid = None
+        session.add(parent)
+        session.commit()
+
+    class SimulatedProcessExit(BaseException):
+        pass
+
+    def launch(_deployment, _model, model_uid):
+        with Session(engine) as session:
+            persisted = session.exec(select(DeploymentDB)).one()
+            assert persisted.model_uid == model_uid
+            assert persisted.status == "starting"
+        raise SimulatedProcessExit()
+
+    monkeypatch.setattr(service, "_start_external_deployment", launch)
+    with pytest.raises(SimulatedProcessExit):
+        service.start_deployment("deployment-1", user_id="user-1")
+
+
+@pytest.mark.parametrize("operation", ["stop", "delete"])
+def test_unresolved_shared_runtime_without_identity_cannot_release_gpu(lifecycle_service, monkeypatch, operation):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, _docker, engine = lifecycle_service
+    _make_legacy_deployment(engine, status="failed", framework="xinference")
+    with Session(engine) as session:
+        parent = session.exec(select(DeploymentDB)).one()
+        parent.deploy_mode = "shared"
+        parent.model_uid = None
+        session.add(parent)
+        session.commit()
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    operate = service.stop_deployment if operation == "stop" else service.delete_deployment
+    with pytest.raises(ValueError, match="runtime identity"):
+        operate("deployment-1", user_id="user-1")
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") is None
+
+
+def test_start_cannot_use_gpu_reserved_by_training(lifecycle_service, monkeypatch):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, docker, engine = lifecycle_service
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager, raising=False)
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") == "cuda:0"
+
+    with pytest.raises(service_module.ReplicaOperationBusyError):
+        service.start_replica("deployment-1", "replica-0", user_id="user-1")
+
+    assert not docker.calls
+    with Session(engine) as session:
+        assert session.exec(select(DeploymentDB)).one().replica_operation_token is None
+
+
+def test_start_claim_excludes_training_before_container_launch(lifecycle_service, monkeypatch):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, _docker, _engine = lifecycle_service
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager, raising=False)
+    claim = service._claim_replica_operation(
+        "deployment-1", operation="start", replica_id="replica-0", user_id="user-1",
+    )
+    try:
+        assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") is None
+        assert manager.allocate_gpus_for_task("other-attempt", "cuda:1") == "cuda:1"
+    finally:
+        service._release_replica_operation(claim)
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") == "cuda:0"
+
+
+@pytest.mark.parametrize("stop_succeeds", [True, False])
+def test_gpu_remains_reserved_until_container_stop_confirmed(lifecycle_service, monkeypatch, stop_succeeds):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, docker, _engine = lifecycle_service
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    service.start_replica("deployment-1", "replica-0", user_id="user-1")
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") is None
+    if not stop_succeeds:
+        docker.fail_stop_ids.add("sha256:replica-0")
+        with pytest.raises(RuntimeError):
+            service.stop_replica("deployment-1", "replica-0", user_id="user-1")
+        assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") is None
+    else:
+        service.stop_replica("deployment-1", "replica-0", user_id="user-1")
+        assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") == "cuda:0"
+
+
+def test_concurrent_training_and_deployment_have_only_one_gpu_winner(lifecycle_service, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, _docker, _engine = lifecycle_service
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    barrier = Barrier(2)
+
+    def train():
+        barrier.wait(timeout=5)
+        return manager.allocate_gpus_for_task("training-attempt", "cuda:0")
+
+    def deploy():
+        barrier.wait(timeout=5)
+        try:
+            return service._claim_replica_operation(
+                "deployment-1", operation="start", replica_id="replica-0", user_id="user-1",
+            )
+        except service_module.ReplicaOperationBusyError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        training, deployment = executor.submit(train), executor.submit(deploy)
+        training_result, claim = training.result(timeout=10), deployment.result(timeout=10)
+    try:
+        assert sum(result is not None for result in (training_result, claim)) == 1
+    finally:
+        if claim:
+            service._release_replica_operation(claim)
+
+
+def test_legacy_start_cannot_take_training_gpu(lifecycle_service, monkeypatch):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, docker, engine = lifecycle_service
+    _make_legacy_deployment(engine, status="stopped")
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") == "cuda:0"
+    with pytest.raises(service_module.ReplicaOperationBusyError):
+        service.start_deployment("deployment-1", user_id="user-1")
+    assert not docker.calls
+
+
+@pytest.mark.parametrize("auto", [True, False])
+def test_local_shared_start_uses_the_same_admission_as_training(lifecycle_service, monkeypatch, auto):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+
+    service, _docker, engine = lifecycle_service
+    _make_legacy_deployment(engine, status="stopped", framework="xinference")
+    with Session(engine) as session:
+        deployment = session.exec(select(DeploymentDB)).one()
+        deployment.deploy_mode = "shared"
+        deployment.xinference_endpoint = "http://xinference:9997"
+        deployment.gpu_id = None if auto else 0
+        session.add(deployment)
+        session.commit()
+    monkeypatch.setattr(database_module, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") == "cuda:0"
+    if not auto:
+        with pytest.raises(service_module.ReplicaOperationBusyError):
+            service._claim_replica_operation(
+                "deployment-1", operation="start", replica_id=None, user_id="user-1",
+            )
+        return
+    claim = service._claim_replica_operation(
+        "deployment-1", operation="start", replica_id=None, user_id="user-1",
+    )
+    try:
+        with Session(engine) as session:
+            assert session.exec(select(DeploymentDB)).one().gpu_id == 1
+        assert manager.allocate_gpus_for_task("other-training", "cuda:1") is None
+    finally:
+        service._release_replica_operation(claim)
+
+
+def test_two_deployments_cannot_claim_the_same_gpu(lifecycle_service):
+    service, _docker, engine = lifecycle_service
+    with Session(engine) as session:
+        session.add(DeploymentDB(
+            deployment_id="22222222-2222-4222-8222-222222222222", model_id="model-1",
+            deployment_name="second-group", deploy_mode="container", status="stopped",
+            user_id="user-1", gpu_id=0, inference_framework="vllm",
+            container_name="trainfactory-vllm-model-22222222",
+            xinference_endpoint="http://127.0.0.1:12000",
+            config={"replica_schema_version": 1, "launch_config": {"framework": "vllm"}},
+        ))
+        session.flush()
+        session.add(DeploymentReplicaDB(
+            deployment_id="22222222-2222-4222-8222-222222222222", replica_id="second-replica",
+            replica_index=0, container_name="trainfactory-vllm-model-22222222",
+            endpoint="http://127.0.0.1:12000", port=12000, gpu_ids=[0], status="stopped",
+        ))
+        session.commit()
+    first = service._claim_replica_operation(
+        "deployment-1", operation="start", replica_id="replica-0", user_id="user-1",
+    )
+    try:
+        with pytest.raises(service_module.ReplicaOperationBusyError):
+            service._claim_replica_operation(
+                "22222222-2222-4222-8222-222222222222", operation="start",
+                replica_id="second-replica", user_id="user-1",
+            )
+    finally:
+        service._release_replica_operation(first)
+    second = service._claim_replica_operation(
+        "22222222-2222-4222-8222-222222222222", operation="start",
+        replica_id="second-replica", user_id="user-1",
+    )
+    service._release_replica_operation(second)
+
+
 def test_helpers_bind_replica_to_parent_and_user_before_docker(
     lifecycle_service,
 ) -> None:

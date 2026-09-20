@@ -1,0 +1,68 @@
+.config-group-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-card-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+}
+
+.config-card-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.config-card-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.config-card-endpoint {
+  display: flex;
+  align-items: center;
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.config-card-endpoint > .ant-typography {
+  min-width: 0;
+}
+
+.config-card-endpoint > .ant-btn {
+  flex-shrink: 0;
+}
+
+.config-card-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+@media (max-width: 767px) {
+  .config-card-actions {
+    width: 100%;
+    justify-content: space-between;
+    border-top: 1px solid var(--tf-border-secondary);
+    padding-top: 8px;
+  }
+
+  .config-card-endpoint {
+    flex-basis: 100%;
+  }
+}

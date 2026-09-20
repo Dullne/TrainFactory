@@ -24,6 +24,7 @@ import { ArrowLeftOutlined, DatabaseOutlined, FolderOutlined } from '@ant-design
 import { generationApi, datasetApi, milvusApi } from '@/services/api'
 import ModelConfigSelector from '@/components/ModelConfigSelector'
 import type { ModelConfig, Dataset, MilvusCollectionSummary } from '@/types'
+import './GenerationCreate.css'
 
 const { Title, Text } = Typography
 const { Panel } = Collapse
@@ -101,12 +102,12 @@ function PosNegCard({ posNegMethod }: { posNegMethod: string }) {
         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
       </Form.Item>
       <Row gutter={12}>
-        <Col span={12}>
+        <Col xs={24} md={12}>
           <Form.Item name="pos_neg_positive_count" label={t('steps.posNeg.positiveCount')}>
             <InputNumber min={1} max={20} style={{ width: '100%' }} />
           </Form.Item>
         </Col>
-        <Col span={12}>
+        <Col xs={24} md={12}>
           <Form.Item name="pos_neg_negative_count" label={t('steps.posNeg.negativeCount')}>
             <InputNumber min={1} max={50} style={{ width: '100%' }} />
           </Form.Item>
@@ -538,16 +539,15 @@ export default function GenerationCreate() {
   }
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ marginBottom: 24 }}>
+    <div className="generation-create-page">
+      <div className="page-toolbar">
         <Button
           icon={<ArrowLeftOutlined />}
           onClick={() => navigate('/datasets?tab=generation')}
-          style={{ marginBottom: 16 }}
         >
           {t('common:action.back')}
         </Button>
-        <Title level={4}>{t('create.title')}</Title>
+        <Title level={4} style={{ margin: 0 }}>{t('create.title')}</Title>
       </div>
 
       <Form
@@ -602,9 +602,9 @@ export default function GenerationCreate() {
           rerank_threshold: 1,
         }}
       >
-        <Card title={t('create.basicConfig')} style={{ marginBottom: 24 }}>
-          <Row gutter={24}>
-            <Col span={12}>
+        <Card title={t('create.basicConfig')} size="small" style={{ marginBottom: 16 }}>
+          <Row gutter={16}>
+            <Col xs={24} md={12}>
               <Form.Item
                 name="task_name"
                 label={t('create.taskName.label')}
@@ -613,7 +613,7 @@ export default function GenerationCreate() {
                 <Input placeholder={t('create.taskName.placeholder')} />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} md={12}>
               <Form.Item
                 name="generation_mode"
                 label={t('create.generationMode.label')}
@@ -632,8 +632,8 @@ export default function GenerationCreate() {
 
           {/* qa_to_training / qa_to_eval 模式：选择 QA 数据集 */}
           {needsQaInput ? (
-            <Row gutter={24}>
-              <Col span={12}>
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
                 <Form.Item label={t('create.qaDataset.label')} required>
                   <Select
                     placeholder={t('create.qaDataset.placeholder')}
@@ -656,7 +656,7 @@ export default function GenerationCreate() {
                     ))}
                   </Select>
                   {selectedQaDataset && (
-                    <div style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 4, fontSize: 12 }}>
+                    <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--tf-bg-elevated)', borderRadius: 4, fontSize: 12 }}>
                       <div><Text type="secondary">{t('create.qaDataset.path', { path: selectedQaDataset.storage_path || selectedQaDataset.storage_uri || '' })}</Text></div>
                       {selectedQaDataset.num_rows != null && (
                         <div><Text type="secondary">{t('create.qaDataset.numRows', { count: selectedQaDataset.num_rows })}</Text></div>
@@ -666,7 +666,7 @@ export default function GenerationCreate() {
                 </Form.Item>
               </Col>
               {!isEvalMode && (
-                <Col span={12}>
+                <Col xs={24} md={12}>
                   <Form.Item name="output_format" label={t('create.outputFormat.label')}>
                     <Select>
                       {formats?.output_formats.map(f => (
@@ -699,8 +699,8 @@ export default function GenerationCreate() {
                 </Radio.Group>
               </Form.Item>
 
-              <Row gutter={24}>
-                <Col span={12}>
+              <Row gutter={16}>
+                <Col xs={24} md={12}>
                   {inputSource === 'dataset' ? (
                     <Form.Item label={t('create.docDataset.label')} required>
                       <Select
@@ -724,7 +724,7 @@ export default function GenerationCreate() {
                         ))}
                       </Select>
                       {selectedDataset && (
-                        <div style={{ marginTop: 8, padding: '8px 12px', background: '#f5f5f5', borderRadius: 4, fontSize: 12 }}>
+                        <div style={{ marginTop: 8, padding: '8px 12px', background: 'var(--tf-bg-elevated)', borderRadius: 4, fontSize: 12 }}>
                           <div><Text type="secondary">{t('create.docDataset.path', { path: selectedDataset.storage_path || selectedDataset.storage_uri || '' })}</Text></div>
                           {(selectedDataset.extra_metadata as Record<string, string> | undefined)?.content_field && (
                             <div><Text type="secondary">{t('create.docDataset.contentField', { field: (selectedDataset.extra_metadata as Record<string, string>).content_field })}</Text></div>
@@ -750,7 +750,7 @@ export default function GenerationCreate() {
                     </>
                   )}
                 </Col>
-                <Col span={6}>
+                <Col xs={24} sm={12} xl={6}>
                   <Form.Item name="input_format" label={t('create.inputFormat.label')}>
                     <Select>
                       <Select.Option value="auto">{t('create.inputFormat.auto')}</Select.Option>
@@ -761,7 +761,7 @@ export default function GenerationCreate() {
                   </Form.Item>
                 </Col>
                 {!isEvalMode && (
-                  <Col span={6}>
+                  <Col xs={24} sm={12} xl={6}>
                     <Form.Item name="output_format" label={t('create.outputFormat.label')}>
                       <Select>
                         {formats?.output_formats.map(f => (
@@ -826,7 +826,7 @@ export default function GenerationCreate() {
                     }))}
                   />
                   {selectedCollection && (
-                    <div style={{ marginTop: 4, padding: '6px 12px', background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 4 }}>
+                    <div style={{ marginTop: 4, padding: '6px 12px', background: 'rgba(63, 185, 80, 0.10)', border: '1px solid rgba(63, 185, 80, 0.3)', borderRadius: 4 }}>
                       <Text style={{ fontSize: 12 }}>
                         Embedding: <Tag color="purple">{selectedCollection.embedding_model}</Tag>
                         {t('create.vectorCollection.dimension', { dim: selectedCollection.dim })} · {t('create.vectorCollection.metric', { type: selectedCollection.metric_type })}
@@ -839,14 +839,14 @@ export default function GenerationCreate() {
                 </Form.Item>
               )}
               {posNegMethod === 'retrieval' && !useExistingCollection && !selectedEmbeddingConfig && (
-                <div style={{ padding: '8px 12px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: 4, marginBottom: 16 }}>
+                <div style={{ padding: '8px 12px', background: 'rgba(248, 81, 73, 0.10)', border: '1px solid rgba(248, 81, 73, 0.3)', borderRadius: 4, marginBottom: 16 }}>
                   <Text type="danger" style={{ fontSize: 12 }}>
                     {t('create.warning.embeddingRequired')}
                   </Text>
                 </div>
               )}
               {posNegMethod === 'llm' && !selectedEmbeddingConfig && (
-                <div style={{ padding: '8px 12px', background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 4, marginBottom: 16 }}>
+                <div style={{ padding: '8px 12px', background: 'rgba(210, 153, 34, 0.10)', border: '1px solid rgba(210, 153, 34, 0.3)', borderRadius: 4, marginBottom: 16 }}>
                   <Text type="warning" style={{ fontSize: 12 }}>
                     {t('create.warning.embeddingOptional')}
                   </Text>
@@ -857,7 +857,7 @@ export default function GenerationCreate() {
 
           {/* 评估模式 Embedding 必填提示 */}
           {isEvalMode && !selectedEmbeddingConfig && (
-            <div style={{ padding: '8px 12px', background: '#fff2f0', border: '1px solid #ffccc7', borderRadius: 4, marginBottom: 16 }}>
+            <div style={{ padding: '8px 12px', background: 'rgba(248, 81, 73, 0.10)', border: '1px solid rgba(248, 81, 73, 0.3)', borderRadius: 4, marginBottom: 16 }}>
               <Text type="danger" style={{ fontSize: 12 }}>
                 {t('create.warning.evalEmbeddingRequired')}
               </Text>
@@ -865,10 +865,10 @@ export default function GenerationCreate() {
           )}
         </Card>
 
-        <Card title={t('modelConfig.title')} style={{ marginBottom: 24 }}>
+        <Card title={t('modelConfig.title')} size="small" style={{ marginBottom: 16 }}>
           {/* LLM 模型 */}
-          <Row gutter={24}>
-            <Col span={12}>
+          <Row gutter={16}>
+            <Col xs={24} xl={12}>
               <Form.Item label={generationMode === 'qa_to_eval' ? t('modelConfig.llm.labelOptional') : t('modelConfig.llm.label')} required={generationMode !== 'qa_to_eval'}>
                 <ModelConfigSelector
                   mode="single"
@@ -877,19 +877,19 @@ export default function GenerationCreate() {
                 />
               </Form.Item>
               {selectedLLMConfig && (
-                <div style={{ marginBottom: 12, padding: '8px 12px', background: '#f5f5f5', borderRadius: 4 }}>
+                <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--tf-bg-elevated)', borderRadius: 4 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {t('modelConfig.llm.endpoint', { endpoint: selectedLLMConfig.api_endpoint })} | {t('modelConfig.llm.model', { model: selectedLLMConfig.model_name || '-' })}
                   </Text>
                 </div>
               )}
             </Col>
-            <Col span={4}>
+            <Col xs={24} sm={8} xl={4}>
               <Form.Item name="llm_temperature" label="Temperature">
                 <InputNumber min={0} max={2} step={0.1} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={4}>
+            <Col xs={24} sm={8} xl={4}>
               <Form.Item
                 name="llm_max_tokens"
                 label="Max Tokens"
@@ -901,7 +901,7 @@ export default function GenerationCreate() {
                 <InputNumber min={256} max={MAX_LLM_TOKENS} style={{ width: '100%' }} />
               </Form.Item>
             </Col>
-            <Col span={4}>
+            <Col xs={24} sm={8} xl={4}>
               <Form.Item name="llm_concurrency" label={t('modelConfig.concurrency.label')} tooltip={t('modelConfig.concurrency.llmTooltip')}>
                 <InputNumber min={1} max={50} style={{ width: '100%' }} />
               </Form.Item>
@@ -910,8 +910,8 @@ export default function GenerationCreate() {
 
           {/* 评估 LLM（可选，仅训练模式） */}
           {isTrainingMode && (
-            <Row gutter={24} style={{ marginTop: 12 }}>
-              <Col span={12}>
+            <Row gutter={16} style={{ marginTop: 12 }}>
+              <Col xs={24} md={12}>
                 <Form.Item label={t('modelConfig.evalLlm.label')} tooltip={t('modelConfig.evalLlm.tooltip')}>
                   <ModelConfigSelector
                     mode="single"
@@ -921,7 +921,7 @@ export default function GenerationCreate() {
                   />
                 </Form.Item>
                 {selectedEvalLLMConfig && (
-                  <div style={{ marginBottom: 12, padding: '8px 12px', background: '#f5f5f5', borderRadius: 4 }}>
+                  <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--tf-bg-elevated)', borderRadius: 4 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       {t('modelConfig.llm.endpoint', { endpoint: selectedEvalLLMConfig.api_endpoint })} | {t('modelConfig.llm.model', { model: selectedEvalLLMConfig.model_name || '-' })}
                     </Text>
@@ -934,8 +934,8 @@ export default function GenerationCreate() {
           <Divider style={{ margin: '12px 0' }} />
 
           {/* Embedding 模型 */}
-          <Row gutter={24}>
-            <Col span={12}>
+          <Row gutter={16}>
+            <Col span={24}>
               <Form.Item label={isEvalMode ? t('modelConfig.embedding.label') : t('modelConfig.embedding.labelOptional')} required={isEvalMode}>
                 <ModelConfigSelector
                   mode="single"
@@ -948,7 +948,7 @@ export default function GenerationCreate() {
                 />
               </Form.Item>
               {selectedEmbeddingConfig && (
-                <div style={{ marginBottom: 12, padding: '8px 12px', background: '#f5f5f5', borderRadius: 4 }}>
+                <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--tf-bg-elevated)', borderRadius: 4 }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {t('modelConfig.llm.endpoint', { endpoint: selectedEmbeddingConfig.api_endpoint })} | {t('modelConfig.llm.model', { model: selectedEmbeddingConfig.model_name || '-' })}
                   </Text>
@@ -957,23 +957,23 @@ export default function GenerationCreate() {
             </Col>
             {selectedEmbeddingConfig && (
               <>
-                <Col span={3}>
+                <Col xs={24} sm={12} xl={6}>
                   <Form.Item name="embedding_batch_size" label={t('modelConfig.batchSize.label')} tooltip={t('modelConfig.batchSize.embeddingTooltip')}>
                     <InputNumber min={1} max={256} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
-                <Col span={3}>
+                <Col xs={24} sm={12} xl={6}>
                   <Form.Item name="embedding_concurrency" label={t('modelConfig.concurrency.label')} tooltip={t('modelConfig.concurrency.embeddingTooltip')}>
                     <InputNumber min={1} max={100} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
-                <Col span={3}>
+                <Col xs={24} sm={12} xl={6}>
                   <Form.Item name="similarity_threshold" label={t('modelConfig.similarityThreshold.label')} tooltip={t('modelConfig.similarityThreshold.embeddingTooltip')}>
                     <InputNumber min={0.5} max={1} step={0.05} style={{ width: '100%' }} />
                   </Form.Item>
                 </Col>
                 {(isEvalMode || posNegMethod === 'retrieval') && (
-                  <Col span={3}>
+                  <Col xs={24} sm={12} xl={6}>
                     <Form.Item name="retrieval_top_k" label={t('modelConfig.retrievalTopK.label')} tooltip={t('modelConfig.retrievalTopK.tooltip')}>
                       <InputNumber min={1} max={100} step={1} style={{ width: '100%' }} />
                     </Form.Item>
@@ -987,8 +987,8 @@ export default function GenerationCreate() {
           {generationMode !== 'qa_extraction' && selectedEmbeddingConfig && (
             <>
               <Divider style={{ margin: '12px 0' }} />
-              <Row gutter={24}>
-                <Col span={12}>
+              <Row gutter={16}>
+                <Col span={24}>
                   <Form.Item label={t('modelConfig.rerank.label')}>
                     <ModelConfigSelector
                       mode="single"
@@ -998,7 +998,7 @@ export default function GenerationCreate() {
                     />
                   </Form.Item>
                   {selectedRerankConfig && (
-                    <div style={{ marginBottom: 12, padding: '8px 12px', background: '#f5f5f5', borderRadius: 4 }}>
+                    <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--tf-bg-elevated)', borderRadius: 4 }}>
                       <Text type="secondary" style={{ fontSize: 12 }}>
                         {t('modelConfig.llm.endpoint', { endpoint: selectedRerankConfig.api_endpoint })} | {t('modelConfig.llm.model', { model: selectedRerankConfig.model_name || '-' })}
                       </Text>
@@ -1007,22 +1007,22 @@ export default function GenerationCreate() {
                 </Col>
                 {selectedRerankConfig && (
                   <>
-                    <Col span={3}>
+                    <Col xs={24} sm={12} xl={6}>
                       <Form.Item name="rerank_top_k" label={t('modelConfig.rerankTopK.label')} tooltip={t('modelConfig.rerankTopK.tooltip')}>
                         <InputNumber min={1} max={100} style={{ width: '100%' }} />
                       </Form.Item>
                     </Col>
-                    <Col span={3}>
+                    <Col xs={24} sm={12} xl={6}>
                       <Form.Item name="rerank_batch_size" label={t('modelConfig.batchSize.label')} tooltip={t('modelConfig.batchSize.rerankTooltip')}>
                         <InputNumber min={1} max={256} style={{ width: '100%' }} />
                       </Form.Item>
                     </Col>
-                    <Col span={3}>
+                    <Col xs={24} sm={12} xl={6}>
                       <Form.Item name="rerank_concurrency" label={t('modelConfig.concurrency.label')} tooltip={t('modelConfig.concurrency.rerankTooltip')}>
                         <InputNumber min={1} max={50} style={{ width: '100%' }} />
                       </Form.Item>
                     </Col>
-                    <Col span={3}>
+                    <Col xs={24} sm={12} xl={6}>
                       <Form.Item name="rerank_threshold" label={t('modelConfig.similarityThreshold.label')} tooltip={t('modelConfig.similarityThreshold.rerankTooltip')}>
                         <InputNumber min={0} max={1} step={0.05} style={{ width: '100%' }} />
                       </Form.Item>
@@ -1034,8 +1034,8 @@ export default function GenerationCreate() {
           )}
 
           <Divider style={{ margin: '12px 0' }} />
-          <Row gutter={24}>
-            <Col span={8}>
+          <Row gutter={16}>
+            <Col xs={24} md={12} xl={8}>
               <Form.Item name="timeout_per_doc" label={t('modelConfig.timeout.label')} tooltip={t('modelConfig.timeout.tooltip')}>
                 <InputNumber min={60} max={600} style={{ width: '100%' }} />
               </Form.Item>
@@ -1043,15 +1043,15 @@ export default function GenerationCreate() {
           </Row>
         </Card>
 
-        <Collapse defaultActiveKey={['steps']} style={{ marginBottom: 24 }}>
+        <Collapse defaultActiveKey={['steps']} style={{ marginBottom: 16 }}>
           <Panel header={t('steps.title')} key="steps">
             {/* qa_to_training 模式：正负例+校验 */}
             {/* doc_to_training 模式：QA 提取步骤 + 正负例+校验 */}
             {/* qa_extraction 模式：文档质量 + 关键点 + 角色 + QA 生成 */}
             {generationMode === 'qa_to_training' ? (
               <>
-                <Row gutter={24}>
-                  <Col span={8}>
+                <Row gutter={16}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.qaDedup.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="dedup_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1059,10 +1059,10 @@ export default function GenerationCreate() {
                       <Text type="secondary">{t('steps.qaDedup.description')}</Text>
                     </Card>
                   </Col>
-                  <Col span={8}>
+                  <Col xs={24} md={12} xl={8}>
                     <PosNegCard posNegMethod={posNegMethod} />
                   </Col>
-                  <Col span={8}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.validation.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="validation_enabled" valuePropName="checked">
                         <Switch checkedChildren={t('steps.validation.enable')} unCheckedChildren={t('steps.validation.disable')} />
@@ -1074,8 +1074,8 @@ export default function GenerationCreate() {
               </>
             ) : generationMode === 'doc_to_training' ? (
               <>
-                <Row gutter={24}>
-                  <Col span={8}>
+                <Row gutter={16}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.docQuality.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="doc_quality_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1085,7 +1085,7 @@ export default function GenerationCreate() {
                       </Form.Item>
                     </Card>
                   </Col>
-                  <Col span={8}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.keypointGen.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="keypoint_gen_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1095,7 +1095,7 @@ export default function GenerationCreate() {
                       </Form.Item>
                     </Card>
                   </Col>
-                  <Col span={8}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.qaGen.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="qa_gen_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1118,8 +1118,8 @@ export default function GenerationCreate() {
                     </Card>
                   </Col>
                 </Row>
-                <Row gutter={24}>
-                  <Col span={8}>
+                <Row gutter={16}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.qaDedup.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="dedup_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1127,10 +1127,10 @@ export default function GenerationCreate() {
                       <Text type="secondary">{t('steps.qaDedup.description')}</Text>
                     </Card>
                   </Col>
-                  <Col span={8}>
+                  <Col xs={24} md={12} xl={8}>
                     <PosNegCard posNegMethod={posNegMethod} />
                   </Col>
-                  <Col span={8}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.validation.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="validation_enabled" valuePropName="checked">
                         <Switch checkedChildren={t('steps.validation.enable')} unCheckedChildren={t('steps.validation.disable')} />
@@ -1142,8 +1142,8 @@ export default function GenerationCreate() {
               </>
             ) : generationMode === 'qa_to_eval' ? (
               /* qa_to_eval 模式：仅去重 */
-              <Row gutter={24}>
-                <Col span={8}>
+              <Row gutter={16}>
+                <Col xs={24} md={12} xl={8}>
                   <Card size="small" title={t('steps.qaDedup.title')} style={{ marginBottom: 16 }}>
                     <Form.Item name="dedup_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                       <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1151,8 +1151,8 @@ export default function GenerationCreate() {
                     <Text type="secondary">{t('steps.qaDedup.description')}</Text>
                   </Card>
                 </Col>
-                <Col span={16}>
-                  <Card size="small" style={{ marginBottom: 16, background: '#f6ffed', border: '1px solid #b7eb8f' }}>
+                <Col xs={24} md={12} xl={16}>
+                  <Card size="small" style={{ marginBottom: 16, background: 'rgba(63, 185, 80, 0.10)', border: '1px solid rgba(63, 185, 80, 0.3)' }}>
                     <Text type="secondary">
                       {t('steps.qaToEvalDescription')}
                     </Text>
@@ -1162,8 +1162,8 @@ export default function GenerationCreate() {
             ) : generationMode === 'doc_to_eval' ? (
               /* doc_to_eval 模式：QA 提取步骤 + 去重 */
               <>
-                <Row gutter={24}>
-                  <Col span={8}>
+                <Row gutter={16}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.docQuality.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="doc_quality_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1173,7 +1173,7 @@ export default function GenerationCreate() {
                       </Form.Item>
                     </Card>
                   </Col>
-                  <Col span={8}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.keypointGen.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="keypoint_gen_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1183,7 +1183,7 @@ export default function GenerationCreate() {
                       </Form.Item>
                     </Card>
                   </Col>
-                  <Col span={8}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.qaGen.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="qa_gen_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1206,8 +1206,8 @@ export default function GenerationCreate() {
                     </Card>
                   </Col>
                 </Row>
-                <Row gutter={24}>
-                  <Col span={8}>
+                <Row gutter={16}>
+                  <Col xs={24} md={12} xl={8}>
                     <Card size="small" title={t('steps.qaDedup.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="dedup_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1215,8 +1215,8 @@ export default function GenerationCreate() {
                       <Text type="secondary">{t('steps.qaDedup.description')}</Text>
                     </Card>
                   </Col>
-                  <Col span={16}>
-                    <Card size="small" style={{ marginBottom: 16, background: '#f6ffed', border: '1px solid #b7eb8f' }}>
+                  <Col xs={24} md={12} xl={16}>
+                    <Card size="small" style={{ marginBottom: 16, background: 'rgba(63, 185, 80, 0.10)', border: '1px solid rgba(63, 185, 80, 0.3)' }}>
                       <Text type="secondary">
                         {t('steps.docToEvalDescription')}
                       </Text>
@@ -1227,8 +1227,8 @@ export default function GenerationCreate() {
             ) : (
               /* qa_extraction 模式：文档质量 + 关键点 + 角色 + QA 生成 */
               <>
-                <Row gutter={24}>
-                  <Col span={12}>
+                <Row gutter={16}>
+                  <Col xs={24} md={12}>
                     <Card size="small" title={t('steps.docQuality.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="doc_quality_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1238,7 +1238,7 @@ export default function GenerationCreate() {
                       </Form.Item>
                     </Card>
                   </Col>
-                  <Col span={12}>
+                  <Col xs={24} md={12}>
                     <Card size="small" title={t('steps.keypointGen.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="keypoint_gen_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1250,8 +1250,8 @@ export default function GenerationCreate() {
                   </Col>
                 </Row>
 
-                <Row gutter={24}>
-                  <Col span={12}>
+                <Row gutter={16}>
+                  <Col xs={24} md={12}>
                     <Card size="small" title={t('steps.qaGen.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="qa_gen_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1273,7 +1273,7 @@ export default function GenerationCreate() {
                       </Form.Item>
                     </Card>
                   </Col>
-                  <Col span={12}>
+                  <Col xs={24} md={12}>
                     <Card size="small" title={t('steps.qaDedup.title')} style={{ marginBottom: 16 }}>
                       <Form.Item name="dedup_enabled" valuePropName="checked" style={{ marginBottom: 8 }}>
                         <Switch checkedChildren={t('switch.enable')} unCheckedChildren={t('switch.disable')} />
@@ -1296,14 +1296,12 @@ export default function GenerationCreate() {
           </Panel>
         </Collapse>
 
-        <Form.Item>
-          <Space>
-            <Button type="primary" htmlType="submit" loading={loading} disabled={loading}>
-              {t('create.submitButton')}
-            </Button>
-            <Button onClick={() => navigate('/datasets?tab=generation')}>{t('common:action.cancel')}</Button>
-          </Space>
-        </Form.Item>
+        <div className="page-form-actions">
+          <Button onClick={() => navigate('/datasets?tab=generation')}>{t('common:action.cancel')}</Button>
+          <Button type="primary" htmlType="submit" loading={loading} disabled={loading}>
+            {t('create.submitButton')}
+          </Button>
+        </div>
       </Form>
     </div>
   )

@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
@@ -145,6 +146,8 @@ def cleanup_orphan_tasks():
                         TrainingStatus.FAILED.value,
                         error_message="Task interrupted by server restart",
                         run_token=task.get("run_token"),
+                        expected_process_pid=pid,
+                        expected_process_create_time=process_create_time,
                     )
                     if not updated:
                         logger.warning(
@@ -637,6 +640,15 @@ def cleanup_orphan_sync_trainings():
                     continue
 
                 status = training_task.get("status")
+                if any(
+                    training_task.get(field) is not None
+                    for field in ("process_pid", "process_status", "process_create_time")
+                ):
+                    logger.warning(
+                        "Preserving sync training claim %s until process exit is confirmed",
+                        training_task_id,
+                    )
+                    continue
                 if status == TrainingStatus.SUCCEEDED.value:
                     final_model_path = training_task.get("final_model_path")
                     if not final_model_path:
@@ -848,6 +860,11 @@ async def lifespan(app: FastAPI):
         settings.log_level,
     )
 
+    from ..storage.services.background_task_admission_service import (
+        background_task_admission_service,
+    )
+
+    background_task_admission_service.start_async_workers()
     audit_cleanup_task = asyncio.create_task(_audit_log_cleanup_loop())
     sync_manager = None
     try:
@@ -900,6 +917,7 @@ async def lifespan(app: FastAPI):
                 await sync_manager.stop()
             except Exception as exc:
                 logger.error("Failed to stop sync manager cleanly: %s", exc)
+        await run_in_threadpool(background_task_admission_service.shutdown_async_workers)
         logger.info("Shutting down TrainFactory API server...")
 
 
@@ -1096,9 +1114,10 @@ def create_app() -> FastAPI:
         ip_address = get_rate_limit_key(request)
         user_agent = request.headers.get("user-agent", "")[:500]
 
-        # Log the request (async in background to not block response)
+        # Complete the audit before returning, without blocking the API loop.
         try:
-            audit_log_service.log(
+            await run_in_threadpool(
+                audit_log_service.log,
                 user_id=identity["user_id"],
                 username=identity["username"],
                 action=action,

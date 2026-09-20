@@ -80,6 +80,53 @@ test('background polling keeps the current page without loading or error toasts'
   await expect(page.locator('.ant-message-notice')).toHaveCount(0)
 })
 
+test('slow background polling does not supersede an in-flight response', async ({ page }) => {
+  test.setTimeout(45_000)
+  let slowPolling = false
+  let slowRequests = 0
+  let releasePolling!: () => void
+  const pollingGate = new Promise<void>((resolve) => {
+    releasePolling = resolve
+  })
+
+  await page.route('**/api/generation/tasks*', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+
+    if (slowPolling) {
+      slowRequests += 1
+      await pollingGate
+    }
+
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        tasks: [
+          {
+            ...buildTask(1, 'running'),
+            task_name: slowPolling ? 'Updated slow generation task' : 'Initial generation task',
+          },
+        ],
+        total: 1,
+        stats: { total: 1, pending: 0, running: 1, completed: 0, failed: 0, stopped: 0 },
+        limit: 10,
+        offset: 0,
+      }),
+    })
+  })
+
+  await page.goto('/datasets/generation')
+  await expect(page.getByText('Initial generation task')).toBeVisible({ timeout: 15_000 })
+  slowPolling = true
+  await expect.poll(() => slowRequests, { timeout: 8_000 }).toBe(1)
+  await page.waitForTimeout(5200)
+  const requestsWhileHeld = slowRequests
+  releasePolling()
+
+  expect(requestsWhileHeld).toBe(1)
+  await expect(page.getByText('Updated slow generation task')).toBeVisible({ timeout: 10_000 })
+})
+
 test('uses server pagination, global stats, and polls the current page', async ({ page }) => {
   const requests: Array<{ limit: number; offset: number }> = []
 

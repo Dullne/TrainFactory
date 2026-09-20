@@ -3,6 +3,7 @@ Training task service for database operations.
 """
 
 import logging
+import math
 from typing import Optional, List, Dict, Any, Tuple
 from train_factory.core.time_utils import now_naive
 from train_factory.utils.strict_json import sanitize_json_value
@@ -11,7 +12,7 @@ from train_factory.utils.path_utils import (
     canonicalize_artifact_path,
 )
 
-from sqlalchemy import case, or_, update
+from sqlalchemy import and_, case, or_, update
 from sqlmodel import select, func
 
 from ..database import get_session
@@ -419,6 +420,8 @@ class TrainingTaskService:
         error_message: Optional[str] = None,
         *,
         run_token: Optional[str] = None,
+        expected_process_pid: Any = _UNSET,
+        expected_process_create_time: Any = _UNSET,
     ) -> bool:
         """Atomically update task status without overwriting a concurrent transition."""
         with get_session() as session:
@@ -451,6 +454,16 @@ class TrainingTaskService:
             )
             if run_token is not None:
                 statement = statement.where(TrainingTaskDB.run_token == run_token)
+            identity_conditions = []
+            for column, expected in (
+                (TrainingTaskDB.process_pid, expected_process_pid),
+                (TrainingTaskDB.process_create_time, expected_process_create_time),
+            ):
+                if expected is not _UNSET:
+                    identity_conditions.append(
+                        column.is_(None) if expected is None else column == expected
+                    )
+            statement = statement.where(*identity_conditions)
             task = session.exec(statement).first()
             if not task:
                 return False
@@ -493,6 +506,7 @@ class TrainingTaskService:
             conditions = [
                 TrainingTaskDB.task_id == task_id,
                 TrainingTaskDB.status == old_status,
+                *identity_conditions,
             ]
             if run_token is not None:
                 conditions.append(TrainingTaskDB.run_token == run_token)
@@ -744,6 +758,80 @@ class TrainingTaskService:
                 except Exception as e:
                     logger.warning(f"Failed to log task_completed event for task {task_id}: {e}")
             return True
+
+    def register_training_process(
+        self,
+        task_id: str,
+        process_pid: int,
+        process_create_time: float,
+        *,
+        run_token: str,
+    ) -> bool:
+        """Persist a child's identity before it may perform any training work.
+
+        Registration and startup orphan recovery race on the same task row.
+        A stopped/replaced attempt cannot register; a registered child cannot
+        be finalized using recovery's earlier snapshot with no process.
+        """
+        if (
+            not run_token
+            or type(process_pid) is not int
+            or process_pid <= 0
+            or not isinstance(process_create_time, (int, float))
+            or not math.isfinite(process_create_time)
+            or process_create_time <= 0
+        ):
+            return False
+        with get_session() as session:
+            conditions = (
+                TrainingTaskDB.task_id == task_id,
+                TrainingTaskDB.run_token == run_token,
+                or_(
+                    and_(
+                        TrainingTaskDB.process_pid.is_(None),
+                        TrainingTaskDB.process_create_time.is_(None),
+                        TrainingTaskDB.process_status.is_(None),
+                    ),
+                    and_(
+                        TrainingTaskDB.process_pid == process_pid,
+                        TrainingTaskDB.process_create_time == process_create_time,
+                        TrainingTaskDB.process_status == "running",
+                    ),
+                ),
+            )
+            # Only the PREPARING winner emits the start event. The parent and
+            # child can both register, but repeat registration is idempotent.
+            for previous_status in ("preparing", "running"):
+                result = session.exec(
+                    update(TrainingTaskDB)
+                    .where(*conditions, TrainingTaskDB.status == previous_status)
+                    .values(
+                        process_pid=process_pid,
+                        process_create_time=process_create_time,
+                        process_status="running",
+                        status="running",
+                        started_at=func.coalesce(TrainingTaskDB.started_at, now_naive()),
+                        updated_at=now_naive(),
+                    )
+                )
+                if result.rowcount != 1:
+                    continue
+                if previous_status == "preparing":
+                    from ..entities.training_task_event_entity import TrainingTaskEventDB
+
+                    owner = session.exec(select(TrainingTaskDB.user_id).where(
+                        TrainingTaskDB.task_id == task_id,
+                    )).one()
+                    # Use the registration transaction rather than opening a
+                    # second SQLite writer while the task row is still locked.
+                    session.add(TrainingTaskEventDB(
+                        task_id=task_id, user_id=owner, event_type="status_changed",
+                        payload={"from": "preparing", "to": "running", "error_message": None},
+                    ))
+                session.commit()
+                return True
+            session.rollback()
+            return False
 
     def update_process_info(
         self,

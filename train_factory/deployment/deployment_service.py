@@ -25,6 +25,7 @@ from sqlalchemy import delete, update
 from sqlmodel import select, func
 
 from ..storage.database import get_session
+from ..core.gpu_resource_manager import GPUReservationConflict, gpu_resource_manager
 from ..storage.entities.deployment_entity import DeploymentDB
 from ..storage.entities.deployment_replica_entity import DeploymentReplicaDB
 from ..storage.entities.loaded_adapter_entity import LoadedAdapterDB
@@ -883,6 +884,28 @@ class DeploymentService:
 
             return self._deployment_to_dict(deployment)
 
+    @staticmethod
+    def _available_local_gpu_pool(deployment_id: str, gpu_ids) -> List[int]:
+        with gpu_resource_manager.admission_lock(), get_session() as session:
+            try:
+                return gpu_resource_manager.available_deployment_gpus(
+                    session, deployment_id, gpu_ids,
+                )
+            except GPUReservationConflict as exc:
+                raise ReplicaOperationBusyError(str(exc)) from exc
+
+    def _select_available_local_gpu(self) -> int:
+        # Hardware I/O precedes the short admission critical section.
+        inventory = docker_deployer.get_gpu_memory_usage()
+        candidates = sorted(
+            (gpu_id for gpu_id, info in inventory.items() if info["free_mb"] >= 4000),
+            key=lambda gpu_id: inventory[gpu_id]["free_mb"], reverse=True,
+        )
+        available = self._available_local_gpu_pool(str(uuid4()), candidates)
+        if not available:
+            raise ReplicaOperationBusyError("No unreserved GPU has sufficient free memory")
+        return available[0]
+
     def _create_single_container_deployment(
         self,
         model_id: str,
@@ -926,7 +949,10 @@ class DeploymentService:
 
         # Auto-select GPU if not specified
         if gpu_id is None:
-            gpu_id = docker_deployer.select_gpu(min_free_mb=4000)
+            gpu_id = (
+                self._select_available_local_gpu() if auto_start
+                else docker_deployer.select_gpu(min_free_mb=4000)
+            )
             logger.info(f"Auto-selected GPU {gpu_id}")
 
         # Check deployment feasibility based on model size and GPU memory
@@ -1166,7 +1192,15 @@ class DeploymentService:
             replica_id=None,
         )
         claimed_at = now_naive()
-        with get_session() as session:
+        with gpu_resource_manager.admission_lock(), get_session() as session:
+            if auto_start:
+                try:
+                    gpu_resource_manager.assert_deployment_gpus_available(
+                        session, deployment_id,
+                        {gpu_id for item in plan.replicas for gpu_id in item.gpu_ids},
+                    )
+                except GPUReservationConflict as exc:
+                    raise ReplicaOperationBusyError(str(exc)) from exc
             normalized_external_api_config_id = (
                 self._normalize_external_api_config_id(
                     config,
@@ -1388,7 +1422,10 @@ class DeploymentService:
                 raise ValueError("multi-replica container deployment requires launch_config")
             selected_gpu = gpu_id
             if selected_gpu is None:
-                selected_gpu = docker_deployer.select_gpu(min_free_mb=4000)
+                selected_gpu = (
+                    self._select_available_local_gpu() if auto_start
+                    else docker_deployer.select_gpu(min_free_mb=4000)
+                )
             launch_payload = {
                 "framework": inference_framework,
                 "gpu_pool": [selected_gpu],
@@ -1409,6 +1446,29 @@ class DeploymentService:
         if not gpu_inventory:
             raise ValueError("trusted GPU inventory is unavailable")
         deployment_id = str(uuid4())
+        placement_config = launch_config
+        if auto_start:
+            # First validate against physical inventory so invalid IDs/topology
+            # remain configuration errors, not misleading capacity failures.
+            _plan_gpu_assignments(
+                launch_config=launch_config, replica_count=replica,
+                gpu_inventory=gpu_inventory,
+            )
+            pool = list(launch_config.gpu_pool) or gpu_inventory
+            available_pool = self._available_local_gpu_pool(deployment_id, pool)
+            overrides = {
+                gpu for item in launch_config.replica_gpu_overrides for gpu in item.gpu_ids
+            }
+            if not available_pool or not overrides.issubset(available_pool):
+                raise ReplicaOperationBusyError("Deployment GPU is reserved by another workload")
+            placement_config = launch_config.model_copy(update={"gpu_pool": available_pool})
+            try:
+                _plan_gpu_assignments(
+                    launch_config=placement_config, replica_count=replica,
+                    gpu_inventory=gpu_inventory,
+                )
+            except ValueError as exc:
+                raise ReplicaOperationBusyError("Insufficient unreserved GPUs for deployment") from exc
         base_container_name = self._build_managed_container_name(
             deployment_id,
             model["model_name"],
@@ -1418,7 +1478,7 @@ class DeploymentService:
         plan = plan_deployment_replicas(
             base_container_name=base_container_name,
             replica_count=replica,
-            launch_config=launch_config,
+            launch_config=placement_config,
             gpu_inventory=gpu_inventory,
             port_allocator=docker_deployer,
             owner_token=reservation_owner,
@@ -2086,7 +2146,7 @@ class DeploymentService:
         token = str(uuid4())
 
         def try_claim() -> int | None:
-            with get_session() as session:
+            with gpu_resource_manager.admission_lock(), get_session() as session:
                 fence_model_runtime = operation in {
                     "start",
                     "restart",
@@ -2104,7 +2164,7 @@ class DeploymentService:
                         raise DeploymentReplicaNotFoundError(
                             "deployment not found"
                         )
-                    model_registry_service.lock_model_reference(
+                    locked_model = model_registry_service.lock_model_reference(
                         session,
                         candidate.model_id,
                         membership_gate_locked=True,
@@ -2135,6 +2195,44 @@ class DeploymentService:
                             "deployment replica not found"
                         )
                     self._expected_replica_container_name(deployment, replica)
+
+                if (
+                    gpu_resource_manager.deployment_uses_local_gpus(deployment)
+                    and operation in {"start", "restart", "recreate"}
+                    and not self._has_unmanaged_binding_marker(deployment)
+                ):
+                    if not uses_replica_lifecycle and deployment.deploy_mode == "container":
+                        self._require_managed_container(deployment, locked_model.to_dict())
+                    if uses_replica_lifecycle:
+                        query = select(DeploymentReplicaDB).where(
+                            DeploymentReplicaDB.deployment_id == deployment_id,
+                        )
+                        if replica_id is not None:
+                            query = query.where(DeploymentReplicaDB.replica_id == replica_id)
+                        gpu_ids = {
+                            gpu_id for item in session.exec(query).all()
+                            for gpu_id in item.gpu_ids
+                        }
+                    else:
+                        if deployment.gpu_id is None and deployment.deploy_mode != "container":
+                            if deployment.status not in {"stopped", "pending"}:
+                                raise ReplicaOperationBusyError(
+                                    "Stop the unresolved local shared runtime before assigning its GPU"
+                                )
+                            try:
+                                deployment.gpu_id = gpu_resource_manager.select_deployment_gpu(
+                                    session, deployment_id,
+                                )
+                            except GPUReservationConflict as exc:
+                                raise ReplicaOperationBusyError(str(exc)) from exc
+                            session.add(deployment)
+                        gpu_ids = [deployment.gpu_id]
+                    try:
+                        gpu_resource_manager.assert_deployment_gpus_available(
+                            session, deployment_id, gpu_ids,
+                        )
+                    except GPUReservationConflict as exc:
+                        raise ReplicaOperationBusyError(str(exc)) from exc
 
                 statement = update(DeploymentDB).where(
                     DeploymentDB.deployment_id == deployment_id,
@@ -3618,6 +3716,9 @@ class DeploymentService:
             model_uid = deployment.model_uid or (
                 f"{model['model_name']}-{deployment.deployment_id[:8]}"
             )
+            # Recovery must know exactly which shared runtime to inspect even
+            # if the API exits after launch and before its completion commit.
+            deployment.model_uid = model_uid
             runtime_deployment = deployment.model_copy(deep=True)
             session.add(deployment)
             session.commit()
@@ -4058,14 +4159,14 @@ class DeploymentService:
                 self._require_managed_container(deployment)
             if deployment.status == "stopped":
                 return self._deployment_to_dict(deployment)
-            if deployment.status in ("pending", "failed"):
-                if deployment.status == "failed":
-                    deployment.update_status("pending")
-                deployment.update_status("stopped")
-                session.add(deployment)
-                result = self._deployment_to_dict(deployment)
-                session.commit()
-                return result
+            if (
+                self._normalize_deploy_mode(deployment.deploy_mode) != "container"
+                and deployment.status != "pending"
+                and not deployment.model_uid
+            ):
+                raise ValueError("Shared runtime identity is missing; cleanup cannot be verified")
+            # Failed/pending describe control-plane state, not runtime exit.
+            # Preserve the reservation until authoritative cleanup below.
             deployment.update_status("stopping")
             runtime_deployment = deployment.model_copy(deep=True)
             session.add(deployment)
@@ -4323,6 +4424,8 @@ class DeploymentService:
                         model_family=model_name,
                     )
                 )
+                if runtime_deployment.gpu_id is not None:
+                    extra_kwargs["gpu_idx"] = runtime_deployment.gpu_id
                 client.launch_model(
                     model_uid=runtime_deployment.model_uid,
                     model_name=model_name,
@@ -4908,6 +5011,13 @@ class DeploymentService:
             unmanaged_binding = self._is_unmanaged_binding(deployment)
             if (
                 not unmanaged_binding
+                and self._normalize_deploy_mode(deployment.deploy_mode) != "container"
+                and deployment.status not in {"pending", "stopped"}
+                and not deployment.model_uid
+            ):
+                raise ValueError("Shared runtime identity is missing; cleanup cannot be verified")
+            if (
+                not unmanaged_binding
                 and self._normalize_deploy_mode(deployment.deploy_mode)
                 == "container"
             ):
@@ -4944,8 +5054,7 @@ class DeploymentService:
                     )
         elif (
             not unmanaged_binding
-            and runtime_deployment.status
-            in {"running", "starting", "restarting", "stopping"}
+            and runtime_deployment.status != "stopped"
             and runtime_deployment.model_uid
         ):
             progress.runtime_cleanup_started = True
@@ -5257,13 +5366,33 @@ class DeploymentService:
         offset: int = 0,
         sync: bool = False,
     ) -> Tuple[List[Dict[str, Any]], int]:
-        """List deployments with optional filters.
+        """List deployments, preserving the original two-value return contract."""
+        deployments, total, _stats = self.list_deployments_with_stats(
+            model_id=model_id,
+            status=status,
+            user_id=user_id,
+            limit=limit,
+            offset=offset,
+            sync=sync,
+        )
+        return deployments, total
+
+    def list_deployments_with_stats(
+        self,
+        model_id: Optional[str] = None,
+        status: Optional[str] = None,
+        user_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+        sync: bool = False,
+    ) -> Tuple[List[Dict[str, Any]], int, Dict[str, Any]]:
+        """List and aggregate the same authorized query in one session.
 
         Args:
             sync: If True, sync status with Xinference before returning.
 
         Returns:
-            Tuple of (deployments, total_count)
+            Tuple of (deployments, total_count, stats). Stats ignore pagination.
         """
         # Sync running deployments with Xinference if requested
         if sync:
@@ -5279,11 +5408,12 @@ class DeploymentService:
             if user_id:
                 conditions.append(DeploymentDB.user_id == user_id)
 
-            # Get total count
-            count_stmt = select(func.count()).select_from(DeploymentDB)
-            for cond in conditions:
-                count_stmt = count_stmt.where(cond)
-            total = session.exec(count_stmt).one()
+            # Aggregate in SQL; never load/sync every deployment for the cards.
+            stats_stmt = select(DeploymentDB.status, func.count()).where(*conditions)
+            stats_stmt = stats_stmt.group_by(DeploymentDB.status)
+            by_status = dict(session.exec(stats_stmt).all())
+            total = sum(by_status.values())
+            stats = {"total": total, "by_status": by_status}
 
             # Get paginated data
             statement = select(DeploymentDB)
@@ -5295,7 +5425,7 @@ class DeploymentService:
             return [
                 self._deployment_to_dict_with_replicas(session, deployment)
                 for deployment in deployments
-            ], total
+            ], total, stats
 
     # ==================== Status Sync ====================
 
@@ -6000,7 +6130,7 @@ class DeploymentService:
         logger.warning("Could not detect host IP, using 172.17.0.1")
         return "172.17.0.1"
 
-    def _to_external_endpoint(self, endpoint: str) -> str:
+    def _to_external_endpoint(self, endpoint: str, *, host_ip: Optional[str] = None) -> str:
         """
         Convert internal Docker endpoint to external accessible address.
 
@@ -6010,7 +6140,7 @@ class DeploymentService:
         if not endpoint:
             return endpoint
 
-        host_ip = self._get_host_ip()
+        host_ip = host_ip or self._get_host_ip()
 
         # Replace common internal addresses with host IP
         # Order matters: check more specific patterns first

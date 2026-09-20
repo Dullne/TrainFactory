@@ -239,7 +239,13 @@
       "taskCreateFailed": "创建下载任务失败",
       "backgroundContinue": "下载将在后台继续进行"
     },
-    "downloadFailedAlert": "下载失败"
+    "downloadFailedAlert": "下载失败",
+    "history": {
+      "title": "最近下载任务",
+      "empty": "暂无下载任务",
+      "error": "无法加载下载任务",
+      "retry": "重试"
+    }
   },
   "register": {
     "title": "注册本地数据集",

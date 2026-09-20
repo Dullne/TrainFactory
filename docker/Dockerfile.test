@@ -40,6 +40,7 @@ COPY docker/inference-contracts/ docker/inference-contracts/
 COPY docker/sglang-templates/ docker/sglang-templates/
 COPY docker/xinference-patches/ docker/xinference-patches/
 COPY web/nginx.conf web/vite.config.ts web/Dockerfile web/
+COPY web/docker-entrypoint.d/19-upload-limit.envsh web/docker-entrypoint.d/
 COPY secrets/README.md secrets/README.md
 COPY --chmod=0555 docker/entrypoint.sh /app/docker/entrypoint.sh
 RUN --mount=type=cache,target=/root/.cache/pip \

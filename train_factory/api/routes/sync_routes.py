@@ -25,6 +25,7 @@ from ...enums.sync_status import (
     TrainingTargetStatus,
 )
 from ...storage.services.outbound_endpoint_policy import validate_user_outbound_url
+from ...storage.services.inference_authorization_service import authorize_inference_config
 from ...storage.services.background_task_admission_service import (
     BackgroundTaskAlreadyExecuting,
     BackgroundTaskCapacityExceeded,
@@ -352,6 +353,7 @@ def _validate_generation_config(
             persisted_endpoint = model_config.get("api_endpoint")
             if persisted_endpoint:
                 validate_user_outbound_url(persisted_endpoint, user_id)
+                authorize_inference_config(model_config, user_id, current_user=current_user)
 
         direct_endpoint = sub_config.get("endpoint")
         if direct_endpoint:
@@ -359,6 +361,7 @@ def _validate_generation_config(
                 direct_endpoint,
                 user_id,
             )
+        authorize_inference_config(sub_config, user_id, current_user=current_user)
         validated[config_key] = sub_config
 
     return validated
@@ -668,7 +671,8 @@ async def create_sync_task(
         )
 
     _validate_external_api_config_reference(request.external_api_config_id, current_user)
-    generation_config = _validate_generation_config(
+    generation_config = await asyncio.to_thread(
+        _validate_generation_config,
         request.generation_config,
         current_user,
     )
@@ -786,7 +790,8 @@ async def update_sync_task(
             _resolve_sync_user_id(current_user),
         )
     if "generation_config" in update_fields:
-        update_fields["generation_config"] = _validate_generation_config(
+        update_fields["generation_config"] = await asyncio.to_thread(
+            _validate_generation_config,
             update_fields["generation_config"],
             current_user,
         )

@@ -46,6 +46,32 @@
     }
   },
   "create": {
+    "description": "Configure your model and datasets, then training parameters and resources.",
+    "modelParams": "Model-specific parameters",
+    "sections": {
+      "expand": "Expand",
+      "collapse": "Collapse",
+      "expandAll": "Expand all",
+      "collapseAll": "Collapse all",
+      "datasetSummary": "{{count}} datasets selected",
+      "trainingSummary": "{{epochs}} epochs · Batch {{batch}} · LR {{rate}}",
+      "eval_no": "None",
+      "eval_epoch": "Per epoch",
+      "eval_steps": "Per steps",
+      "save_no": "None",
+      "save_epoch": "Per epoch",
+      "save_steps": "Per steps"
+    },
+    "draft": {
+      "empty": "Edits are saved in this tab for your account.",
+      "saved": "Draft saved",
+      "restored": "Draft restored",
+      "unavailable": "Keep this tab open. Draft is in memory only; refreshing or closing will lose it.",
+      "discard": "Discard draft",
+      "discardConfirm": "Discard this draft and reset all training settings?",
+      "discardConfirmAction": "Discard",
+      "clearFailed": "Browser storage could not be cleared. The saved draft may reappear after reloading."
+    },
     "title": "Create Training Task",
     "basicConfig": "Basic Configuration",
     "trainingParams": "Training Parameters",
@@ -68,6 +94,10 @@
       "extra": "Select a registered model or manually enter a HuggingFace model name / local path"
     },
     "dataset": {
+      "pathLabel": "Dataset path",
+      "splitLabel": "Dataset split",
+      "samplesLabel": "Sample count",
+      "remove": "Remove dataset",
       "title": "Dataset Configuration",
       "add": "Add Dataset",
       "train": "Train",
@@ -191,6 +221,7 @@
     "lossAuto": "Auto",
     "message": {
       "createSuccess": "Training task created successfully",
+      "createdDraftKept": "Task {{taskId}} created. Your newer edits are kept in the draft.",
       "createFailed": "Creation failed"
     },
     "submitButton": "Create Task"

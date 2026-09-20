@@ -20,6 +20,14 @@ CURRENT_USER = {"user_id": "user-1", "username": "alice"}
 
 @pytest.fixture(autouse=True)
 def _isolate_route_admission(monkeypatch):
+    from train_factory.storage.services import inference_authorization_service
+
+    # These tests isolate external endpoints and task/storage provenance. The
+    # shared inference ownership suite supplies a populated deployment catalog.
+    monkeypatch.setattr(
+        inference_authorization_service, "registered_shared_models_for_endpoint",
+        lambda *_args: (False, set()),
+    )
     lease = SimpleNamespace(release=lambda: None)
 
     def admit(_kind, _task_id, _user_id, operation, *args, **kwargs):

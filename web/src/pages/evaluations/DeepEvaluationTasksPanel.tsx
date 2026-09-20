@@ -600,7 +600,7 @@ export default function DeepEvaluationTasksPanel() {
           <Tooltip title={<pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}>{tipContent}</pre>}>
             <div>
               <Tag color="blue">{t('deep.modelGroupCount', { count })}</Tag>
-              <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: 'var(--tf-text-secondary)', marginTop: 4 }}>
                 {shown.join(', ')}{names.length > 2 ? ` +${names.length - 2}` : ''}
               </div>
             </div>
@@ -664,7 +664,7 @@ export default function DeepEvaluationTasksPanel() {
               status={record.status === 'failed' ? 'exception' : undefined}
             />
             {totalCount > 0 && (
-              <Text style={{ fontSize: 11, color: '#999' }}>
+              <Text style={{ fontSize: 11, color: 'var(--tf-text-secondary)' }}>
                 {t('deep.groupsCompleted', { completed: completedCount, total: totalCount })}
               </Text>
             )}
@@ -1424,9 +1424,9 @@ export default function DeepEvaluationTasksPanel() {
                 <pre style={{
                   maxHeight: 300,
                   overflow: 'auto',
-                  background: '#1a1a2e',
-                  color: '#e0e0e0',
-                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  background: 'var(--tf-bg-elevated)',
+                  color: 'var(--tf-text-primary)',
+                  border: '1px solid var(--tf-border-primary)',
                   padding: 16,
                   borderRadius: 6,
                   fontSize: 12,

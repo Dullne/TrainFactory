@@ -3,6 +3,16 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def external_inference_catalog(monkeypatch):
+    from train_factory.storage.services import inference_authorization_service
+
+    monkeypatch.setattr(
+        inference_authorization_service, "registered_shared_models_for_endpoint",
+        lambda *_args: (False, set()),
+    )
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 

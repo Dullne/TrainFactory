@@ -30,6 +30,7 @@ pytestmark = pytest.mark.skipif(
 
 MOCK_PORT = 19876
 EXTERNAL_API_HOST = os.getenv("TEST_EXTERNAL_API_HOST", "localhost")
+TEST_USER_ID = os.getenv("TEST_SYNC_USER_ID", "pytest-user")
 
 # Allow running against non-default local MySQL port (e.g. docker mapped 13306).
 if not os.getenv("MYSQL_URL"):
@@ -115,8 +116,12 @@ def mock_server():
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     time.sleep(0.5)
-    yield f"http://{EXTERNAL_API_HOST}:{MOCK_PORT}/api/texts"
-    server.shutdown()
+    try:
+        yield f"http://{EXTERNAL_API_HOST}:{MOCK_PORT}/api/texts"
+    finally:
+        server.shutdown()
+        server.server_close()
+        t.join(timeout=5)
 
 
 @pytest.fixture
@@ -127,7 +132,7 @@ def api_config(mock_server):
 
     cfg = external_api_config_service.create_config(
         config_name="pytest-worker-api",
-        user_id="pytest-user",
+        user_id=TEST_USER_ID,
         api_url=mock_server,
         auth_config={"token": "pytest-token"},
     )
@@ -143,7 +148,7 @@ def sync_config(api_config):
 
     cfg = external_sync_service.create_task(
         task_name="pytest-worker-sync",
-        user_id="pytest-user",
+        user_id=TEST_USER_ID,
         external_api_config_id=api_config["config_id"],
         generation_threshold=99999,
         generation_config={},
@@ -161,7 +166,7 @@ def low_threshold_config(api_config):
 
     cfg = external_sync_service.create_task(
         task_name="pytest-low-threshold",
-        user_id="pytest-user",
+        user_id=TEST_USER_ID,
         external_api_config_id=api_config["config_id"],
         generation_threshold=10,
         generation_config={},
@@ -381,7 +386,7 @@ class TestThresholdTrigger:
         # Threshold = 40: single sync of 25 won't trigger, but two syncs will
         cfg = external_sync_service.create_task(
             task_name="pytest-cumulative",
-            user_id="pytest-user",
+            user_id=TEST_USER_ID,
             external_api_config_id=api_config["config_id"],
             generation_threshold=40,
             generation_config={},

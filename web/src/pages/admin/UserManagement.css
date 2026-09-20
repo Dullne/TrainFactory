@@ -22,7 +22,7 @@
   min-height: 32px;
   align-items: center;
   gap: 8px;
-  color: #8b949e;
+  color: var(--tf-text-secondary, #8b949e);
   font-size: 13px;
 }
 
@@ -53,7 +53,7 @@
 }
 
 .admin-account-identity span {
-  color: #6e7681;
+  color: var(--tf-text-tertiary, #6e7681);
   font-size: 11px;
 }
 

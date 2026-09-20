@@ -191,7 +191,12 @@ def test_disk_usage_follows_configured_storage_directories_and_selects_worst_vol
     ]
 
 
-def test_collection_failure_is_explicitly_unavailable_not_a_real_zero(monkeypatch):
+@pytest.mark.parametrize("cgroup_snapshot", [(None, None), (4 * GIB, GIB)])
+def test_collection_failure_respects_any_remaining_cgroup_memory(monkeypatch, cgroup_snapshot):
+    # Do not let the host/container's real memory limit change this unit test.
+    monkeypatch.setattr(
+        resource_monitor_module, "_cgroup_memory_snapshot", lambda: cgroup_snapshot
+    )
     monkeypatch.setattr(
         resource_monitor_module.psutil,
         "Process",
@@ -220,11 +225,14 @@ def test_collection_failure_is_explicitly_unavailable_not_a_real_zero(monkeypatc
 
     usage = resource_monitor_module.ResourceMonitor().get_current_usage()
 
-    assert usage.available is False
-    assert usage.partial is False
-    assert usage.error_code == "resource_monitor_unavailable"
+    cgroup_available = cgroup_snapshot[0] is not None
+    assert usage.available is cgroup_available
+    assert usage.partial is cgroup_available
+    assert usage.error_code == (
+        "partial_resource_data" if cgroup_available else "resource_monitor_unavailable"
+    )
     assert usage.cpu_percent is None
-    assert usage.memory_percent is None
+    assert usage.memory_percent == (25.0 if cgroup_available else None)
     assert usage.disk_usage_percent is None
     assert usage.open_files is None
     assert usage.thread_count is None

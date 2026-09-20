@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(python -I -c 'import platform; print(platform.python_version())')" = "$PYTHON_VERSION"
-          test "$(uv --version)" = "uv $UV_VERSION"
+          test "$(uv --version | awk '{print $2}')" = "$UV_VERSION"
           test "$(docker compose version --short)" = "$COMPOSE_VERSION"
       - name: Validate dependency locks
         shell: bash
@@ -54,7 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --require-hashes --torch-backend cpu -r requirements/test-cpu.lock
           uv pip install --system --no-deps --no-build-isolation .
       - name: Validate static policy
         shell: bash
@@ -195,7 +195,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --require-hashes --torch-backend cpu -r requirements/test-cpu.lock
           uv pip install --system --no-deps --no-build-isolation .
       - name: Verify host tools
         shell: bash
@@ -278,7 +278,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --require-hashes --torch-backend cpu -r requirements/test-cpu.lock
           uv pip install --system --no-deps --no-build-isolation .
       - name: Run isolated MySQL migrations
         id: mysql-tests
@@ -412,7 +412,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --require-hashes --torch-backend cpu -r requirements/test-cpu.lock
           uv pip install --system --no-deps --no-build-isolation .
       - name: Verify Docker tools
         shell: bash
@@ -462,7 +462,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv pip install --system --require-hashes -r requirements/test-cpu.lock
+          uv pip install --system --require-hashes --torch-backend cpu -r requirements/test-cpu.lock
           uv pip install --system --no-deps --no-build-isolation .
       - name: Validate release inputs
         shell: bash

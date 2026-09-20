@@ -1,0 +1,30 @@
+{
+  "events": {
+    "task_created": "Task created",
+    "status_changed": "Status changed",
+    "progress_updated": "Training progress updated",
+    "result_updated": "Training results updated",
+    "model_registered": "Model registered",
+    "task_completed": "Training ended",
+    "task_deleted": "Task deleted",
+    "metrics_updated": "Training metrics updated",
+    "output_dir_updated": "Output directory updated",
+    "unknown": "Other event: {{type}}",
+    "transition": "{{from}} → {{to}}",
+    "showMore": "Show more events",
+    "loadOlder": "Load older events",
+    "shown": "Showing {{visible}} of {{loaded}} loaded events",
+    "limit": "Only the latest 500 events are available here; older records are not included.",
+    "failed": "Events could not be loaded. Previously loaded records are preserved.",
+    "retry": "Retry loading events"
+  },
+  "loss": {
+    "pending": "The task has not started recording loss. This chart will update automatically when training starts.",
+    "active": "No plottable loss records have arrived yet. Metrics refresh during training; check task events for current progress.",
+    "finished": "The task has ended without plottable loss records. Check task events and the logging interval in the training parameters.",
+    "failed": "The task failed without plottable loss records. Check the error above and task events.",
+    "unavailable": "Training metrics could not be loaded, so loss availability is unknown.",
+    "retry": "Reload metrics"
+  },
+  "loadingTable": "Loading data table…"
+}

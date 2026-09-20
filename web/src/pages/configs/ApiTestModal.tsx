@@ -513,7 +513,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                   style={{
                     fontFamily: 'monospace',
                     fontSize: 12,
-                    background: 'rgba(255, 255, 255, 0.04)',
+                    background: 'var(--tf-hover-bg)',
                   }}
                   suffix={
                     <Button
@@ -537,7 +537,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 style={{
                   fontFamily: 'monospace',
                   fontSize: 12,
-                  background: 'rgba(255, 255, 255, 0.04)',
+                  background: 'var(--tf-hover-bg)',
                 }}
                 suffix={
                   <Button
@@ -583,7 +583,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
               >
                 <div>
                   <div
-                    style={{ fontSize: 12, color: 'rgba(255, 255, 255, 0.65)', marginBottom: 4 }}
+                    style={{ fontSize: 12, color: 'var(--tf-text-secondary)', marginBottom: 4 }}
                   >
                     temperature
                   </div>
@@ -599,7 +599,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 </div>
                 <div>
                   <div
-                    style={{ fontSize: 12, color: 'rgba(255, 255, 255, 0.65)', marginBottom: 4 }}
+                    style={{ fontSize: 12, color: 'var(--tf-text-secondary)', marginBottom: 4 }}
                   >
                     top_p
                   </div>
@@ -615,7 +615,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 </div>
                 <div>
                   <div
-                    style={{ fontSize: 12, color: 'rgba(255, 255, 255, 0.65)', marginBottom: 4 }}
+                    style={{ fontSize: 12, color: 'var(--tf-text-secondary)', marginBottom: 4 }}
                   >
                     max_tokens
                   </div>
@@ -631,7 +631,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 </div>
                 <div>
                   <div
-                    style={{ fontSize: 12, color: 'rgba(255, 255, 255, 0.65)', marginBottom: 4 }}
+                    style={{ fontSize: 12, color: 'var(--tf-text-secondary)', marginBottom: 4 }}
                   >
                     presence_penalty
                   </div>
@@ -647,7 +647,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 </div>
                 <div>
                   <div
-                    style={{ fontSize: 12, color: 'rgba(255, 255, 255, 0.65)', marginBottom: 4 }}
+                    style={{ fontSize: 12, color: 'var(--tf-text-secondary)', marginBottom: 4 }}
                   >
                     frequency_penalty
                   </div>
@@ -663,7 +663,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 </div>
                 <div>
                   <div
-                    style={{ fontSize: 12, color: 'rgba(255, 255, 255, 0.65)', marginBottom: 4 }}
+                    style={{ fontSize: 12, color: 'var(--tf-text-secondary)', marginBottom: 4 }}
                   >
                     {t('apiTest.nLabel')}
                   </div>
@@ -688,7 +688,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
               <Space wrap>
                 <div>
                   <div
-                    style={{ fontSize: 12, color: 'rgba(255, 255, 255, 0.65)', marginBottom: 4 }}
+                    style={{ fontSize: 12, color: 'var(--tf-text-secondary)', marginBottom: 4 }}
                   >
                     top_n
                   </div>
@@ -864,8 +864,8 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 style={{
                   margin: 0,
                   padding: 12,
-                  background: '#1a1a2e',
-                  border: '1px solid rgba(255, 255, 255, 0.15)',
+                  background: 'var(--tf-bg-elevated)',
+                  border: '1px solid var(--tf-border-primary)',
                   borderRadius: 6,
                   maxHeight: 200,
                   overflow: 'auto',
@@ -873,7 +873,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                   wordBreak: 'break-all',
                   fontSize: 12,
                   fontFamily: 'monospace',
-                  color: '#ff7875',
+                  color: 'var(--tf-text-primary)',
                 }}
               >
                 {error}
@@ -902,7 +902,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
               </div>
               <pre
                 style={{
-                  background: '#1a1a2e',
+                  background: 'var(--tf-bg-elevated)',
                   padding: 12,
                   borderRadius: 6,
                   maxHeight: 300,
@@ -942,7 +942,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
           </div>
           <pre
             style={{
-              background: '#1a1a2e',
+              background: 'var(--tf-bg-elevated)',
               padding: 12,
               borderRadius: 6,
               maxHeight: 400,
@@ -991,7 +991,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 <Title level={5}>{t('apiTest.responseFormat')}</Title>
                 <pre
                   style={{
-                    background: '#1a1a2e',
+                    background: 'var(--tf-bg-elevated)',
                     padding: 12,
                     borderRadius: 6,
                     fontSize: 12,
@@ -1038,7 +1038,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 <Title level={5}>{t('apiTest.responseFormat')}</Title>
                 <pre
                   style={{
-                    background: '#1a1a2e',
+                    background: 'var(--tf-bg-elevated)',
                     padding: 12,
                     borderRadius: 6,
                     fontSize: 12,
@@ -1087,7 +1087,7 @@ export function ApiTestModal({ visible, config, onClose, onSuccess }: ApiTestMod
                 <Title level={5}>{t('apiTest.responseFormat')}</Title>
                 <pre
                   style={{
-                    background: '#1a1a2e',
+                    background: 'var(--tf-bg-elevated)',
                     padding: 12,
                     borderRadius: 6,
                     fontSize: 12,

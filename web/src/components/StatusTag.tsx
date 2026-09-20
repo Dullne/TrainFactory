@@ -9,39 +9,18 @@ interface StatusTagProps {
   showTooltip?: boolean
 }
 
-export function StatusTag({
-  status,
-  text,
-  description,
-  showTooltip = true,
-}: StatusTagProps) {
+export function StatusTag({ status, text, description, showTooltip = true }: StatusTagProps) {
   const { t } = useTranslation('common')
   const meta = getStatusMeta(status)
-  const color = meta.color
+  const tone = meta.antdColor === 'processing' ? 'info' : meta.antdColor
   const displayText = text || t(`status.${status}`, { defaultValue: status })
   const tooltipDescription = description ?? meta.description
 
   const tag = (
-    <Tag
-      style={{
-        backgroundColor: `${color}20`,
-        color: color,
-        border: `1px solid ${color}40`,
-        borderRadius: 4,
-      }}
-    >
+    <Tag className="status-tag" style={{ color: `var(--tf-status-${tone})` }}>
       <span
-        style={{
-          display: 'inline-block',
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          backgroundColor: color,
-          marginRight: 6,
-          animation: meta.isAnimated
-            ? 'pulse 2s infinite'
-            : 'none',
-        }}
+        className="status-tag-dot"
+        style={{ animation: meta.isAnimated ? 'pulse 2s infinite' : 'none' }}
       />
       {displayText}
     </Tag>

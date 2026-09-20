@@ -59,7 +59,7 @@ export function GpuSelect({ value, onChange, mode = 'multiple', placeholder, all
             {gpu.is_allocated ? t('gpu.occupied') : t('gpu.free')}
           </Tag>
         </span>
-        <span style={{ color: '#8b949e', fontSize: 12 }}>
+        <span style={{ color: 'var(--tf-text-secondary)', fontSize: 12 }}>
           {t('gpu.memoryInfo', { free: gpu.memory_free_gb.toFixed(0), total: gpu.memory_total_gb.toFixed(0) })}
         </span>
       </Space>

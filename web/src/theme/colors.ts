@@ -1,25 +1,25 @@
-// TrainFactory 颜色常量 - 深色科技风主题
+// CSS variables keep shared component styles in sync with the selected theme.
 
 // 主色
-export const PRIMARY = '#1677ff'
-export const PRIMARY_HOVER = '#4096ff'
-export const PRIMARY_ACTIVE = '#0958d9'
+export const PRIMARY = 'var(--tf-primary)'
+export const PRIMARY_HOVER = 'var(--tf-primary-hover)'
+export const PRIMARY_ACTIVE = 'var(--tf-primary-active)'
 
 // 背景色
-export const BG_LAYOUT = '#0d1117'
-export const BG_CONTAINER = '#161b22'
-export const BG_ELEVATED = '#21262d'
-export const BG_SPOTLIGHT = '#1c2128'
+export const BG_LAYOUT = 'var(--tf-bg-layout)'
+export const BG_CONTAINER = 'var(--tf-bg-container)'
+export const BG_ELEVATED = 'var(--tf-bg-elevated)'
+export const BG_SPOTLIGHT = 'var(--tf-bg-spotlight)'
 
 // 文字色
-export const TEXT_PRIMARY = '#e6edf3'
-export const TEXT_SECONDARY = '#8b949e'
-export const TEXT_TERTIARY = '#6e7681'
-export const TEXT_DISABLED = '#484f58'
+export const TEXT_PRIMARY = 'var(--tf-text-primary)'
+export const TEXT_SECONDARY = 'var(--tf-text-secondary)'
+export const TEXT_TERTIARY = 'var(--tf-text-tertiary)'
+export const TEXT_DISABLED = 'var(--tf-text-disabled)'
 
 // 边框色
-export const BORDER_PRIMARY = '#30363d'
-export const BORDER_SECONDARY = '#21262d'
+export const BORDER_PRIMARY = 'var(--tf-border-primary)'
+export const BORDER_SECONDARY = 'var(--tf-border-secondary)'
 
 // 状态色
 export const STATUS_SUCCESS = '#3fb950'
@@ -29,7 +29,7 @@ export const STATUS_INFO = '#58a6ff'
 export const STATUS_DEFAULT = '#8b949e'
 
 // 渐变色
-export const GRADIENT_PRIMARY = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+export const GRADIENT_PRIMARY = 'var(--tf-gradient-primary)'
 export const GRADIENT_SUCCESS = 'linear-gradient(135deg, #11998e 0%, #38ef7d 100%)'
 export const GRADIENT_INFO = 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)'
 export const GRADIENT_PURPLE = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'

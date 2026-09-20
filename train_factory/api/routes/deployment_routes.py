@@ -509,11 +509,19 @@ class DeploymentResponse(BaseModel):
     stopped_at: Optional[str]
 
 
+class DeploymentStats(BaseModel):
+    """Status counts for all deployments matching the authorized list query."""
+
+    total: int
+    by_status: Dict[str, int]
+
+
 class DeploymentListResponse(BaseModel):
     """Deployment list response."""
 
     deployments: List[DeploymentResponse]
     total: int
+    stats: DeploymentStats
 
 
 def _get_xinference_runtime_map(
@@ -892,7 +900,7 @@ async def create_deployment(
 
 
 @router.get("/deployments", response_model=DeploymentListResponse)
-async def list_deployments(
+def list_deployments(
     model_id: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
@@ -906,7 +914,7 @@ async def list_deployments(
     # Use authenticated user_id
     user_id = current_user["user_id"]
 
-    deployments, total = deployment_service.list_deployments(
+    deployments, total, stats = deployment_service.list_deployments_with_stats(
         model_id=model_id,
         status=status,
         user_id=user_id,
@@ -919,7 +927,7 @@ async def list_deployments(
         for deployment in deployments:
             _validate_deployment_endpoint(deployment)
             deployment_service.sync_status(deployment["deployment_id"])
-        deployments, total = deployment_service.list_deployments(
+        deployments, total, stats = deployment_service.list_deployments_with_stats(
             model_id=model_id,
             status=status,
             user_id=user_id,
@@ -964,6 +972,7 @@ async def list_deployments(
             for d in deployments
         ],
         total=total,
+        stats=stats,
     )
 
 

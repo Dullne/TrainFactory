@@ -76,6 +76,17 @@ def _require_path_component(value: Any, label: str) -> str:
     return component
 
 
+def _sync_storage_user_component(user_id: Any) -> str:
+    """Map only the no-auth database owner to a safe, stable directory.
+
+    This is a filesystem identity, never a replacement database owner. Keep
+    task/batch ownership comparisons exact, including historical empty owners.
+    """
+    if user_id == "" and not get_settings().auth_enabled:
+        return "anonymous"
+    return _require_path_component(user_id, "User ID")
+
+
 def _managed_directory(
     *components: str,
     create: bool,
@@ -145,7 +156,7 @@ def _normalized_path_is_within(path: str, directory: Path) -> bool:
 @contextmanager
 def _reserve_sync_storage(user_id: str, target_path: Path, byte_count: int):
     """Reserve sync-root capacity while a file is being created."""
-    user_id = _require_path_component(user_id, "User ID")
+    user_id = _sync_storage_user_component(user_id)
     requested = int(byte_count)
     if requested < 0:
         raise SyncResourceLimitExceeded("External sync storage request is invalid")
@@ -188,6 +199,12 @@ def _reserve_sync_storage(user_id: str, target_path: Path, byte_count: int):
                 for storage_root in user_roots
             )
         )
+        if user_id == "anonymous" and not settings.auth_enabled:
+            # Historical empty-owner batches live directly under the sync root.
+            # Reuse its existing accounting conservatively rather than omit
+            # those files from the development identity's quota or claim them.
+            user_usage = global_usage
+            reserved_user = reserved_global
         if (
             global_usage + reserved_global + requested
             > settings.sync_storage_max_bytes_global
@@ -220,6 +237,9 @@ def _resolve_managed_batch_path(
     if batch.get("task_id") != task_id or batch.get("user_id") != user_id:
         raise ValueError("Batch does not belong to the requested sync task")
 
+    task_id = _require_path_component(task_id, "Task ID")
+    user_component = _sync_storage_user_component(user_id)
+
     raw_storage_path = batch.get("storage_path")
     if not isinstance(raw_storage_path, str) or not raw_storage_path.strip():
         raise ValueError("Batch storage path is invalid")
@@ -227,6 +247,7 @@ def _resolve_managed_batch_path(
     root = Path(os.path.abspath(SYNC_DATA_DIR))
     raw_path = Path(os.path.abspath(raw_storage_path))
     candidate_components = (
+        (user_component, task_id),
         (user_id, task_id),
         # Compatibility for batches written before full tenant scoping.
         (user_id[:16], task_id[:8]),
@@ -266,7 +287,7 @@ def _delete_managed_merged_file(
 ) -> bool:
     """Delete one generation input after proving its full sync-task scope."""
     task_id = _require_path_component(task_id, "Task ID")
-    user_id = _require_path_component(user_id, "User ID")
+    user_id = _sync_storage_user_component(user_id)
     if not isinstance(merged_path, str) or not merged_path.strip():
         raise ValueError("Merged sync path is invalid")
     root = Path(os.path.abspath(SYNC_DATA_DIR))
@@ -301,7 +322,7 @@ def _delete_managed_batch_files(
 ) -> tuple[int, int]:
     """Delete invalidated batch files without allowing paths outside task scope."""
     task_id = _require_path_component(task_id, "Task ID")
-    user_id = _require_path_component(user_id, "User ID")
+    _sync_storage_user_component(user_id)
     deleted = 0
     failed = 0
     for batch in batches:
@@ -779,7 +800,7 @@ def _save_batch(config: Dict[str, Any], items: List[Dict[str, Any]]) -> str:
       {"content":"...","metadata":{"external_id":"...","source":"...","doc_id":"...","session_id":"..."}}
     """
     task_id = _require_path_component(config["task_id"], "Task ID")
-    user_id = _require_path_component(config["user_id"], "User ID")
+    user_id = _sync_storage_user_component(config["user_id"])
 
     batch_dir = _managed_directory(user_id, task_id, create=True)
 
@@ -2029,7 +2050,8 @@ def _select_generation_batches(
 ) -> List[Dict[str, Any]]:
     """Select the oldest FIFO prefix that fits one bounded generation."""
     task_id = _require_path_component(config["task_id"], "Task ID")
-    user_id = _require_path_component(config["user_id"], "User ID")
+    user_id = config["user_id"]
+    _sync_storage_user_component(user_id)
     settings = get_settings()
     selected: List[Dict[str, Any]] = []
     selected_records = 0
@@ -2063,7 +2085,8 @@ def _select_generation_batches(
 def _merge_batches(config: Dict[str, Any], batches: List[Dict[str, Any]]) -> str:
     """Merge multiple batch files into a single input file for generation."""
     task_id = _require_path_component(config["task_id"], "Task ID")
-    user_id = _require_path_component(config["user_id"], "User ID")
+    user_id = config["user_id"]
+    user_component = _sync_storage_user_component(user_id)
     settings = get_settings()
     if len(batches) > settings.sync_pending_max_batches_per_task:
         raise SyncResourceLimitExceeded(
@@ -2099,7 +2122,7 @@ def _merge_batches(config: Dict[str, Any], batches: List[Dict[str, Any]]) -> str
                 "External sync generation input byte limit exceeded"
             )
 
-    merge_dir = _managed_directory(user_id, task_id, "merged", create=True)
+    merge_dir = _managed_directory(user_component, task_id, "merged", create=True)
     merged_file = merge_dir / f"merged_{attempt_id}.jsonl"
 
     total_lines = 0
@@ -2330,7 +2353,7 @@ async def _trigger_generation(config: Dict[str, Any]):
     gen_task_id = planned_gen_task_id
     raw_dataset_id = str(uuid.uuid4())
     task_component = _require_path_component(task_id, "Task ID")
-    user_component = _require_path_component(config["user_id"], "User ID")
+    user_component = _sync_storage_user_component(config["user_id"])
     merged_path = str(
         Path(os.path.abspath(SYNC_DATA_DIR))
         / user_component

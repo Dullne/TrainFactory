@@ -158,6 +158,31 @@ _install_sqlmodel_stub_if_needed()
 _install_optional_dependency_stubs()
 
 
+@pytest.fixture
+def empty_inference_catalog(monkeypatch, tmp_path):
+    """External-API route tests use the real gate with an isolated empty catalog."""
+    from contextlib import contextmanager
+
+    from sqlmodel import Session, create_engine
+
+    from train_factory.storage.entities.deployment_entity import DeploymentDB
+    from train_factory.storage.services import inference_authorization_service
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'inference-catalog.db'}")
+    DeploymentDB.__table__.create(engine)
+
+    @contextmanager
+    def catalog_session():
+        with Session(engine) as session:
+            yield session
+
+    monkeypatch.setattr(inference_authorization_service, "get_session", catalog_session)
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+
+
 @pytest.fixture(autouse=True)
 def ensure_event_loop():
     """Provide a default event loop for tests using asyncio.get_event_loop()."""

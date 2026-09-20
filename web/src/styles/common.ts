@@ -30,7 +30,10 @@ export const flexColumn: CSSProperties = {
 }
 
 // 图标容器
-export const iconContainer = (size: number = 40, borderRadius: number = 8): CSSProperties => ({
+export const iconContainer = (
+  size: number = 40,
+  borderRadius: CSSProperties['borderRadius'] = 'var(--tf-radius)'
+): CSSProperties => ({
   width: size,
   height: size,
   borderRadius,
@@ -43,22 +46,22 @@ export const iconContainer = (size: number = 40, borderRadius: number = 8): CSSP
 export const coloredIconContainer = (
   color: string,
   size: number = 40,
-  borderRadius: number = 8
+  borderRadius: CSSProperties['borderRadius'] = 'var(--tf-radius)'
 ): CSSProperties => ({
   ...iconContainer(size, borderRadius),
-  backgroundColor: `${color}20`,
+  backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)`,
   color,
 })
 
 // 卡片样式
 export const cardStyle: CSSProperties = {
-  background: BG_ELEVATED,
+  backgroundColor: BG_ELEVATED,
   borderColor: BORDER_SECONDARY,
-  borderRadius: 12,
+  borderRadius: 'var(--tf-radius-lg)',
 }
 
 export const cardBodyStyle: CSSProperties = {
-  padding: 16,
+  padding: 'var(--tf-card-padding-sm)',
 }
 
 // 文本省略
@@ -128,7 +131,10 @@ export function mergeStyles(...styles: (CSSProperties | undefined)[]): CSSProper
 /**
  * 带 gap 的 flex 布局
  */
-export const flexWithGap = (gapSize: number, direction: 'row' | 'column' = 'row'): CSSProperties => ({
+export const flexWithGap = (
+  gapSize: number,
+  direction: 'row' | 'column' = 'row'
+): CSSProperties => ({
   display: 'flex',
   flexDirection: direction,
   alignItems: direction === 'row' ? 'center' : 'stretch',

@@ -75,7 +75,13 @@
     "taskCreateFailed": "创建下载任务失败",
     "backgroundContinue": "下载将在后台继续进行",
     "downloadFailedTitle": "下载失败",
-    "downloadHint": "下载可能需要几分钟，您可以关闭此窗口，下载将在后台继续进行。"
+    "downloadHint": "下载可能需要几分钟，您可以关闭此窗口，下载将在后台继续进行。",
+    "history": {
+      "title": "最近下载任务",
+      "empty": "暂无下载任务",
+      "error": "无法加载下载任务",
+      "retry": "重试"
+    }
   },
   "register": {
     "title": "注册本地模型",

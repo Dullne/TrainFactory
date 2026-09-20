@@ -402,6 +402,11 @@ export interface DeploymentReplica {
   stopped_at?: string | null
 }
 
+export interface DeploymentStats {
+  total: number
+  by_status: Record<string, number>
+}
+
 export interface Deployment {
   deployment_id: string
   model_id: string

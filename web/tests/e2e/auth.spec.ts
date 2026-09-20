@@ -131,6 +131,30 @@ test('unauthenticated user is redirected to login', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Model Training Workspace' })).toBeVisible()
 })
 
+test('denied legacy token storage does not prevent the app from mounting', async ({ page }) => {
+  await page.addInitScript(() => {
+    const originalGetItem = Storage.prototype.getItem
+    const originalRemoveItem = Storage.prototype.removeItem
+
+    Storage.prototype.getItem = function (key: string) {
+      if (key === 'auth_token') throw new DOMException('Storage access denied', 'SecurityError')
+      return originalGetItem.call(this, key)
+    }
+    Storage.prototype.removeItem = function (key: string) {
+      if (key === 'auth_token') throw new DOMException('Storage access denied', 'SecurityError')
+      return originalRemoveItem.call(this, key)
+    }
+  })
+  await mockAuth(page, { authenticated: false })
+  const pageErrors: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+
+  await page.goto('/login')
+
+  await expect(page.getByRole('heading', { name: 'Model Training Workspace' })).toBeVisible()
+  expect(pageErrors).not.toContain('Storage access denied')
+})
+
 test('authenticated user cannot remain on login', async ({ page }) => {
   await mockAuth(page, { authenticated: true })
 
@@ -465,9 +489,11 @@ test('mobile login uses stable margins without horizontal overflow', async ({ pa
   expect(formBounds!.x).toBeGreaterThanOrEqual(24)
   expect(formBounds!.x + formBounds!.width).toBeLessThanOrEqual(366)
 
-  const languageBounds = await page.locator('.auth-language .ant-btn').boundingBox()
-  expect(languageBounds).not.toBeNull()
-  expect(languageBounds!.height).toBeGreaterThanOrEqual(44)
+  for (const control of await page.locator('.auth-language .ant-btn').all()) {
+    const bounds = await control.boundingBox()
+    expect(bounds).not.toBeNull()
+    expect(bounds!.height).toBeGreaterThanOrEqual(44)
+  }
 
   for (const control of await page.locator('.auth-form-shell .ant-input-affix-wrapper').all()) {
     const bounds = await control.boundingBox()
@@ -942,7 +968,7 @@ test('training list toolbar stays on one row at desktop width', async ({ page })
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1280)
 })
 
-test('fixed Actions column masks horizontally scrolled row content at every responsive width', async ({
+test('mobile actions use cards and fixed table actions mask horizontally scrolled content', async ({
   page,
 }) => {
   const taskName = 'qwen3-embedding-0.6b-post-deploy-validation'
@@ -992,6 +1018,17 @@ test('fixed Actions column masks horizontally scrolled row content at every resp
   for (const width of [320, 390, 768, 1280]) {
     await page.setViewportSize({ width, height: 844 })
     await page.goto('/training')
+
+    if (width < 576) {
+      const card = page.locator('.list-workspace-cards article').filter({ hasText: taskName })
+      await expect(card).toBeVisible()
+      await expect(card.getByRole('button').first()).toBeVisible()
+      await expect(page.locator('.ant-table')).toHaveCount(0)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        width
+      )
+      continue
+    }
 
     const row = page.locator('.ant-table-tbody > tr.ant-table-row').filter({ hasText: taskName })
     await expect(row).toBeVisible()
@@ -1044,10 +1081,6 @@ test('fixed Actions column masks horizontally scrolled row content at every resp
       }
     })
 
-    if (width <= 390) {
-      expect(overlap.overlappingLabels).toEqual(expect.arrayContaining(['Embedding', 'SFT']))
-      expect(overlap.iconOverlapLabels.length).toBeGreaterThan(0)
-    }
     expect(
       overlap.visibleLeaks,
       `${width}px fixed Actions cell ${JSON.stringify(overlap)}`

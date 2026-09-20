@@ -19,6 +19,7 @@ import { useAuth } from '@/auth/AuthContext'
 import type { Deployment, CreateEvaluationRequest, AvailableDatasets, Dataset } from '@/types'
 import { evaluationApi, deploymentApi, datasetApi } from '@/services/api'
 import { BG_ELEVATED, BORDER_SECONDARY, TEXT_SECONDARY, STATUS_INFO } from '@/theme'
+import './CreateEvaluationModal.css'
 
 const { Text } = Typography
 
@@ -383,6 +384,7 @@ export function CreateEvaluationModal({
 
   return (
     <Modal
+      className="create-evaluation-modal"
       title={t('create.title')}
       open={visible}
       onCancel={handleCancel}
@@ -444,12 +446,13 @@ export function CreateEvaluationModal({
                       danger
                       size="small"
                       icon={<DeleteOutlined />}
+                      aria-label={t('common:action.delete')}
                       onClick={() => handleRemoveModel(mc.key)}
                     />
                   }
                 >
                   <Space direction="vertical" style={{ width: '100%' }}>
-                    <Space>
+                    <Space wrap>
                       <Text>{t('create.source')}</Text>
                       <Select
                         size="small"
@@ -511,20 +514,18 @@ export function CreateEvaluationModal({
                         })()}
                       </Space>
                     ) : (
-                      <Space.Compact style={{ width: '100%' }}>
+                      <div className="evaluation-custom-fields">
                         <Input
                           placeholder={t('create.endpointPlaceholder')}
                           value={mc.endpoint}
                           onChange={(e) => handleModelChange(mc.key, 'endpoint', e.target.value)}
-                          style={{ flex: 1 }}
                         />
                         <Input
                           placeholder={t('create.displayNamePlaceholder')}
                           value={mc.name}
                           onChange={(e) => handleModelChange(mc.key, 'name', e.target.value)}
-                          style={{ width: 150 }}
                         />
-                      </Space.Compact>
+                      </div>
                     )}
                   </Space>
                 </Card>
@@ -544,7 +545,7 @@ export function CreateEvaluationModal({
             </Space>
           }
           extra={
-            <Space>
+            <Space wrap>
               <Button
                 type="dashed"
                 size="small"
@@ -579,7 +580,7 @@ export function CreateEvaluationModal({
           {availableDatasets?.groups && (
             <div style={{ marginBottom: 12 }}>
               <Text type="secondary">{t('create.quickSelect')}</Text>
-              <Space size={4}>
+              <Space size={4} wrap>
                 {Object.keys(availableDatasets.groups).map((group) => (
                   <Tag
                     key={group}
@@ -600,7 +601,7 @@ export function CreateEvaluationModal({
           ) : (
             <Space direction="vertical" style={{ width: '100%' }}>
               {datasetConfigs.map((dc) => (
-                <Space key={dc.key} style={{ width: '100%' }}>
+                <div key={dc.key} className="evaluation-dataset-row">
                   <Tag
                     color={
                       dc.type === 'mteb' ? 'blue' : dc.type === 'registered' ? 'purple' : 'green'
@@ -613,7 +614,7 @@ export function CreateEvaluationModal({
                       placeholder={t('create.selectMtebDataset')}
                       value={dc.name || undefined}
                       onChange={(v) => handleDatasetChange(dc.key, 'name', v)}
-                      style={{ width: 400 }}
+                      className="evaluation-dataset-control"
                       showSearch
                       optionFilterProp="label"
                       options={mtebDatasetOptions}
@@ -623,7 +624,7 @@ export function CreateEvaluationModal({
                       placeholder={t('create.selectRegisteredDataset')}
                       value={dc.dataset_id}
                       onChange={(v) => handleSelectRegisteredDataset(dc.key, v)}
-                      style={{ width: 400 }}
+                      className="evaluation-dataset-control"
                       showSearch
                       optionFilterProp="label"
                       loading={loading}
@@ -638,29 +639,29 @@ export function CreateEvaluationModal({
                       }
                     />
                   ) : (
-                    <Space.Compact style={{ width: 400 }}>
+                    <div className="evaluation-dataset-control evaluation-custom-fields">
                       <Input
                         placeholder={t('create.datasetNamePlaceholder')}
                         value={dc.name}
                         onChange={(e) => handleDatasetChange(dc.key, 'name', e.target.value)}
-                        style={{ width: 150 }}
                       />
                       <Input
                         placeholder={t('create.datasetPathPlaceholder')}
                         value={dc.path}
                         onChange={(e) => handleDatasetChange(dc.key, 'path', e.target.value)}
-                        style={{ flex: 1 }}
                       />
-                    </Space.Compact>
+                    </div>
                   )}
                   <Button
                     type="text"
                     danger
                     size="small"
                     icon={<DeleteOutlined />}
+                    className="evaluation-dataset-remove"
+                    aria-label={t('common:action.delete')}
                     onClick={() => handleRemoveDataset(dc.key)}
                   />
-                </Space>
+                </div>
               ))}
             </Space>
           )}

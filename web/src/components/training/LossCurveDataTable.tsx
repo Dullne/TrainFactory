@@ -46,13 +46,13 @@ interface LossCurveDataTableProps {
 }
 
 const headerCellStyle = {
-  borderBottom: '1px solid rgba(255, 255, 255, 0.16)',
+  borderBottom: '1px solid var(--tf-border-primary)',
   padding: '8px 12px',
   textAlign: 'left',
 } as const
 
 const dataCellStyle = {
-  borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+  borderBottom: '1px solid var(--tf-border-secondary)',
   padding: '8px 12px',
   textAlign: 'left',
 } as const
@@ -244,7 +244,8 @@ function formatAxisValue(value: number, interval: number) {
 
 export function createLossChartModel(
   rows: readonly LossRow[],
-  labels: LossChartLabels
+  labels: LossChartLabels,
+  colors = { train: '#1890ff', eval: '#52c41a' }
 ): LossChartModel {
   const trainPoints: Array<[number, number]> = []
   const evalPoints: Array<[number, number]> = []
@@ -265,7 +266,7 @@ export function createLossChartModel(
       symbol: showTrainSymbol ? 'circle' : 'none',
       symbolSize,
       showSymbol: showTrainSymbol,
-      color: '#1890ff',
+      color: colors.train,
     })
   }
   if (evalPoints.length > 0) {
@@ -275,7 +276,7 @@ export function createLossChartModel(
       symbol: 'circle',
       symbolSize,
       showSymbol: true,
-      color: '#52c41a',
+      color: colors.eval,
     })
   }
 

@@ -317,6 +317,8 @@ def test_startup_cleanup_reconciles_only_after_verified_exit(monkeypatch):
             {
                 "error_message": "Task interrupted by server restart",
                 "run_token": task["run_token"],
+                "expected_process_pid": task["process_pid"],
+                "expected_process_create_time": task["process_create_time"],
             },
         )
     ]

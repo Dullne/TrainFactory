@@ -19,6 +19,9 @@ from train_factory.storage.entities.evaluation_task_entity import (
     EvaluationStatus,
     EvaluationTaskDB,
 )
+from train_factory.storage.services.background_task_admission_service import (
+    BackgroundTaskAdmissionService,
+)
 
 
 @pytest.fixture
@@ -379,11 +382,12 @@ class _RouteRaceService:
         with self._lock:
             return dict(self.task)
 
-    def claim_running(self, _task_id):
+    def claim_running(self, _task_id, *, run_token=None):
         with self._lock:
             if self.task["status"] != EvaluationStatus.PENDING:
                 return False
             self.task["status"] = EvaluationStatus.RUNNING
+            self.task["run_token"] = run_token
         if self.claim_entered is not None:
             self.claim_entered.set()
         if self.release_claim is not None:
@@ -457,6 +461,156 @@ def _call_route_wrapper(case, task_id: str):
     if case["module"] is evaluation_routes:
         return wrapper(task_id, {"model_configs": [], "dataset_configs": []})
     return wrapper(task_id, existing_results={})
+
+
+@pytest.mark.parametrize("case_name", ("standard", "deep"))
+@pytest.mark.parametrize("concurrent_change", (None, "cancelled", "new_attempt"))
+def test_claimed_startup_read_failure_finalizes_only_its_running_attempt(
+    case_name, concurrent_change, evaluation_services, monkeypatch,
+):
+    standard, deep, engine = evaluation_services
+    service = standard if case_name == "standard" else deep
+    framework = EvaluationFramework.MTEB if case_name == "standard" else EvaluationFramework.DEEPEVAL
+    case = _ROUTE_CASES[case_name]
+    task_id = f"startup-{case_name}-{concurrent_change}"
+    _add_evaluation_task(engine, task_id, framework, EvaluationStatus.PENDING)
+    runner_calls = []
+    cancelled = set()
+    _patch_route_runtime(monkeypatch, case, service, runner_calls, cancelled)
+    real_get_task = service.get_task
+
+    def fail_after_claim(_task_id, **_kwargs):
+        assert real_get_task(task_id)["status"] == EvaluationStatus.RUNNING
+        if concurrent_change == "cancelled":
+            assert service.cancel_task(task_id)
+        elif concurrent_change == "new_attempt":
+            # Another worker owns a later attempt before this worker handles
+            # its failed read; the old worker must not fail that attempt.
+            from sqlalchemy import update
+            with Session(engine) as session:
+                session.exec(update(EvaluationTaskDB).where(
+                    EvaluationTaskDB.task_id == task_id,
+                ).values(run_token="later-worker-token"))
+                session.commit()
+        raise RuntimeError("transient startup read failure")
+
+    monkeypatch.setattr(service, "get_task", fail_after_claim)
+    admission = BackgroundTaskAdmissionService(global_limit=8, per_user_limit=2)
+    monkeypatch.setattr(admission, "_active_task_owners", lambda: {})
+    _result, lease = admission.admit_execution(
+        "evaluation", task_id, "user-1", lambda: True,
+    )
+
+    with pytest.raises(RuntimeError, match="transient startup read failure"):
+        admission.run_sync(lease, _call_route_wrapper, case, task_id)
+
+    stored = real_get_task(task_id)
+    assert not admission.is_executing("evaluation", task_id)
+    expected = {
+        None: EvaluationStatus.FAILED,
+        "cancelled": EvaluationStatus.CANCELLED,
+        "new_attempt": EvaluationStatus.RUNNING,
+    }[concurrent_change]
+    assert stored["status"] == expected
+    assert runner_calls == []
+    if concurrent_change is None:
+        assert stored["completed_at"] is not None
+        assert stored["error_message"]
+    else:
+        assert stored["error_message"] is None
+
+
+@pytest.mark.parametrize("case_name", ("standard", "deep"))
+@pytest.mark.parametrize("failure_phase", ("claim", "runner", "cleanup"))
+def test_startup_failure_handling_preserves_exception_and_runner_boundary(
+    case_name, failure_phase, evaluation_services, monkeypatch,
+):
+    standard, deep, engine = evaluation_services
+    service = standard if case_name == "standard" else deep
+    framework = EvaluationFramework.MTEB if case_name == "standard" else EvaluationFramework.DEEPEVAL
+    case = _ROUTE_CASES[case_name]
+    task_id = f"boundary-{case_name}-{failure_phase}"
+    _add_evaluation_task(engine, task_id, framework, EvaluationStatus.PENDING)
+    _patch_route_runtime(monkeypatch, case, service, [], set())
+    real_get_task = service.get_task
+
+    def original_failure(*_args, **_kwargs):
+        raise RuntimeError("original operation failed")
+
+    if failure_phase == "claim":
+        monkeypatch.setattr(service, "claim_running", original_failure)
+    elif failure_phase == "runner":
+        monkeypatch.setattr(case["module"], case["runner_attr"], original_failure)
+    else:
+        monkeypatch.setattr(service, "get_task", original_failure)
+
+        def cleanup_failure(*_args, **_kwargs):
+            raise OSError("database remains unavailable")
+
+        monkeypatch.setattr(service, "fail_claimed_startup", cleanup_failure)
+
+    with pytest.raises(RuntimeError, match="original operation failed"):
+        _call_route_wrapper(case, task_id)
+
+    expected = EvaluationStatus.PENDING if failure_phase == "claim" else EvaluationStatus.RUNNING
+    assert real_get_task(task_id)["status"] == expected
+
+
+@pytest.mark.parametrize("case_name", ("standard", "deep"))
+@pytest.mark.parametrize("concurrent_change", (None, "cancelled", "new_attempt", "new_attempt_visible"))
+def test_real_runner_first_read_failure_uses_claim_token_without_adopting_later_attempt(
+    case_name, concurrent_change, evaluation_services, monkeypatch,
+):
+    standard, deep, engine = evaluation_services
+    service = standard if case_name == "standard" else deep
+    framework = EvaluationFramework.MTEB if case_name == "standard" else EvaluationFramework.DEEPEVAL
+    case = _ROUTE_CASES[case_name]
+    task_id = f"runner-first-read-{case_name}-{concurrent_change}"
+    _add_evaluation_task(engine, task_id, framework, EvaluationStatus.PENDING)
+    monkeypatch.setattr(case["module"], case["service_attr"], service)
+    service_module = importlib.import_module("train_factory.storage.services.evaluation_task_service")
+    monkeypatch.setattr(service_module, "evaluation_task_service", standard)
+    monkeypatch.setattr(deep_evaluation_runner, "deep_evaluation_task_service", deep)
+    monkeypatch.setattr(evaluation_routes, "is_evaluation_cancelled", lambda _id: False)
+    monkeypatch.setattr(evaluation_runner, "is_cancelled", lambda _id: False)
+    monkeypatch.setattr(deep_evaluation_runner, "is_cancelled", lambda _id: False)
+    real_get_task = service.get_task
+    reads = 0
+
+    def fail_runner_read(_task_id, **kwargs):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            if concurrent_change == "cancelled":
+                assert service.cancel_task(task_id)
+            elif concurrent_change in {"new_attempt", "new_attempt_visible"}:
+                from sqlalchemy import update
+                with Session(engine) as session:
+                    session.exec(update(EvaluationTaskDB).where(
+                        EvaluationTaskDB.task_id == task_id,
+                    ).values(run_token="later-worker-token"))
+                    session.commit()
+            if concurrent_change != "new_attempt_visible":
+                raise RuntimeError("runner initial database read failed")
+        return real_get_task(_task_id, **kwargs)
+
+    monkeypatch.setattr(service, "get_task", fail_runner_read)
+    _call_route_wrapper(case, task_id)
+
+    stored = real_get_task(task_id)
+    expected = {
+        None: EvaluationStatus.FAILED,
+        "cancelled": EvaluationStatus.CANCELLED,
+        "new_attempt": EvaluationStatus.RUNNING,
+        "new_attempt_visible": EvaluationStatus.RUNNING,
+    }[concurrent_change]
+    assert reads == 2
+    assert stored["status"] == expected
+    if concurrent_change is None:
+        assert stored["completed_at"] is not None
+        assert "runner initial database read failed" in stored["error_message"]
+    else:
+        assert stored["error_message"] is None
 
 
 @pytest.mark.parametrize("case_name", ("standard", "deep"))

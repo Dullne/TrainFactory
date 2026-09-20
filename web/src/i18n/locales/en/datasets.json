@@ -239,7 +239,13 @@
       "taskCreateFailed": "Failed to create download task",
       "backgroundContinue": "Download will continue in the background"
     },
-    "downloadFailedAlert": "Download Failed"
+    "downloadFailedAlert": "Download Failed",
+    "history": {
+      "title": "Recent download tasks",
+      "empty": "No download tasks",
+      "error": "Unable to load download tasks",
+      "retry": "Retry"
+    }
   },
   "register": {
     "title": "Register Local Dataset",

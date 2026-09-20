@@ -626,6 +626,7 @@ def test_online_deep_evaluation_rejects_unowned_collection_before_task_creation(
 
 def test_online_deep_evaluation_rejects_deleting_collection_before_admission(
     monkeypatch,
+    empty_inference_catalog,
 ):
     background_tasks = BackgroundTasks()
     monkeypatch.setattr(
@@ -680,6 +681,7 @@ def test_online_deep_evaluation_rejects_deleting_collection_before_admission(
 
 def test_online_deep_evaluation_maps_collection_fence_race_to_conflict(
     monkeypatch,
+    empty_inference_catalog,
 ):
     background_tasks = BackgroundTasks()
     monkeypatch.setattr(

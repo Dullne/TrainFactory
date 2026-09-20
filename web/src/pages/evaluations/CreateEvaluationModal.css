@@ -1,0 +1,54 @@
+.create-evaluation-modal .ant-card-head-wrapper {
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 0;
+}
+
+.create-evaluation-modal .ant-card-head-title {
+  flex: 1 1 auto;
+  white-space: normal;
+}
+
+.create-evaluation-modal .ant-card-extra {
+  max-width: 100%;
+  margin-inline-start: 0;
+}
+
+.evaluation-dataset-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.evaluation-dataset-control {
+  width: 100%;
+  min-width: 0;
+}
+
+.evaluation-custom-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 575px) {
+  .evaluation-dataset-row {
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--tf-border-secondary);
+  }
+
+  .evaluation-dataset-control {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+
+  .evaluation-dataset-remove {
+    grid-row: 1;
+    grid-column: 3;
+  }
+
+  .evaluation-custom-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -21,7 +21,7 @@ export function LanguageToggle() {
         size="small"
         icon={<GlobalOutlined />}
         onClick={handleToggle}
-        style={{ color: '#8b949e', fontSize: 14 }}
+        style={{ color: 'var(--tf-text-secondary)', fontSize: 14 }}
       >
         {isZh ? 'EN' : '中'}
       </Button>

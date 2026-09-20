@@ -75,7 +75,13 @@
     "taskCreateFailed": "Failed to create download task",
     "backgroundContinue": "Download will continue in the background",
     "downloadFailedTitle": "Download Failed",
-    "downloadHint": "Download may take a few minutes. You can close this window and the download will continue in the background."
+    "downloadHint": "Download may take a few minutes. You can close this window and the download will continue in the background.",
+    "history": {
+      "title": "Recent download tasks",
+      "empty": "No download tasks",
+      "error": "Unable to load download tasks",
+      "retry": "Retry"
+    }
   },
   "register": {
     "title": "Register Local Model",

@@ -36,6 +36,7 @@ LABEL org.opencontainers.image.version="${BUILD_VERSION}" \
 
 # Copy nginx config template (contains ${API_HOST} and ${API_PORT} placeholders)
 COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY --chmod=0555 docker-entrypoint.d/19-upload-limit.envsh /docker-entrypoint.d/19-upload-limit.envsh
 
 # Copy built files from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
@@ -47,6 +48,7 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # API_PORT: backend service port (default: 18000)
 ENV API_HOST=train-factory-api
 ENV API_PORT=18000
+ENV MAX_UPLOAD_SIZE=524288000
 
 EXPOSE 80
 

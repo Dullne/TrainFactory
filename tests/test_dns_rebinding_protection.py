@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import socket
+import zlib
 from typing import Any
 
 import httpx
@@ -96,9 +98,7 @@ def test_httpx_transport_connects_to_pinned_ip_and_preserves_https_host_and_sni(
     asyncio.run(exercise())
 
     assert lookups == 1
-    assert observed["url"] == httpx.URL(
-        f"https://{PUBLIC_IP}:8443/v1"
-    )
+    assert observed["url"] == httpx.URL(f"https://{PUBLIC_IP}:8443/v1")
     assert observed["host"] == "api.example.test:8443"
     assert observed["sni"] == "api.example.test"
 
@@ -234,9 +234,7 @@ def test_httpx_transport_rejects_chunked_response_over_limit() -> None:
 
     transport = policy.PinnedAsyncHTTPTransport(
         target,
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(200, stream=ChunkedStream())
-        ),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, stream=ChunkedStream())),
         max_response_bytes=5,
     )
 
@@ -244,6 +242,60 @@ def test_httpx_transport_rejects_chunked_response_over_limit() -> None:
         async with httpx.AsyncClient(transport=transport, trust_env=False) as client:
             with pytest.raises(policy.OutboundResponseTooLargeError):
                 await client.get(target.url)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("encoding", ["gzip", "br", "deflate", "identity, gzip", "GZip"])
+def test_httpx_transport_rejects_encoded_response_before_reading(encoding) -> None:
+    target = resolve_outbound_url("https://8.8.8.8/v1")
+    compress = zlib.compress if encoding == "deflate" else gzip.compress
+    payload = compress(b"x" * (2 * 1024 * 1024))
+    assert len(payload) < 8192
+
+    class EncodedStream(httpx.AsyncByteStream):
+        read = False
+        closed = False
+
+        async def __aiter__(self):
+            self.read = True
+            yield payload
+
+        async def aclose(self):
+            self.closed = True
+
+    stream = EncodedStream()
+
+    def respond(request):
+        assert request.headers["accept-encoding"] == "identity"
+        return httpx.Response(
+            200, headers={"content-encoding": encoding, "content-length": str(len(payload))}, stream=stream
+        )
+
+    transport = policy.PinnedAsyncHTTPTransport(target, transport=httpx.MockTransport(respond), max_response_bytes=8192)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(policy.SSRFError) as exc_info:
+                await client.get(target.url)
+            assert exc_info.value.status_code == 502
+
+    asyncio.run(exercise())
+    assert stream.closed is True
+    assert stream.read is False
+
+
+@pytest.mark.parametrize("encoding", [None, "identity", "Identity"])
+def test_httpx_transport_accepts_identity_response(encoding):
+    target = resolve_outbound_url("https://8.8.8.8/v1")
+    headers = {} if encoding is None else {"content-encoding": encoding}
+    transport = policy.PinnedAsyncHTTPTransport(
+        target, transport=httpx.MockTransport(lambda _request: httpx.Response(200, headers=headers, content=b"safe"))
+    )
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=transport) as client:
+            assert (await client.get(target.url)).content == b"safe"
 
     asyncio.run(exercise())
 

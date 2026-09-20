@@ -66,6 +66,8 @@ web/*
 !web/nginx.conf
 !web/vite.config.ts
 !web/Dockerfile
+!web/docker-entrypoint.d/
+!web/docker-entrypoint.d/19-upload-limit.envsh
 .env*
 !.env.example
 .runtime

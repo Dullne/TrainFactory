@@ -7,11 +7,18 @@ GPU资源动态分配管理器
 import os
 import threading
 import logging
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Set, Any
 from datetime import datetime, timedelta
 from uuid import UUID
+from urllib.parse import urlsplit
+import ipaddress
 
 logger = logging.getLogger(__name__)
+
+
+class GPUReservationConflict(ValueError):
+    """A GPU is owned by another runtime or its ownership is uncertain."""
 
 
 def _task_log_label(task_id: Any) -> Any:
@@ -45,6 +52,172 @@ class GPUResourceManager:
 
         logger.info(f"GPU资源管理器初始化完成，检测到 {self.max_gpus} 个GPU")
 
+    @contextmanager
+    def admission_lock(self):
+        """Serialize allocation with durable deployment claims, never runtime I/O.
+
+        The API supports one worker. Acquire this lock BEFORE opening a database
+        transaction so a DB writer cannot wait on an allocator holding the lock.
+        """
+        with self._lock:
+            yield
+
+    @staticmethod
+    def _strict_device_ids(device: Any) -> Optional[Set[int]]:
+        """Decode an executed device, not a requested/default GPU preference."""
+        if device == "cpu":
+            return set()
+        if not isinstance(device, str) or not device:
+            return None
+        result = set()
+        for part in device.split(","):
+            if not part.startswith("cuda:") or not part[5:].isascii() or not part[5:].isdigit():
+                return None
+            result.add(int(part[5:]))
+        return result or None
+
+    @staticmethod
+    def deployment_uses_local_gpus(deployment) -> bool:
+        """Recognize managed containers and explicit same-host shared endpoints.
+
+        An arbitrary remote endpoint's GPU index is not a local GPU index. No
+        DNS/network probe runs inside admission. Custom same-host aliases must
+        use XINFERENCE_CONTAINER_NAME (or one of the standard local identities).
+        """
+        if deployment.deploy_mode == "container":
+            return True
+        try:
+            hostname = (urlsplit(deployment.xinference_endpoint).hostname or "").lower().rstrip(".")
+        except ValueError:
+            return False
+        local_names = {
+            "xinference", "localhost", "host.docker.internal",
+            os.environ.get("XINFERENCE_CONTAINER_NAME", "xinference").lower(),
+            f"{os.environ.get('COMPOSE_PROJECT_NAME', 'trainfactory')}-xinference".lower(),
+        }
+        if hostname in local_names:
+            return True
+        try:
+            return ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _persisted_gpu_reservations(session) -> Dict[str, Optional[Set[int]]]:
+        """Read runtime evidence on every admission, including after API restart.
+
+        None means an unresolved runtime whose devices are unknown: quarantine
+        all GPUs. Failed deployment state does not prove its container stopped;
+        only a verified stop/deletion releases that durable reservation.
+        """
+        from sqlmodel import select
+        from sqlalchemy import or_
+        from ..storage.entities.training_task_entity import TrainingTaskDB
+        from ..storage.entities.deployment_entity import DeploymentDB
+        from ..storage.entities.deployment_replica_entity import DeploymentReplicaDB
+
+        reservations = {}
+        tasks = session.exec(select(TrainingTaskDB).where(or_(
+            TrainingTaskDB.process_pid.is_not(None),
+            TrainingTaskDB.process_status.in_(("running", "stopping")),
+            TrainingTaskDB.status.in_(("running", "evaluating")),
+        ))).all()
+        for task in tasks:
+            owner = (
+                f"training:{task.task_id}:{task.run_token}"
+                if task.run_token else task.task_id
+            )
+            # The entity.device default is not proof of the actual device.
+            params = task.training_params or {}
+            reservations[owner] = GPUResourceManager._strict_device_ids(params.get("device"))
+
+        deployments = session.exec(select(DeploymentDB)).all()
+        replicas_by_deployment = {}
+        for replica in session.exec(select(DeploymentReplicaDB)).all():
+            replicas_by_deployment.setdefault(replica.deployment_id, []).append(replica)
+        # Cleanup claims also retain pending resources when a runtime's state
+        # cannot be verified; failed deletion must not drop the reservation.
+        reserving_kinds = {"start", "restart", "recreate", "create", "stop", "delete"}
+        for deployment in deployments:
+            if not GPUResourceManager.deployment_uses_local_gpus(deployment):
+                continue
+            owner = f"deployment:{deployment.deployment_id}"
+            starting = bool(
+                deployment.replica_operation_token
+                and deployment.replica_operation_kind in reserving_kinds
+                and not (
+                    deployment.replica_operation_kind == "create"
+                    and deployment.status == "stopped"
+                )
+            )
+            replicas = replicas_by_deployment.get(deployment.deployment_id, [])
+            if not replicas:
+                if starting or deployment.status not in {"stopped", "pending"}:
+                    gpu_id = deployment.gpu_id
+                    reservations[owner] = (
+                        {gpu_id} if type(gpu_id) is int and gpu_id >= 0 else None
+                    )
+                continue
+            occupied = set()
+            for replica in replicas:
+                claimed = starting and (
+                    deployment.replica_operation_replica_id is None
+                    or deployment.replica_operation_replica_id == replica.replica_id
+                )
+                pending_start = (
+                    replica.status == "pending"
+                    and deployment.status not in {"stopped", "pending"}
+                )
+                if not claimed and not pending_start and replica.status in {"stopped", "pending"}:
+                    continue
+                ids = replica.gpu_ids
+                if not ids or any(type(gpu_id) is not int or gpu_id < 0 for gpu_id in ids):
+                    occupied = None
+                    break
+                occupied.update(ids)
+            if occupied is None or occupied:
+                reservations[owner] = occupied
+        return reservations
+
+    def _reserved_gpu_ids(self, *, owner: str, session) -> Set[int]:
+        blocked = {
+            gpu_id for gpu_id, holder in self.gpu_allocations.items()
+            if holder != owner
+        }
+        for holder, gpu_ids in self._persisted_gpu_reservations(session).items():
+            if holder == owner:
+                continue
+            if gpu_ids is None:
+                raise GPUReservationConflict(
+                    "GPU admission is blocked by an unresolved runtime with unknown devices"
+                )
+            blocked.update(gpu_ids)
+        return blocked
+
+    def assert_deployment_gpus_available(self, session, deployment_id: str, gpu_ids) -> None:
+        """Check a start/create inside admission_lock and its claim transaction."""
+        ids = set(gpu_ids)
+        if not ids or any(type(gpu_id) is not int or gpu_id < 0 for gpu_id in ids):
+            raise GPUReservationConflict("Deployment GPU assignment is unknown")
+        blocked = self._reserved_gpu_ids(
+            owner=f"deployment:{deployment_id}", session=session,
+        )
+        if ids & blocked:
+            raise GPUReservationConflict("Deployment GPU is reserved by another workload")
+
+    def select_deployment_gpu(self, session, deployment_id: str) -> int:
+        """Choose a local shared-server GPU before persisting its start claim."""
+        blocked = self._reserved_gpu_ids(owner=f"deployment:{deployment_id}", session=session)
+        for gpu_id in range(self.max_gpus):
+            if gpu_id not in blocked:
+                return gpu_id
+        raise GPUReservationConflict("No local GPU is available for this deployment")
+
+    def available_deployment_gpus(self, session, deployment_id: str, gpu_ids) -> List[int]:
+        """Filter a hardware-verified placement pool; the claim rechecks it."""
+        blocked = self._reserved_gpu_ids(owner=f"deployment:{deployment_id}", session=session)
+        return [gpu_id for gpu_id in gpu_ids if gpu_id not in blocked]
+
     def sync_from_database(self) -> int:
         """
         从数据库同步GPU分配状态。
@@ -53,7 +226,9 @@ class GPUResourceManager:
         ``training:{task_id}:{run_token}``（attempt 级），此处以裸 task_id
         恢复，直接接入会让 release_gpus_for_task 永远 miss 造成永久泄漏。
         未来接入前必须统一键格式（并按 DB 状态过滤非 running 任务）。
-        启动恢复目前由 cleanup_orphan_tasks 处理（标记失败 + 清扫孤儿进程）。
+        启动清理由 cleanup_orphan_tasks 确认进程退出后处理；未确认退出的任务保留
+        数据库进程证据。每次 GPU 准入通过 _persisted_gpu_reservations 读取这些证据
+        及部署租约，恢复互斥，无需把数据库状态复制进新的内存分配表。
 
         Returns:
             恢复的任务数量
@@ -169,16 +344,21 @@ class GPUResourceManager:
                     logger.error("指定的GPU全部无效，分配失败")
                     return None
 
+                from ..storage.database import get_session
+
+                with get_session() as session:
+                    blocked = self._reserved_gpu_ids(owner=task_id, session=session)
+
                 if requested_gpus is not None:
                     # 指定GPU模式
-                    if self._can_allocate_specific_gpus(requested_gpus):
+                    if not blocked.intersection(requested_gpus) and self._can_allocate_specific_gpus(requested_gpus):
                         return self._do_allocate_gpus(task_id, requested_gpus)
                     else:
                         logger.error(f"指定的GPU {requested_gpus} 不可用")
                         return None
                 else:
                     # 自动分配模式
-                    available_gpus = self._get_available_gpus(num_gpus)
+                    available_gpus = self._get_available_gpus(num_gpus, blocked=blocked)
                     if available_gpus:
                         return self._do_allocate_gpus(task_id, available_gpus)
                     else:
@@ -252,11 +432,11 @@ class GPUResourceManager:
                 return False
         return True
 
-    def _get_available_gpus(self, num_needed: int) -> Optional[List[int]]:
+    def _get_available_gpus(self, num_needed: int, *, blocked: Optional[Set[int]] = None) -> Optional[List[int]]:
         """获取可用的GPU"""
         available = []
         for gpu_id in range(self.max_gpus):
-            if gpu_id not in self.gpu_allocations:
+            if gpu_id not in self.gpu_allocations and gpu_id not in (blocked or set()):
                 available.append(gpu_id)
                 if len(available) >= num_needed:
                     break

@@ -12,6 +12,7 @@ import httpx
 import numpy as np
 
 from ...storage.services.outbound_endpoint_policy import create_pinned_async_client
+from ...storage.services.inference_authorization_service import authorize_inference_model
 
 
 @dataclass
@@ -113,6 +114,10 @@ class EmbeddingClient:
 
     async def _embed_batch(self, texts: List[str]) -> List[List[float]]:
         """嵌入一批文本"""
+        await asyncio.to_thread(
+            authorize_inference_model, self.config.endpoint,
+            self.config.model, self.config.user_id,
+        )
         client = self._get_client()
         endpoint = self.config.endpoint.rstrip('/')
         if endpoint.endswith('/v1/embeddings') or endpoint.endswith('/embeddings'):

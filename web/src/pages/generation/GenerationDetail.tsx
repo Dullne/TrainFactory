@@ -666,7 +666,7 @@ export default function GenerationDetail() {
           </Col>
         </Row>
         {task.error_message && (
-          <div style={{ marginTop: 16, padding: 12, background: '#fff2f0', borderRadius: 4 }}>
+          <div style={{ marginTop: 16, padding: 12, background: 'rgba(248, 81, 73, 0.10)', borderRadius: 4 }}>
             <Text type="danger">
               <CloseCircleOutlined style={{ marginRight: 8 }} />
               {task.error_message}
@@ -934,7 +934,7 @@ export default function GenerationDetail() {
                   />
                   {previewData.total > 0 ? (
                     <>
-                      <div style={{ marginBottom: 8, color: '#999', fontSize: 12 }}>
+                      <div style={{ marginBottom: 8, color: 'var(--tf-text-secondary)', fontSize: 12 }}>
                         {t('detail.preview.records', { count: previewData.total })}
                       </div>
                       <Table

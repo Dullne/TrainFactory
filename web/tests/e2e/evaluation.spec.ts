@@ -188,8 +188,12 @@ test('evaluation ignores a slow deployment response from the previous open cycle
   await page.keyboard.press('Escape')
   await expect(page.locator('.ant-select-dropdown').last()).not.toBeVisible()
 
+  const delayedResponse = page.waitForResponse(
+    (response) => response.headers()['x-evaluation-open-cycle'] === '1'
+  )
   releaseFirstResponse()
   await expect.poll(() => firstResponseCompleted).toBe(true)
+  expect(await (await delayedResponse).finished()).toBeNull()
   await page.evaluate(
     () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
   )
@@ -197,6 +201,11 @@ test('evaluation ignores a slow deployment response from the previous open cycle
   await deploymentPicker.locator('.ant-select-selector').click()
   const currentOption = page.getByText(/cycle-two-current/).last()
   const staleOption = page.getByText(/cycle-one-slow/).last()
+  // The retained dropdown is visible during enter-prepare, then briefly scales
+  // to zero in enter-start. Snapshot the options only after that motion ends.
+  await expect(page.locator('.ant-select-dropdown').last()).not.toHaveClass(
+    /ant-slide-up-(?:enter|appear)/
+  )
   await expect
     .poll(async () =>
       (await currentOption.isVisible().catch(() => false)) ||

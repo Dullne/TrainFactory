@@ -10,7 +10,9 @@ export default function DatasetHub() {
   const activeKey = searchParams.get('tab') === 'generation' ? 'generation' : 'list'
 
   const handleTabChange = (key: string) => {
-    setSearchParams({ tab: key })
+    const next = new URLSearchParams(searchParams)
+    next.set('tab', key)
+    setSearchParams(next)
   }
 
   const tabItems = [
@@ -26,12 +28,5 @@ export default function DatasetHub() {
     },
   ]
 
-  return (
-    <Tabs
-      activeKey={activeKey}
-      onChange={handleTabChange}
-      items={tabItems}
-      destroyOnHidden
-    />
-  )
+  return <Tabs activeKey={activeKey} onChange={handleTabChange} items={tabItems} destroyOnHidden />
 }

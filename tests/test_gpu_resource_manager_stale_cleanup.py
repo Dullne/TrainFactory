@@ -15,7 +15,11 @@ OTHER_RUN_TOKEN = "33333333-3333-4333-8333-33333333333c"
 @pytest.fixture
 def manager(monkeypatch):
     monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 2)
-    return GPUResourceManager()
+    manager = GPUResourceManager()
+    # These unit tests isolate stale in-memory leases; durable coexistence and
+    # restart behavior are covered with a real DB in test_gpu_reservation_admission.
+    monkeypatch.setattr(manager, "_persisted_gpu_reservations", lambda _session: {})
+    return manager
 
 
 def _lease(run_token=RUN_TOKEN):

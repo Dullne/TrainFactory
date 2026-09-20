@@ -273,7 +273,7 @@ class EvaluationTaskService:
             tasks = session.exec(query).all()
             return [t.to_dict() for t in tasks], total
 
-    def claim_running(self, task_id: str) -> bool:
+    def claim_running(self, task_id: str, *, run_token: Optional[str] = None) -> bool:
         """Atomically claim a pending MTEB task for worker execution."""
         now = now_naive()
         legacy_run_token = str(uuid4())
@@ -300,12 +300,34 @@ class EvaluationTaskService:
                 .where(*conditions)
                 .values(
                     status=EvaluationStatus.RUNNING,
-                    run_token=func.coalesce(
+                    run_token=run_token if run_token is not None else func.coalesce(
                         EvaluationTaskDB.run_token,
                         legacy_run_token,
                     ),
                     started_at=func.coalesce(EvaluationTaskDB.started_at, now),
                     completed_at=None,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+            return result.rowcount == 1
+
+    def fail_claimed_startup(self, task_id: str, run_token: str) -> bool:
+        """Fail only the worker attempt that could not enter its runner."""
+        now = now_naive()
+        with get_session() as session:
+            result = session.exec(
+                update(EvaluationTaskDB)
+                .where(
+                    EvaluationTaskDB.task_id == task_id,
+                    EvaluationTaskDB.eval_framework == EvaluationFramework.MTEB,
+                    EvaluationTaskDB.status == EvaluationStatus.RUNNING,
+                    EvaluationTaskDB.run_token == run_token,
+                )
+                .values(
+                    status=EvaluationStatus.FAILED,
+                    error_message="Task could not start background execution",
+                    completed_at=now,
                     updated_at=now,
                 )
             )

@@ -45,6 +45,13 @@ def normalize_api_endpoint(
     provider: str,
     user_id: Optional[str] = None,
 ) -> str:
+    """Normalize the request URL, then apply its user-scoped outbound policy."""
+    return validate_user_outbound_url(
+        normalize_api_endpoint_url(endpoint, provider), user_id
+    )
+
+
+def normalize_api_endpoint_url(endpoint: str, provider: str) -> str:
     """
     规范化 API 端点 URL
 
@@ -107,7 +114,7 @@ def normalize_api_endpoint(
         pass
 
     final_url = urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
-    return validate_user_outbound_url(final_url, user_id)
+    return final_url
 
 
 # === Model Type Normalization ===

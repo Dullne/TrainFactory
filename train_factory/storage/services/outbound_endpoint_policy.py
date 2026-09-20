@@ -222,11 +222,16 @@ class PinnedAsyncHTTPTransport(httpx.AsyncBaseTransport):
         )
         response = await self._transport.handle_async_request(pinned_request)
         try:
+            # Accept-Encoding is advisory. Reject a noncompliant upstream before
+            # HTTPX's decoder can expand bytes beyond the transport-level limit.
+            encoding = response.headers.get("content-encoding", "identity")
+            if encoding.strip().lower() != "identity":
+                raise SSRFError("Encoded outbound responses are not supported", 502)
             _reject_oversized_content_length(
                 response.headers,
                 self._max_response_bytes,
             )
-        except OutboundResponseTooLargeError:
+        except SSRFError:
             await response.aclose()
             raise
         response.stream = _LimitedAsyncByteStream(
@@ -276,6 +281,19 @@ def _collect_user_policy(
         [settings.xinference_endpoint or "http://xinference:9997"],
         allowed_hosts,
     )
+    # Deployment configs expose the system's shared service through HOST_IP.
+    # Trust only this configured service's derived host/port, never a shared
+    # deployment's caller-supplied endpoint or every port on the alias host.
+    default_endpoint = settings.xinference_endpoint or "http://xinference:9997"
+    default_host = _extract_hostname(default_endpoint) or ""
+    if default_host in {"xinference", "localhost", "127.0.0.1", "172.17.0.1"} or default_host.startswith(("xf-", "vllm-", "sglang-")):
+        from ...deployment.deployment_service import deployment_service
+
+        alias_destination = _extract_destination(
+            deployment_service._to_external_endpoint(default_endpoint)
+        )
+        if alias_destination:
+            trusted_destinations.add(alias_destination)
 
     if user_id == "anonymous" or user_id == "":
         return allowed_hosts, trusted_destinations

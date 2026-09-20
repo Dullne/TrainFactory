@@ -1,4 +1,5 @@
 *.sh text eol=lf
+*.envsh text eol=lf
 requirements/*.txt text eol=lf
 requirements/*.lock text eol=lf
 requirements/*.toml text eol=lf

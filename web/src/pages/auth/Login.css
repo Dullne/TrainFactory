@@ -2,8 +2,8 @@
   min-height: 100vh;
   min-height: 100dvh;
   overflow-x: hidden;
-  background: #0b0f14;
-  color: #edf2f7;
+  background: var(--tf-auth-bg, #0b0f14);
+  color: var(--tf-text-primary, #e6edf3);
   letter-spacing: 0;
 }
 
@@ -15,7 +15,7 @@
   justify-content: space-between;
   height: 70px;
   padding: 0 34px;
-  background: #0b0f14;
+  background: var(--tf-auth-bg, #0b0f14);
 }
 
 .auth-brand {
@@ -56,19 +56,25 @@
   color: #c084fc;
 }
 
+.auth-language {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .auth-language .ant-btn {
   min-width: 52px;
   height: 34px;
-  border: 1px solid #313a45;
-  border-radius: 5px;
-  color: #9aa5b1 !important;
+  border: 1px solid var(--tf-border-primary, #30363d);
+  border-radius: var(--tf-radius-sm);
+  color: var(--tf-text-secondary, #8b949e) !important;
 }
 
 .auth-language .ant-btn:hover,
 .auth-language .ant-btn:focus-visible {
-  border-color: #566473;
-  background: #151b22 !important;
-  color: #edf2f7 !important;
+  border-color: var(--tf-primary, #1677ff);
+  background: var(--tf-hover-bg, #1c2128) !important;
+  color: var(--tf-text-primary, #e6edf3) !important;
 }
 
 .auth-main {
@@ -84,7 +90,7 @@
   justify-content: center;
   min-width: 0;
   padding: 32px 54px 78px;
-  background: #0b0f14;
+  background: var(--tf-auth-bg, #0b0f14);
 }
 
 .auth-identity-content {
@@ -94,7 +100,7 @@
 .auth-identity h1,
 .auth-mobile-intro h1 {
   margin: 0;
-  color: #f4f7fa;
+  color: var(--tf-text-primary, #e6edf3);
   font-size: 38px;
   line-height: 1.16;
   font-weight: 700;
@@ -104,7 +110,7 @@
 .auth-identity p,
 .auth-mobile-intro p {
   margin: 15px 0 0;
-  color: #8c98a5;
+  color: var(--tf-text-secondary, #8b949e);
   font-size: 14px;
   line-height: 1.65;
 }
@@ -122,8 +128,8 @@
   min-width: 0;
   padding: 40px 64px 70px;
   overflow-y: auto;
-  border-left: 1px solid #252d37;
-  background: #10151c;
+  border-left: 1px solid var(--tf-auth-divider, #252d37);
+  background: var(--tf-auth-panel-bg, #10151c);
 }
 
 .auth-form-shell {
@@ -141,21 +147,21 @@
   min-height: 40px;
   margin-bottom: 28px;
   padding: 4px;
-  border-radius: 6px;
-  background: #1a222c;
+  border-radius: var(--tf-radius);
+  background: var(--tf-auth-input-bg, #171e27);
 }
 
 .auth-mode-switch .ant-segmented-item {
   min-height: 32px;
-  border-radius: 4px;
-  color: #87929e;
+  border-radius: var(--tf-radius-sm);
+  color: var(--tf-text-secondary, #8b949e);
   line-height: 32px;
 }
 
 .auth-mode-switch .ant-segmented-item-selected {
-  background: #303b47;
+  background: var(--tf-auth-selected-bg, #303b47);
   box-shadow: none;
-  color: #f0f4f7;
+  color: var(--tf-auth-selected-text, #e6edf3);
 }
 
 .auth-form-heading {
@@ -164,7 +170,7 @@
 
 .auth-form-heading h2 {
   margin: 0;
-  color: #f2f5f8;
+  color: var(--tf-text-primary, #e6edf3);
   font-size: 23px;
   line-height: 1.3;
   font-weight: 650;
@@ -173,13 +179,13 @@
 
 .auth-form-heading p {
   margin: 7px 0 0;
-  color: #818c98;
+  color: var(--tf-text-secondary, #8b949e);
   font-size: 13px;
   line-height: 1.55;
 }
 
 .auth-form-shell .ant-form-item {
-  margin-bottom: 17px;
+  margin-bottom: calc(var(--tf-form-gap) + 1px);
 }
 
 .auth-form-shell .ant-form-item-label {
@@ -188,17 +194,17 @@
 
 .auth-form-shell .ant-form-item-label > label {
   height: auto;
-  color: #b8c1cb;
+  color: var(--tf-text-primary, #e6edf3);
   font-size: 13px;
 }
 
 .auth-form-shell .ant-input,
 .auth-form-shell .ant-input-affix-wrapper {
   min-height: 44px;
-  border-color: #3a4551;
-  border-radius: 6px;
-  background: #171e27;
-  color: #edf2f7;
+  border-color: var(--tf-border-primary, #30363d);
+  border-radius: var(--tf-radius-sm);
+  background: var(--tf-auth-input-bg, #171e27);
+  color: var(--tf-text-primary, #e6edf3);
 }
 
 .auth-form-shell .ant-input-affix-wrapper .ant-input {
@@ -209,45 +215,45 @@
 
 .auth-form-shell .ant-input-prefix {
   margin-right: 9px;
-  color: #697582;
+  color: var(--tf-text-tertiary, #6e7681);
 }
 
 .auth-form-shell .ant-input-affix-wrapper:hover,
 .auth-form-shell .ant-input:hover {
-  border-color: #566473;
+  border-color: var(--tf-primary-hover, #4096ff);
 }
 
 .auth-form-shell .ant-input-affix-wrapper-focused,
 .auth-form-shell .ant-input:focus {
-  border-color: #2f81f7;
-  box-shadow: 0 0 0 2px rgba(47, 129, 247, 0.16) !important;
+  border-color: var(--tf-primary, #1677ff);
+  box-shadow: 0 0 0 2px var(--tf-primary-border, rgba(22, 119, 255, 0.2)) !important;
 }
 
 .auth-form-shell .ant-form-item-extra {
   min-height: 0;
   padding-top: 5px;
-  color: #697582;
+  color: var(--tf-text-tertiary, #6e7681);
   font-size: 11px;
   line-height: 1.45;
 }
 
 .auth-error {
   margin-bottom: 18px;
-  border-radius: 5px;
+  border-radius: var(--tf-radius-sm);
 }
 
 .auth-submit {
   height: 44px;
   margin-top: 5px;
-  border-radius: 6px;
-  background: #2f81f7;
+  border-radius: var(--tf-radius-sm);
+  background: var(--tf-primary, #1677ff);
   font-weight: 650;
   box-shadow: none;
 }
 
 .auth-submit:hover,
 .auth-submit:focus-visible {
-  background: #4a91f8 !important;
+  background: var(--tf-primary-hover, #4096ff) !important;
 }
 
 .auth-form-footer {
@@ -255,7 +261,7 @@
   align-items: center;
   justify-content: space-between;
   margin-top: 26px;
-  color: #66727e;
+  color: var(--tf-text-tertiary, #6e7681);
   font-size: 11px;
 }
 
@@ -277,7 +283,21 @@
 }
 
 .auth-service-status.is-unavailable {
-  color: #9b8583;
+  color: var(--tf-text-secondary, #8b949e);
+}
+
+@media (min-width: 821px) {
+  :root[data-style='studio'] .auth-panel {
+    margin: 24px 24px 40px 0;
+    border: 1px solid var(--tf-border-secondary);
+    border-radius: var(--tf-radius-lg);
+    box-shadow: var(--tf-panel-shadow);
+  }
+
+  :root[data-style='workbench'] .auth-form-heading {
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--tf-border-secondary);
+  }
 }
 
 @media (max-width: 980px) {
@@ -304,7 +324,7 @@
   .auth-topbar {
     height: 64px;
     padding: 0 24px;
-    border-bottom: 1px solid #202832;
+    border-bottom: 1px solid var(--tf-border-secondary, #21262d);
   }
 
   .auth-language .ant-btn {
@@ -328,7 +348,7 @@
     padding: 42px 24px 30px;
     overflow: visible;
     border-left: 0;
-    background: #0b0f14;
+    background: var(--tf-auth-bg, #0b0f14);
   }
 
   .auth-form-shell {

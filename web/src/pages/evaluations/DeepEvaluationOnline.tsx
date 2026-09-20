@@ -263,7 +263,7 @@ export default function DeepEvaluationOnline() {
           </Col>
           <Col span={12}>
             {selectedLLMConfig && (
-              <div style={{ padding: '8px 12px', background: '#f5f5f5', borderRadius: 4, marginTop: 30 }}>
+              <div style={{ padding: '8px 12px', background: 'var(--tf-bg-elevated)', borderRadius: 4, marginTop: 30 }}>
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   {t('online.endpoint')}: {selectedLLMConfig.api_endpoint} | {t('online.modelLabel')}: {selectedLLMConfig.model_name || '-'}
                 </Text>

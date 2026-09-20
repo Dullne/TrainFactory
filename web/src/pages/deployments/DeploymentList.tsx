@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Table,
@@ -21,6 +21,7 @@ import {
   Form,
   Switch,
   Alert,
+  Grid,
 } from 'antd'
 import {
   PlusOutlined,
@@ -43,13 +44,16 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { useTranslation } from 'react-i18next'
 import { deploymentApi, modelApi, externalApiConfigApi } from '@/services/api'
-import { useList, usePolling } from '@/hooks'
+import { usePolling } from '@/hooks'
+import { useWorkspaceList } from '@/hooks/useListWorkspace'
+import { MobileList, renderListCell } from '@/components/ListWorkspace'
 import { copyToClipboard as copyText } from '@/utils'
 import type {
   CreateDeploymentRequest,
   Deployment,
   DeploymentReplica,
   DeploymentStatus,
+  DeploymentStats,
   ExternalApiConfig,
   HealthStatus,
   RegisteredModel,
@@ -78,7 +82,9 @@ const getRuntimeAccelerators = (deployment: Deployment): string[] => {
   return []
 }
 
-const normalizeHealthStatus = (healthStatus?: HealthStatus): 'healthy' | 'unhealthy' | 'unknown' => {
+const normalizeHealthStatus = (
+  healthStatus?: HealthStatus
+): 'healthy' | 'unhealthy' | 'unknown' => {
   switch (healthStatus) {
     case 'HEALTHY':
       return 'healthy'
@@ -93,13 +99,21 @@ const canStartDeployment = (status: DeploymentStatus): boolean =>
   status === 'stopped' || status === 'failed'
 
 const canStopDeployment = (status: DeploymentStatus): boolean =>
-  status === 'running' || status === 'degraded' || status === 'pending' || status === 'starting' || status === 'restarting'
+  status === 'running' ||
+  status === 'degraded' ||
+  status === 'pending' ||
+  status === 'starting' ||
+  status === 'restarting'
 
 const canRestartDeployment = (status: DeploymentStatus): boolean =>
   status === 'running' || status === 'degraded'
 
 const canDeleteDeployment = (status: DeploymentStatus): boolean =>
   status === 'stopped' || status === 'failed' || status === 'pending'
+
+const LIST_FILTERS = {
+  status: ['pending', 'running', 'degraded', 'restarting', 'stopped', 'failed'],
+}
 
 // One API deployment is one user-visible replica group.
 interface DeploymentGroup {
@@ -117,17 +131,17 @@ interface DeploymentGroup {
   running_count: number
   total_memory_mb: number | null
   total_memory_percent: number | null
-  total_memory_utilization: number | null  // Configured limit (fallback)
+  total_memory_utilization: number | null // Configured limit (fallback)
 }
 
 export default function DeploymentList() {
-  const { t } = useTranslation(['deployments', 'common'])
+  const { t } = useTranslation(['deployments', 'common', 'listWorkspace'])
+  const mobile = Grid.useBreakpoint().xs === true
   const copyEndpointLabel = `${t('common:action.copy')}: ${t('list.replicaColumns.endpoint')}`
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   // 从模型列表「部署」按钮跳转而来：按 model_id 预过滤
   const modelIdFilter = searchParams.get('model_id') || undefined
-  const [statusFilter, setStatusFilter] = useState<string>()
   const [createVisible, setCreateVisible] = useState(false)
   const [models, setModels] = useState<RegisteredModel[]>([])
   const [creating, setCreating] = useState(false)
@@ -162,32 +176,31 @@ export default function DeploymentList() {
     { label: t('common:status.failed'), value: 'failed' },
   ]
 
-  const fetchDeployments = useCallback(
-    (params: Parameters<typeof deploymentApi.list>[0]) => deploymentApi.list({ ...(params ?? {}), status: statusFilter, model_id: modelIdFilter }),
-    [statusFilter, modelIdFilter]
-  )
-
   const {
     data: deployments,
     loading,
+    error,
+    hasData,
+    isStale,
+    extra,
     page,
     pageSize,
     total,
-    setPage,
-    setPageSize,
-    fetch,
     refresh,
-  } = useList<Deployment>(
-    fetchDeployments,
-    { defaultPageSize: 10 }
-  )
+    workspace,
+  } = useWorkspaceList<Deployment, { stats?: DeploymentStats }>(deploymentApi.list, {
+    filters: LIST_FILTERS,
+    params: { model_id: modelIdFilter },
+  })
+  const statusFilter = workspace.values.status
+  const setStatusFilter = (value: string | undefined) => workspace.setFilter('status', value)
 
   // Keep deployment groups distinct even when they share an endpoint or container.
   const groupedDeployments = useMemo(() => {
     return deployments.map((dep): DeploymentGroup => {
       const replicas = dep.replica_instances ?? []
       const runningReplicas = replicas.filter(
-        (replica) => replica.status === 'running' && replica.health_status === 'HEALTHY',
+        (replica) => replica.status === 'running' && replica.health_status === 'HEALTHY'
       ).length
       return {
         key: dep.deployment_id,
@@ -209,12 +222,15 @@ export default function DeploymentList() {
   }, [deployments])
 
   const stats = useMemo(() => {
-    const running = deployments.filter((d) => d.status === 'running' || d.status === 'restarting').length
-    const degraded = deployments.filter((d) => d.status === 'degraded').length
-    const stopped = deployments.filter((d) => d.status === 'stopped').length
-    const failed = deployments.filter((d) => d.status === 'failed').length
-    return { total: deployments.length, running, degraded, stopped, failed }
-  }, [deployments])
+    const counts = extra?.stats?.by_status
+    return {
+      total: extra?.stats?.total ?? total,
+      running: counts ? (counts.running ?? 0) + (counts.restarting ?? 0) : '—',
+      degraded: counts ? (counts.degraded ?? 0) : '—',
+      stopped: counts ? (counts.stopped ?? 0) : '—',
+      failed: counts ? (counts.failed ?? 0) : '—',
+    }
+  }, [extra, total])
 
   const fetchModels = async () => {
     try {
@@ -235,15 +251,11 @@ export default function DeploymentList() {
     fetchModels()
   }, [])
 
-  /* eslint-disable react-hooks/exhaustive-deps */
-  useEffect(() => {
-    fetch({ page: 1 })
-  }, [statusFilter])
-  /* eslint-enable react-hooks/exhaustive-deps */
-
-  const hasPending = deployments.some((d) => d.status === 'pending' || d.status === 'starting' || d.status === 'restarting')
+  const hasPending = deployments.some(
+    (d) => d.status === 'pending' || d.status === 'starting' || d.status === 'restarting'
+  )
   const hasRunning = deployments.some(
-    (d) => d.status === 'running' || d.status === 'degraded' || d.status === 'restarting',
+    (d) => d.status === 'running' || d.status === 'degraded' || d.status === 'restarting'
   )
 
   usePolling(refresh, {
@@ -285,7 +297,7 @@ export default function DeploymentList() {
   const handleReplicaAction = async (
     action: 'start' | 'stop' | 'restart' | 'recreate',
     deploymentId: string,
-    replicaId: string,
+    replicaId: string
   ) => {
     const actionKey = `${action}:${replicaId}`
     setReplicaAction(actionKey)
@@ -302,9 +314,7 @@ export default function DeploymentList() {
       message.success(t('list.message.replicaActionSuccess'))
       refresh()
     } catch (error) {
-      message.error(
-        error instanceof Error ? error.message : t('list.message.replicaActionFailed'),
-      )
+      message.error(error instanceof Error ? error.message : t('list.message.replicaActionFailed'))
     } finally {
       setReplicaAction(null)
     }
@@ -321,7 +331,10 @@ export default function DeploymentList() {
     if (!restartTarget) return
     setRestarting(true)
     try {
-      await deploymentApi.restart(restartTarget.deployment_id, { mode: restartMode, reset_gpu: restartResetGpu })
+      await deploymentApi.restart(restartTarget.deployment_id, {
+        mode: restartMode,
+        reset_gpu: restartResetGpu,
+      })
       message.success(t('list.message.restartSuccess'))
       setRestartVisible(false)
       refresh()
@@ -400,7 +413,7 @@ export default function DeploymentList() {
     const config = deployment.config ?? {}
     const { fields, otherConfig } = prepareDeploymentConfigEditor(
       config,
-      deployment.inference_framework,
+      deployment.inference_framework
     )
     editConfigForm.setFieldsValue(fields)
     setEditConfigOtherJson(
@@ -410,7 +423,8 @@ export default function DeploymentList() {
     setEditConfigVisible(true)
     // Load API configs for dropdown
     setEditApiConfigsLoading(true)
-    externalApiConfigApi.list()
+    externalApiConfigApi
+      .list()
       .then((res) => setEditApiConfigs(res.configs || []))
       .catch(() => setEditApiConfigs([]))
       .finally(() => setEditApiConfigsLoading(false))
@@ -572,7 +586,11 @@ export default function DeploymentList() {
         if (group.total_memory_mb !== null) {
           const usedGB = (group.total_memory_mb / 1024).toFixed(1)
           const percent = group.total_memory_percent?.toFixed(1) || '?'
-          return <span>{usedGB}GB ({percent}%)</span>
+          return (
+            <span>
+              {usedGB}GB ({percent}%)
+            </span>
+          )
         }
         if (group.total_memory_percent !== null) {
           return <span>{group.total_memory_percent.toFixed(1)}%</span>
@@ -639,9 +657,19 @@ export default function DeploymentList() {
               )}
               {canStop && (
                 <>
-                  <Popconfirm title={t('list.confirm.stop')} onConfirm={() => handleStop(record.deployment_id)}>
+                  <Popconfirm
+                    title={t('list.confirm.stop')}
+                    onConfirm={() => handleStop(record.deployment_id)}
+                  >
                     <Tooltip title={t('list.tooltip.stop')}>
-                      <Button type="text" size="small" loading={stopping === record.deployment_id} icon={<PauseCircleOutlined />} aria-label={t('list.tooltip.stop')} onClick={(e) => e.stopPropagation()} />
+                      <Button
+                        type="text"
+                        size="small"
+                        loading={stopping === record.deployment_id}
+                        icon={<PauseCircleOutlined />}
+                        aria-label={t('list.tooltip.stop')}
+                        onClick={(e) => e.stopPropagation()}
+                      />
                     </Tooltip>
                   </Popconfirm>
                 </>
@@ -678,9 +706,19 @@ export default function DeploymentList() {
                 </>
               )}
               {canDelete && (
-                <Popconfirm title={t('list.confirm.delete')} onConfirm={() => handleDelete(record.deployment_id)}>
+                <Popconfirm
+                  title={t('list.confirm.delete')}
+                  onConfirm={() => handleDelete(record.deployment_id)}
+                >
                   <Tooltip title={t('list.tooltip.delete')}>
-                    <Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label={t('list.tooltip.delete')} onClick={(e) => e.stopPropagation()} />
+                    <Button
+                      type="text"
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      aria-label={t('list.tooltip.delete')}
+                      onClick={(e) => e.stopPropagation()}
+                    />
                   </Tooltip>
                 </Popconfirm>
               )}
@@ -773,11 +811,7 @@ export default function DeploymentList() {
                 aria-label={t('list.tooltip.startReplica')}
                 loading={replicaAction === `start:${replica.replica_id}`}
                 onClick={() =>
-                  void handleReplicaAction(
-                    'start',
-                    replica.deployment_id,
-                    replica.replica_id,
-                  )
+                  void handleReplicaAction('start', replica.deployment_id, replica.replica_id)
                 }
               />
             </Tooltip>
@@ -809,11 +843,7 @@ export default function DeploymentList() {
                 aria-label={t('list.tooltip.restartReplica')}
                 loading={replicaAction === `restart:${replica.replica_id}`}
                 onClick={() =>
-                  void handleReplicaAction(
-                    'restart',
-                    replica.deployment_id,
-                    replica.replica_id,
-                  )
+                  void handleReplicaAction('restart', replica.deployment_id, replica.replica_id)
                 }
               />
             </Tooltip>
@@ -839,12 +869,121 @@ export default function DeploymentList() {
     },
   ]
 
+  const mobileCards = (
+    <MobileList
+      loading={loading}
+      empty={groupedDeployments.length === 0}
+      pagination={{
+        current: page,
+        pageSize,
+        total,
+        showSizeChanger: true,
+        showTotal: (count) => t('list.pagination.totalDeployments', { total: count }),
+        onChange: workspace.setPagination,
+      }}
+    >
+      {groupedDeployments.map((group) => {
+        const deployment = group.deployments[0]
+        const replicas = deployment.replica_instances ?? []
+        const expanded = expandedKeys.includes(group.key)
+        return (
+          <article
+            key={group.key}
+            className="list-workspace-card"
+            aria-label={deployment.deployment_name}
+          >
+            <div className="list-workspace-card-header">
+              {renderListCell(groupColumns, 'container_name', group)}
+              <StatusTag status={group.status} />
+            </div>
+            <Text type="secondary">
+              {t('listWorkspace:runningReplicas', {
+                running: group.running_count,
+                total: replicas.length || deployment.replica,
+              })}
+            </Text>
+            <dl className="list-workspace-fields">
+              {['inference_framework', 'health_status', 'gpu_id', 'gpu_memory', 'port'].map(
+                (key) => (
+                  <div key={key} className="list-workspace-field">
+                    <dt>
+                      {key === 'gpu_id'
+                        ? 'GPU'
+                        : t(
+                            `list.groupColumns.${({ inference_framework: 'framework', health_status: 'health', gpu_memory: 'gpuMemory', port: 'port' } as Record<string, string>)[key]}`
+                          )}
+                    </dt>
+                    <dd>{renderListCell(groupColumns, key, group)}</dd>
+                  </div>
+                )
+              )}
+            </dl>
+            <div className="list-workspace-actions">
+              {renderListCell(groupColumns, 'actions', group)}
+            </div>
+            {replicas.length > 0 && (
+              <>
+                <Button
+                  type="text"
+                  block
+                  icon={expanded ? <DownOutlined /> : <RightOutlined />}
+                  aria-expanded={expanded}
+                  aria-label={t(
+                    expanded ? 'list.tooltip.collapseReplicas' : 'list.tooltip.expandReplicas'
+                  )}
+                  onClick={() =>
+                    setExpandedKeys((keys) =>
+                      expanded ? keys.filter((key) => key !== group.key) : [...keys, group.key]
+                    )
+                  }
+                >
+                  {t('listWorkspace:replicas')} ({replicas.length})
+                </Button>
+                {expanded && (
+                  <div className="list-workspace-replicas">
+                    {replicas.map((replica) => (
+                      <section
+                        key={replica.replica_id}
+                        className="list-workspace-replica"
+                        aria-label={`${t('list.replicaColumns.replica')} ${replica.replica_index}`}
+                      >
+                        <div className="list-workspace-card-header">
+                          {renderListCell(replicaColumns, 'replica', replica)}
+                          <StatusTag status={replica.status} />
+                        </div>
+                        <dl className="list-workspace-fields">
+                          <div className="list-workspace-field list-workspace-field-wide">
+                            <dt>{t('list.replicaColumns.endpoint')}</dt>
+                            <dd>{renderListCell(replicaColumns, 'endpoint', replica)}</dd>
+                          </div>
+                          <div className="list-workspace-field">
+                            <dt>GPU</dt>
+                            <dd>{renderListCell(replicaColumns, 'gpu_ids', replica)}</dd>
+                          </div>
+                          <div className="list-workspace-field">
+                            <dt>{t('list.groupColumns.health')}</dt>
+                            <dd>{renderListCell(replicaColumns, 'health_status', replica)}</dd>
+                          </div>
+                        </dl>
+                        <div className="list-workspace-actions">
+                          {renderListCell(replicaColumns, 'actions', replica)}
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </article>
+        )
+      })}
+    </MobileList>
+  )
+
   // Expanded row render
   const expandedRowRender = (group: DeploymentGroup) => {
     const replicas = group.deployments[0].replica_instances ?? []
-    if (replicas.length === 0) {
-      return null
-    }
+    if (replicas.length === 0) return null
     return (
       <Table
         rowKey="replica_id"
@@ -859,8 +998,8 @@ export default function DeploymentList() {
 
   return (
     <div>
-      <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
-        <Col xs={24} sm={12} lg={8} xxl={4}>
+      <Row className="page-stats page-stats-five" gutter={[12, 12]} style={{ marginBottom: 20 }}>
+        <Col xs={12} md={8}>
           <StatCard
             title={t('list.stats.total')}
             value={stats.total}
@@ -868,7 +1007,7 @@ export default function DeploymentList() {
             color={STATUS_INFO}
           />
         </Col>
-        <Col xs={24} sm={12} lg={8} xxl={4}>
+        <Col xs={12} md={8}>
           <StatCard
             title={t('list.stats.running')}
             value={stats.running}
@@ -876,7 +1015,7 @@ export default function DeploymentList() {
             color={STATUS_SUCCESS}
           />
         </Col>
-        <Col xs={24} sm={12} lg={8} xxl={4}>
+        <Col xs={12} md={8}>
           <StatCard
             title={t('list.stats.degraded')}
             value={stats.degraded}
@@ -884,7 +1023,7 @@ export default function DeploymentList() {
             color={STATUS_WARNING}
           />
         </Col>
-        <Col xs={24} sm={12} lg={8} xxl={4}>
+        <Col xs={12} md={8}>
           <StatCard
             title={t('list.stats.stopped')}
             value={stats.stopped}
@@ -892,7 +1031,7 @@ export default function DeploymentList() {
             color={STATUS_WARNING}
           />
         </Col>
-        <Col xs={24} sm={12} lg={8} xxl={4}>
+        <Col xs={12} md={8}>
           <StatCard
             title={t('list.stats.failed')}
             value={stats.failed}
@@ -902,20 +1041,11 @@ export default function DeploymentList() {
         </Col>
       </Row>
 
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: 12,
-          marginBottom: 16,
-        }}
-      >
+      <div className="page-toolbar">
         <Title level={4} style={{ margin: 0 }}>
           {t('list.title')}
         </Title>
-        <Space wrap>
+        <Space className="page-toolbar-actions" wrap>
           <Select
             placeholder={t('list.filter.statusPlaceholder')}
             allowClear
@@ -933,45 +1063,61 @@ export default function DeploymentList() {
         </Space>
       </div>
 
-      <Table
-        rowKey="key"
-        columns={groupColumns}
-        dataSource={groupedDeployments}
-        loading={loading}
-        expandable={{
-          expandedRowRender,
-          rowExpandable: (group) =>
-            (group.deployments[0].replica_instances?.length ?? 0) > 0,
-          expandedRowKeys: expandedKeys,
-          onExpandedRowsChange: (keys) => setExpandedKeys(keys as string[]),
-          expandIcon: ({ expanded, onExpand, record }) =>
-            (record.deployments[0].replica_instances?.length ?? 0) > 0 ? (
-              <Button
-                type="text"
-                size="small"
-                icon={expanded ? <DownOutlined /> : <RightOutlined />}
-                aria-label={
-                  expanded ? t('list.tooltip.collapseReplicas') : t('list.tooltip.expandReplicas')
-                }
-                onClick={(event) => onExpand(record, event)}
-              />
-            ) : (
-              <span style={{ width: 16, marginRight: 8, display: 'inline-block' }} />
-            ),
-        }}
-        scroll={{ x: 1120 }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (count) => t('list.pagination.totalDeployments', { total: count }),
-          onChange: (p, ps) => {
-            setPage(p)
-            setPageSize(ps)
-          },
-        }}
-      />
+      {(error || isStale) && (
+        <Alert
+          showIcon
+          type={error ? 'warning' : 'info'}
+          style={{ marginBottom: 16 }}
+          message={t(
+            error
+              ? hasData
+                ? 'common:listState.refreshFailed'
+                : 'common:listState.loadFailed'
+              : 'common:listState.showingPrevious'
+          )}
+        />
+      )}
+      {mobile ? (
+        mobileCards
+      ) : (
+        <Table
+          rowKey="key"
+          columns={groupColumns}
+          dataSource={groupedDeployments}
+          loading={loading}
+          expandable={{
+            expandedRowRender,
+            rowExpandable: (group) => (group.deployments[0].replica_instances?.length ?? 0) > 0,
+            expandedRowKeys: expandedKeys,
+            onExpandedRowsChange: (keys) => setExpandedKeys(keys as string[]),
+            expandIcon: ({ expanded, onExpand, record }) =>
+              (record.deployments[0].replica_instances?.length ?? 0) > 0 ? (
+                <Button
+                  type="text"
+                  size="small"
+                  icon={expanded ? <DownOutlined /> : <RightOutlined />}
+                  aria-label={
+                    expanded ? t('list.tooltip.collapseReplicas') : t('list.tooltip.expandReplicas')
+                  }
+                  onClick={(event) => onExpand(record, event)}
+                />
+              ) : (
+                <span style={{ width: 16, marginRight: 8, display: 'inline-block' }} />
+              ),
+          }}
+          scroll={{ x: 1120 }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            showTotal: (count) => t('list.pagination.totalDeployments', { total: count }),
+            onChange: (p, ps) => {
+              workspace.setPagination(p, ps)
+            },
+          }}
+        />
+      )}
 
       <CreateDeploymentModal
         visible={createVisible}
@@ -995,7 +1141,9 @@ export default function DeploymentList() {
         <Space direction="vertical" style={{ width: '100%' }}>
           <Text>{t('restart.description')}</Text>
           <div style={{ marginTop: 16 }}>
-            <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('restart.modeLabel')}</Text>
+            <Text strong style={{ display: 'block', marginBottom: 8 }}>
+              {t('restart.modeLabel')}
+            </Text>
             <Radio.Group value={restartMode} onChange={(e) => setRestartMode(e.target.value)}>
               <Space direction="vertical">
                 <Radio value="auto">
@@ -1023,16 +1171,19 @@ export default function DeploymentList() {
               </Space>
             </Radio.Group>
           </div>
-          {restartMode === 'container' && restartTarget?.deploy_mode === 'container' && restartTarget.gpu_id !== null && restartTarget.gpu_id !== undefined && (
-            <div style={{ marginTop: 16 }}>
-              <Checkbox
-                checked={restartResetGpu}
-                onChange={(e) => setRestartResetGpu(e.target.checked)}
-              >
-                {t('restart.resetGpu')}
-              </Checkbox>
-            </div>
-          )}
+          {restartMode === 'container' &&
+            restartTarget?.deploy_mode === 'container' &&
+            restartTarget.gpu_id !== null &&
+            restartTarget.gpu_id !== undefined && (
+              <div style={{ marginTop: 16 }}>
+                <Checkbox
+                  checked={restartResetGpu}
+                  onChange={(e) => setRestartResetGpu(e.target.checked)}
+                >
+                  {t('restart.resetGpu')}
+                </Checkbox>
+              </div>
+            )}
         </Space>
       </Modal>
 
@@ -1067,11 +1218,7 @@ export default function DeploymentList() {
             />
           </Form.Item>
 
-          <Form.Item
-            name="dtype"
-            label={t('editConfig.dtype')}
-            extra={t('editConfig.dtypeHint')}
-          >
+          <Form.Item name="dtype" label={t('editConfig.dtype')} extra={t('editConfig.dtypeHint')}>
             <Select
               allowClear
               placeholder={t('editConfig.dtypePlaceholder')}
@@ -1114,10 +1261,7 @@ export default function DeploymentList() {
             </Form.Item>
           )}
 
-          <Form.Item
-            label={t('editConfig.otherConfig')}
-            extra={t('editConfig.otherConfigHint')}
-          >
+          <Form.Item label={t('editConfig.otherConfig')} extra={t('editConfig.otherConfigHint')}>
             <Input.TextArea
               value={editConfigOtherJson}
               onChange={(e) => setEditConfigOtherJson(e.target.value)}
@@ -1131,20 +1275,22 @@ export default function DeploymentList() {
         {editConfigRuntime && Object.keys(editConfigRuntime).length > 0 && (
           <>
             <Text type="secondary">{t('editConfig.runtimeParams')}</Text>
-            <pre style={{
-              background: '#1a1a2e',
-              color: '#e0e0e0',
-              padding: 16,
-              borderRadius: 8,
-              overflow: 'auto',
-              maxHeight: 200,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-all',
-              fontSize: 12,
-              lineHeight: 1.6,
-              marginTop: 8,
-              marginBottom: 0,
-            }}>
+            <pre
+              style={{
+                background: 'var(--tf-bg-elevated)',
+                color: 'var(--tf-text-primary)',
+                padding: 16,
+                borderRadius: 8,
+                overflow: 'auto',
+                maxHeight: 200,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all',
+                fontSize: 12,
+                lineHeight: 1.6,
+                marginTop: 8,
+                marginBottom: 0,
+              }}
+            >
               {JSON.stringify(editConfigRuntime, null, 2)}
             </pre>
           </>
@@ -1159,172 +1305,83 @@ export default function DeploymentList() {
         footer={<Button onClick={() => setParamsVisible(false)}>{t('common:action.close')}</Button>}
         width={720}
       >
-        {paramsDeployment && (() => {
-          const dep = paramsDeployment
-          const config = dep.config || {}
-          const launchConfig = getDeploymentLaunchConfig(config)
-          const dockerCmd = config.docker_cmd as string | undefined
-          const model = modelMap.get(dep.model_id)
-          const runtimeInfo = dep.runtime_info as Record<string, unknown> | undefined
+        {paramsDeployment &&
+          (() => {
+            const dep = paramsDeployment
+            const config = dep.config || {}
+            const launchConfig = getDeploymentLaunchConfig(config)
+            const dockerCmd = config.docker_cmd as string | undefined
+            const model = modelMap.get(dep.model_id)
+            const runtimeInfo = dep.runtime_info as Record<string, unknown> | undefined
 
-          // Parse key parameters from docker_cmd as fallback
-          const parseFromCmd = (flag: string): string | undefined => {
-            if (!dockerCmd) return undefined
-            // --flag value
-            const re = new RegExp(`${flag}[\\s=]+([^\\s]+)`)
-            const m = dockerCmd.match(re)
-            return m?.[1]
-          }
-          const hasFlagInCmd = (flag: string): boolean => {
-            return !!dockerCmd?.includes(flag)
-          }
+            // Parse key parameters from docker_cmd as fallback
+            const parseFromCmd = (flag: string): string | undefined => {
+              if (!dockerCmd) return undefined
+              // --flag value
+              const re = new RegExp(`${flag}[\\s=]+([^\\s]+)`)
+              const m = dockerCmd.match(re)
+              return m?.[1]
+            }
+            const hasFlagInCmd = (flag: string): boolean => {
+              return !!dockerCmd?.includes(flag)
+            }
 
-          const managedDtype = getManagedDeploymentConfigValue(config, 'dtype')
-          const managedEnforceEager = getManagedDeploymentConfigValue(
-            config,
-            'enforce_eager',
-          )
-          const managedAttentionBackend = getManagedDeploymentConfigValue(
-            config,
-            'attention_backend',
-          )
-          const dtype =
-            (typeof managedDtype === 'string' ? managedDtype : undefined) ||
-            (!launchConfig ? parseFromCmd('--dtype') : undefined) ||
-            '-'
-          const enforceEager =
-            managedEnforceEager === true ||
-            (!launchConfig && hasFlagInCmd('--enforce-eager'))
-          const attentionBackend =
-            (typeof managedAttentionBackend === 'string'
-              ? managedAttentionBackend
-              : undefined) ||
-            (!launchConfig ? parseFromCmd('--attention-backend') : undefined) ||
-            '-'
-          const maxModelLen =
-            (launchConfig?.max_context_length as number | undefined)?.toString() ||
-            (!launchConfig ? parseFromCmd('--max-model-len') : undefined) ||
-            (!launchConfig ? parseFromCmd('--max_model_len') : undefined)
-          const tensorParallelSize =
-            (launchConfig?.tensor_parallel_size as number | undefined)?.toString() ||
-            (!launchConfig ? parseFromCmd('--tensor-parallel-size') : undefined) ||
-            (!launchConfig ? parseFromCmd('--tp') : undefined)
-          const chatTemplate = parseFromCmd('--chat-template')
+            const managedDtype = getManagedDeploymentConfigValue(config, 'dtype')
+            const managedEnforceEager = getManagedDeploymentConfigValue(config, 'enforce_eager')
+            const managedAttentionBackend = getManagedDeploymentConfigValue(
+              config,
+              'attention_backend'
+            )
+            const dtype =
+              (typeof managedDtype === 'string' ? managedDtype : undefined) ||
+              (!launchConfig ? parseFromCmd('--dtype') : undefined) ||
+              '-'
+            const enforceEager =
+              managedEnforceEager === true || (!launchConfig && hasFlagInCmd('--enforce-eager'))
+            const attentionBackend =
+              (typeof managedAttentionBackend === 'string' ? managedAttentionBackend : undefined) ||
+              (!launchConfig ? parseFromCmd('--attention-backend') : undefined) ||
+              '-'
+            const maxModelLen =
+              (launchConfig?.max_context_length as number | undefined)?.toString() ||
+              (!launchConfig ? parseFromCmd('--max-model-len') : undefined) ||
+              (!launchConfig ? parseFromCmd('--max_model_len') : undefined)
+            const tensorParallelSize =
+              (launchConfig?.tensor_parallel_size as number | undefined)?.toString() ||
+              (!launchConfig ? parseFromCmd('--tensor-parallel-size') : undefined) ||
+              (!launchConfig ? parseFromCmd('--tp') : undefined)
+            const chatTemplate = parseFromCmd('--chat-template')
 
-          const runtimeAccelerators = getRuntimeAccelerators(dep)
-          const hasRuntimeInfo = runtimeInfo && Object.keys(runtimeInfo).length > 0
-          const hasConfig = config && Object.keys(config).length > 0
+            const runtimeAccelerators = getRuntimeAccelerators(dep)
+            const hasRuntimeInfo = runtimeInfo && Object.keys(runtimeInfo).length > 0
+            const hasConfig = config && Object.keys(config).length > 0
 
-          const renderJsonBlock = (title: string, value: Record<string, unknown>) => (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <Text strong>{title}</Text>
-                <Button
-                  size="small"
-                  icon={<CopyOutlined />}
-                  onClick={() => {
-                    copyText(JSON.stringify(value, null, 2))
-                    message.success(t('list.message.copied'))
+            const renderJsonBlock = (title: string, value: Record<string, unknown>) => (
+              <>
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginBottom: 8,
                   }}
                 >
-                  {t('common:action.copy')}
-                </Button>
-              </div>
-              <pre style={{
-                background: '#1a1a2e',
-                color: '#e0e0e0',
-                padding: 16,
-                borderRadius: 8,
-                overflow: 'auto',
-                maxHeight: 300,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-all',
-                fontSize: 13,
-                lineHeight: 1.6,
-                marginBottom: 16,
-              }}>
-                {JSON.stringify(value, null, 2)}
-              </pre>
-            </>
-          )
-
-          // Framework-specific parameters
-          const isVllm = dep.inference_framework === 'vllm'
-          const isSglang = dep.inference_framework === 'sglang'
-
-          return (
-            <>
-              <Descriptions column={2} bordered size="small" style={{ marginBottom: 16 }}>
-                <Descriptions.Item label={t('paramsModal.deploymentName')}>{dep.deployment_name || '-'}</Descriptions.Item>
-                <Descriptions.Item label={t('paramsModal.inferenceFramework')}>
-                  <Tag color={isVllm ? 'blue' : isSglang ? 'green' : 'orange'}>
-                    {dep.inference_framework?.toUpperCase()}
-                  </Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label={t('paramsModal.model')}>
-                  {model ? (
-                    <Button type="link" size="small" style={{ padding: 0 }} onClick={() => { setParamsVisible(false); navigate(`/models?detail=${dep.model_id}`) }}>
-                      {model.model_name}
-                    </Button>
-                  ) : dep.model_id}
-                </Descriptions.Item>
-                <Descriptions.Item label={t('paramsModal.containerMode')}>
-                  {dep.deploy_mode === 'container' ? t('paramsModal.containerModeStandalone') : t('paramsModal.containerModeShared')}
-                </Descriptions.Item>
-                <Descriptions.Item label={t('paramsModal.dtype')}>
-                  <Tag color={dtype === 'bfloat16' ? 'blue' : dtype === 'float16' ? 'orange' : 'default'}>{dtype}</Tag>
-                </Descriptions.Item>
-                <Descriptions.Item label={t('paramsModal.gpuMemoryLimit')}>{dep.gpu_memory_utilization ? `${Math.round(dep.gpu_memory_utilization * 100)}%` : '-'}</Descriptions.Item>
-                {isVllm && (
-                  <Descriptions.Item label={t('paramsModal.enforceEager')}>
-                    <Tag color={enforceEager ? 'warning' : 'default'}>{enforceEager ? t('paramsModal.enforceEagerYes') : t('paramsModal.enforceEagerNo')}</Tag>
-                  </Descriptions.Item>
-                )}
-                {isSglang && (
-                  <Descriptions.Item label={t('paramsModal.attentionBackend')}>
-                    <Tag color={attentionBackend !== '-' ? 'processing' : 'default'}>{attentionBackend}</Tag>
-                  </Descriptions.Item>
-                )}
-                <Descriptions.Item label={t('paramsModal.gpu')}>
-                  {runtimeAccelerators.length > 0
-                    ? `GPU ${runtimeAccelerators.join(',')}`
-                    : dep.gpu_id !== undefined && dep.gpu_id !== null
-                      ? `GPU ${dep.gpu_id}`
-                      : dep.deploy_mode === 'shared'
-                        ? t('paramsModal.gpuShared')
-                        : '-'}
-                </Descriptions.Item>
-                <Descriptions.Item label={t('paramsModal.lora')}>{dep.enable_lora ? t('paramsModal.loraEnabled', { maxLoras: dep.max_loras, maxRank: dep.max_lora_rank }) : t('paramsModal.loraDisabled')}</Descriptions.Item>
-                {maxModelLen && <Descriptions.Item label={t('paramsModal.maxLength')}>{maxModelLen}</Descriptions.Item>}
-                {tensorParallelSize && <Descriptions.Item label={t('paramsModal.tensorParallel')}>{tensorParallelSize}</Descriptions.Item>}
-                {chatTemplate && (
-                  <Descriptions.Item label="Chat Template" span={2}>
-                    <Text code style={{ fontSize: 12 }}>{chatTemplate}</Text>
-                  </Descriptions.Item>
-                )}
-                <Descriptions.Item label={t('paramsModal.replicaCount')}>{dep.replica}</Descriptions.Item>
-                <Descriptions.Item label={t('paramsModal.port')}>{dep.port || '-'}</Descriptions.Item>
-              </Descriptions>
-              {hasRuntimeInfo && renderJsonBlock(t('paramsModal.runtimeParams'), runtimeInfo)}
-              {hasConfig && renderJsonBlock(t('paramsModal.customConfig'), config)}
-              {dockerCmd && (
-                <>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <Text strong>{t('paramsModal.startupCommand')}</Text>
-                    <Button
-                      size="small"
-                      icon={<CopyOutlined />}
-                      onClick={() => {
-                        copyText(dockerCmd)
-                        message.success(t('list.message.copied'))
-                      }}
-                    >
-                      {t('common:action.copy')}
-                    </Button>
-                  </div>
-                  <pre style={{
-                    background: '#1a1a2e',
-                    color: '#e0e0e0',
+                  <Text strong>{title}</Text>
+                  <Button
+                    size="small"
+                    icon={<CopyOutlined />}
+                    onClick={() => {
+                      copyText(JSON.stringify(value, null, 2))
+                      message.success(t('list.message.copied'))
+                    }}
+                  >
+                    {t('common:action.copy')}
+                  </Button>
+                </div>
+                <pre
+                  style={{
+                    background: 'var(--tf-bg-elevated)',
+                    color: 'var(--tf-text-primary)',
                     padding: 16,
                     borderRadius: 8,
                     overflow: 'auto',
@@ -1333,14 +1390,167 @@ export default function DeploymentList() {
                     wordBreak: 'break-all',
                     fontSize: 13,
                     lineHeight: 1.6,
-                  }}>
-                    {dockerCmd}
-                  </pre>
-                </>
-              )}
-            </>
-          )
-        })()}
+                    marginBottom: 16,
+                  }}
+                >
+                  {JSON.stringify(value, null, 2)}
+                </pre>
+              </>
+            )
+
+            // Framework-specific parameters
+            const isVllm = dep.inference_framework === 'vllm'
+            const isSglang = dep.inference_framework === 'sglang'
+
+            return (
+              <>
+                <Descriptions column={2} bordered size="small" style={{ marginBottom: 16 }}>
+                  <Descriptions.Item label={t('paramsModal.deploymentName')}>
+                    {dep.deployment_name || '-'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('paramsModal.inferenceFramework')}>
+                    <Tag color={isVllm ? 'blue' : isSglang ? 'green' : 'orange'}>
+                      {dep.inference_framework?.toUpperCase()}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('paramsModal.model')}>
+                    {model ? (
+                      <Button
+                        type="link"
+                        size="small"
+                        style={{ padding: 0 }}
+                        onClick={() => {
+                          setParamsVisible(false)
+                          navigate(`/models?detail=${dep.model_id}`)
+                        }}
+                      >
+                        {model.model_name}
+                      </Button>
+                    ) : (
+                      dep.model_id
+                    )}
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('paramsModal.containerMode')}>
+                    {dep.deploy_mode === 'container'
+                      ? t('paramsModal.containerModeStandalone')
+                      : t('paramsModal.containerModeShared')}
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('paramsModal.dtype')}>
+                    <Tag
+                      color={
+                        dtype === 'bfloat16' ? 'blue' : dtype === 'float16' ? 'orange' : 'default'
+                      }
+                    >
+                      {dtype}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('paramsModal.gpuMemoryLimit')}>
+                    {dep.gpu_memory_utilization
+                      ? `${Math.round(dep.gpu_memory_utilization * 100)}%`
+                      : '-'}
+                  </Descriptions.Item>
+                  {isVllm && (
+                    <Descriptions.Item label={t('paramsModal.enforceEager')}>
+                      <Tag color={enforceEager ? 'warning' : 'default'}>
+                        {enforceEager
+                          ? t('paramsModal.enforceEagerYes')
+                          : t('paramsModal.enforceEagerNo')}
+                      </Tag>
+                    </Descriptions.Item>
+                  )}
+                  {isSglang && (
+                    <Descriptions.Item label={t('paramsModal.attentionBackend')}>
+                      <Tag color={attentionBackend !== '-' ? 'processing' : 'default'}>
+                        {attentionBackend}
+                      </Tag>
+                    </Descriptions.Item>
+                  )}
+                  <Descriptions.Item label={t('paramsModal.gpu')}>
+                    {runtimeAccelerators.length > 0
+                      ? `GPU ${runtimeAccelerators.join(',')}`
+                      : dep.gpu_id !== undefined && dep.gpu_id !== null
+                        ? `GPU ${dep.gpu_id}`
+                        : dep.deploy_mode === 'shared'
+                          ? t('paramsModal.gpuShared')
+                          : '-'}
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('paramsModal.lora')}>
+                    {dep.enable_lora
+                      ? t('paramsModal.loraEnabled', {
+                          maxLoras: dep.max_loras,
+                          maxRank: dep.max_lora_rank,
+                        })
+                      : t('paramsModal.loraDisabled')}
+                  </Descriptions.Item>
+                  {maxModelLen && (
+                    <Descriptions.Item label={t('paramsModal.maxLength')}>
+                      {maxModelLen}
+                    </Descriptions.Item>
+                  )}
+                  {tensorParallelSize && (
+                    <Descriptions.Item label={t('paramsModal.tensorParallel')}>
+                      {tensorParallelSize}
+                    </Descriptions.Item>
+                  )}
+                  {chatTemplate && (
+                    <Descriptions.Item label="Chat Template" span={2}>
+                      <Text code style={{ fontSize: 12 }}>
+                        {chatTemplate}
+                      </Text>
+                    </Descriptions.Item>
+                  )}
+                  <Descriptions.Item label={t('paramsModal.replicaCount')}>
+                    {dep.replica}
+                  </Descriptions.Item>
+                  <Descriptions.Item label={t('paramsModal.port')}>
+                    {dep.port || '-'}
+                  </Descriptions.Item>
+                </Descriptions>
+                {hasRuntimeInfo && renderJsonBlock(t('paramsModal.runtimeParams'), runtimeInfo)}
+                {hasConfig && renderJsonBlock(t('paramsModal.customConfig'), config)}
+                {dockerCmd && (
+                  <>
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        marginBottom: 8,
+                      }}
+                    >
+                      <Text strong>{t('paramsModal.startupCommand')}</Text>
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined />}
+                        onClick={() => {
+                          copyText(dockerCmd)
+                          message.success(t('list.message.copied'))
+                        }}
+                      >
+                        {t('common:action.copy')}
+                      </Button>
+                    </div>
+                    <pre
+                      style={{
+                        background: 'var(--tf-bg-elevated)',
+                        color: 'var(--tf-text-primary)',
+                        padding: 16,
+                        borderRadius: 8,
+                        overflow: 'auto',
+                        maxHeight: 300,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-all',
+                        fontSize: 13,
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      {dockerCmd}
+                    </pre>
+                  </>
+                )}
+              </>
+            )
+          })()}
       </Modal>
 
       {/* Adapter Management Modal */}
@@ -1355,9 +1565,7 @@ export default function DeploymentList() {
         width={720}
         destroyOnHidden
       >
-        {adapterTarget && (
-          <AdapterManager deployment={adapterTarget} onRefresh={refresh} />
-        )}
+        {adapterTarget && <AdapterManager deployment={adapterTarget} onRefresh={refresh} />}
       </Modal>
     </div>
   )

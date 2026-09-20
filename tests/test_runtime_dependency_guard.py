@@ -1104,6 +1104,9 @@ def test_auth_disabled_sync_route_normalizes_empty_owner_for_runtime_dependencie
         "get_settings",
         lambda: SimpleNamespace(auth_enabled=False),
     )
+    from train_factory.config.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "auth_enabled", False)
     monkeypatch.setattr(
         sync_routes,
         "validate_user_outbound_url",
@@ -2294,6 +2297,7 @@ def test_standard_evaluation_create_maps_runtime_dependency_race_to_409(
 
 def test_deep_evaluation_create_maps_runtime_dependency_race_to_409(
     monkeypatch,
+    empty_inference_catalog,
 ):
     from train_factory.api.routes import deep_evaluation_routes
 
@@ -2348,6 +2352,7 @@ def test_deep_evaluation_create_maps_runtime_dependency_race_to_409(
 def test_generation_create_maps_runtime_dependency_race_to_409(
     monkeypatch,
     tmp_path,
+    empty_inference_catalog,
 ):
     from train_factory.api.routes import generation_routes
 

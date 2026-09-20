@@ -1,0 +1,100 @@
+.list-workspace-cards {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.list-workspace-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--tf-border-primary);
+  border-inline-start: 3px solid var(--tf-section-accent, var(--tf-primary));
+  border-radius: var(--tf-radius-md, 8px);
+  background: var(--tf-bg-container);
+  overflow-wrap: anywhere;
+}
+.list-workspace-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.list-workspace-card-header > :first-child {
+  min-width: 0;
+}
+.list-workspace-card-header .ant-tag {
+  flex-shrink: 0;
+  margin-inline-end: 0;
+}
+.list-workspace-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.list-workspace-field {
+  min-width: 0;
+}
+.list-workspace-field dt {
+  color: var(--tf-text-secondary);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.list-workspace-field dd {
+  margin: 0;
+}
+.list-workspace-field-wide {
+  grid-column: 1 / -1;
+}
+.list-workspace-actions {
+  padding-top: 10px;
+  border-top: 1px solid var(--tf-border-primary);
+}
+.list-workspace-actions .ant-space {
+  flex-wrap: wrap;
+  gap: 8px !important;
+}
+.list-workspace-actions .ant-btn {
+  min-width: 40px;
+  min-height: 40px;
+}
+.list-workspace-replicas {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.list-workspace-replica {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--tf-border-primary);
+  border-radius: 6px;
+  background: var(--tf-bg-layout);
+}
+.list-workspace-replica .ant-space {
+  max-width: 100%;
+}
+.list-workspace-replica .ant-space-item {
+  min-width: 0;
+}
+.list-workspace-replica code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.list-workspace-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 0;
+  margin-top: 16px;
+}
+.list-workspace-pagination .ant-pagination-total-text {
+  width: 100%;
+  text-align: center;
+}
+.list-workspace-pagination .ant-pagination-options {
+  display: inline-block;
+  margin-inline-start: 0;
+}
+.list-workspace-mobile .ant-spin-container {
+  min-height: 100px;
+}

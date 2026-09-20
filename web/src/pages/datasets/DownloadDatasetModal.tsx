@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Modal,
   Form,
@@ -19,23 +19,91 @@ import {
   LoadingOutlined,
 } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
-import { datasetApi, DownloadDatasetRequest, DatasetDownloadProgress } from '@/services/api'
+import {
+  datasetApi,
+  DownloadDatasetRequest,
+  DatasetDownloadProgress,
+  SILENT_REQUEST_CONFIG,
+} from '@/services/api'
+import { useAuth } from '@/auth/AuthContext'
+import { DownloadTaskHistory } from '@/components/DownloadTaskHistory'
+import { useDownloadHistory } from '@/hooks/useDownloadHistory'
 
 const { Text } = Typography
+const getDatasetDownloadId = (task: DatasetDownloadProgress) => task.dataset_id
+const isDatasetDownloadActive = (task: DatasetDownloadProgress) =>
+  task.status === 'pending' || task.status === 'downloading'
+const loadDatasetDownloads = () => datasetApi.listDownloads(SILENT_REQUEST_CONFIG)
 
 interface DownloadDatasetModalProps {
   open: boolean
   onCancel: () => void
   onSuccess: () => void
+  onTasksChanged: () => void
 }
 
-export function DownloadDatasetModal({ open, onCancel, onSuccess }: DownloadDatasetModalProps) {
+export function DownloadDatasetModal({
+  open,
+  onCancel,
+  onSuccess,
+  onTasksChanged,
+}: DownloadDatasetModalProps) {
   const { t } = useTranslation(['datasets', 'common'])
+  const { user } = useAuth()
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [progress, setProgress] = useState<DatasetDownloadProgress | null>(null)
   const [datasetId, setDatasetId] = useState<string | null>(null)
+  const scopeKey = user?.user_id ?? ''
+  const scopeRef = useRef(scopeKey)
+  const operationGenerationRef = useRef(0)
+
+  useEffect(() => {
+    scopeRef.current = scopeKey
+    operationGenerationRef.current += 1
+    setLoading(false)
+    setDownloading(false)
+    setProgress(null)
+    setDatasetId(null)
+  }, [scopeKey])
+
+  const handleTaskSettled = useCallback(
+    (task: DatasetDownloadProgress) => {
+      if (task.status === 'ready') {
+        message.success(t('download.message.downloadComplete'))
+      } else if (task.status === 'failed') {
+        message.error(
+          t('download.message.downloadFailed', {
+            error: task.error || t('download.message.unknownError'),
+          })
+        )
+      }
+
+      if (task.dataset_id === datasetId) {
+        setProgress(task)
+        setDownloading(false)
+        if (open && task.status === 'ready') {
+          onSuccess()
+          return
+        }
+      }
+      onTasksChanged()
+    },
+    [datasetId, onSuccess, onTasksChanged, open, t]
+  )
+
+  const history = useDownloadHistory({
+    scopeKey,
+    getId: getDatasetDownloadId,
+    isActive: isDatasetDownloadActive,
+    load: loadDatasetDownloads,
+    onTaskSettled: handleTaskSettled,
+  })
+  const refreshDownloads = history.refresh
+  useEffect(() => {
+    if (open) void refreshDownloads()
+  }, [open, refreshDownloads])
 
   const datasetTypeOptions = [
     { label: t('options.downloadDatasetType.embeddingPair'), value: 'embedding_pair' },
@@ -61,66 +129,45 @@ export function DownloadDatasetModal({ open, onCancel, onSuccess }: DownloadData
     { label: 'LLM', value: 'llm' },
   ]
 
-  // Poll download progress with request guard
   useEffect(() => {
-    if (!datasetId || !downloading) return
-
-    let polling = true
-    let fetching = false
-    let errorCount = 0
-    const MAX_ERRORS = 10
-
-    const poll = async () => {
-      if (!polling || fetching) return
-      fetching = true
-      try {
-        const data = await datasetApi.getDownloadProgress(datasetId)
-        errorCount = 0
-        setProgress(data)
-
-        if (data.status === 'ready') {
-          polling = false
-          setDownloading(false)
-          message.success(t('download.message.downloadComplete'))
-          onSuccess()
-        } else if (data.status === 'failed') {
-          polling = false
-          setDownloading(false)
-          message.error(t('download.message.downloadFailed', { error: data.error || t('download.message.unknownError') }))
-        }
-      } catch {
-        errorCount++
-        if (errorCount >= MAX_ERRORS) {
-          polling = false
-          setDownloading(false)
-          message.error(t('download.message.progressFailed'))
-        }
-      } finally {
-        fetching = false
-      }
-    }
-
-    const interval = setInterval(poll, 3000)
-    return () => { polling = false; clearInterval(interval) }
-  }, [datasetId, downloading, onSuccess, t])
+    if (!datasetId) return
+    const currentTask = history.tasks.find((task) => task.dataset_id === datasetId)
+    if (currentTask) setProgress(currentTask)
+  }, [datasetId, history.tasks])
 
   const handleSubmit = async (values: DownloadDatasetRequest) => {
+    const requestScope = scopeKey
+    const operationGeneration = ++operationGenerationRef.current
     setLoading(true)
     try {
       const result = await datasetApi.download(values)
-      setDatasetId(result.dataset_id)
-      setDownloading(true)
-      setProgress({
+      if (scopeRef.current !== requestScope) return
+      const task: DatasetDownloadProgress = {
         dataset_id: result.dataset_id,
         dataset_name: result.dataset_name,
         status: 'downloading',
         progress: 0,
-      })
+      }
+      if (!history.upsert(task)) return
       message.info(t('download.message.taskCreated'))
+      if (operationGenerationRef.current !== operationGeneration) return
+      setDatasetId(result.dataset_id)
+      setDownloading(true)
+      setProgress(task)
     } catch (err) {
-      message.error(t('download.message.taskCreateFailed'))
+      if (
+        operationGenerationRef.current === operationGeneration &&
+        scopeRef.current === requestScope
+      ) {
+        message.error(t('download.message.taskCreateFailed'))
+      }
     } finally {
-      setLoading(false)
+      if (
+        operationGenerationRef.current === operationGeneration &&
+        scopeRef.current === requestScope
+      ) {
+        setLoading(false)
+      }
     }
   }
 
@@ -128,7 +175,9 @@ export function DownloadDatasetModal({ open, onCancel, onSuccess }: DownloadData
     if (downloading) {
       message.info(t('download.message.backgroundContinue'))
     }
+    operationGenerationRef.current += 1
     form.resetFields()
+    setLoading(false)
     setProgress(null)
     setDatasetId(null)
     setDownloading(false)
@@ -228,10 +277,7 @@ export function DownloadDatasetModal({ open, onCancel, onSuccess }: DownloadData
             <Select options={datasetTypeOptions} />
           </Form.Item>
 
-          <Form.Item
-            name="usage"
-            label={t('download.form.usage.label')}
-          >
+          <Form.Item name="usage" label={t('download.form.usage.label')}>
             <Select options={usageOptions} allowClear placeholder={t('options.optional')} />
           </Form.Item>
 
@@ -264,7 +310,9 @@ export function DownloadDatasetModal({ open, onCancel, onSuccess }: DownloadData
                   {t('download.progress.dataset')}: <Text strong>{progress?.dataset_name}</Text>
                 </Text>
                 {progress?.remote_repo && (
-                  <Text type="secondary">{t('download.progress.source', { source: progress.remote_repo })}</Text>
+                  <Text type="secondary">
+                    {t('download.progress.source', { source: progress.remote_repo })}
+                  </Text>
                 )}
               </Space>
             }
@@ -280,8 +328,8 @@ export function DownloadDatasetModal({ open, onCancel, onSuccess }: DownloadData
               progress?.status === 'failed'
                 ? 'exception'
                 : progress?.status === 'ready'
-                ? 'success'
-                : 'active'
+                  ? 'success'
+                  : 'active'
             }
           />
 
@@ -299,6 +347,23 @@ export function DownloadDatasetModal({ open, onCancel, onSuccess }: DownloadData
           </Text>
         </div>
       )}
+      <DownloadTaskHistory
+        items={history.tasks.map((task) => ({
+          id: task.dataset_id,
+          name: task.dataset_name || task.dataset_id,
+          source: task.remote_repo,
+          status: task.status,
+          progress: task.progress,
+          error: task.error,
+        }))}
+        loading={history.loading}
+        failed={history.failed}
+        title={t('download.history.title')}
+        emptyText={t('download.history.empty')}
+        errorText={t('download.history.error')}
+        retryText={t('download.history.retry')}
+        onRetry={() => void history.refresh()}
+      />
     </Modal>
   )
 }

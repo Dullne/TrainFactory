@@ -366,16 +366,9 @@ class Settings(BaseSettings):
     )
     max_upload_size: int = Field(
         default=500 * 1024 * 1024,  # 500MB
-        description="Maximum file upload size in bytes",
-    )
-
-    # === Storage Backend ===
-    storage_backend: str = Field(
-        default="local",
-        description="Default storage backend for datasets: 'local' or 's3'",
-    )
-    max_upload_size: int = Field(
-        default=500 * 1024 * 1024,  # 500MB
+        ge=1,
+        # Nginx's signed 64-bit body budget also includes 1 MiB multipart overhead.
+        le=9223372036854775807 - 1024 * 1024,
         description="Maximum file upload size in bytes",
     )
 

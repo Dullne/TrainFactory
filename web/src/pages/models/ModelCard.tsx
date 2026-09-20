@@ -1,15 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import {
-  Card,
-  Button,
-  Popconfirm,
-  Tooltip,
-  Typography,
-  Progress,
-  Col,
-  message,
-} from 'antd'
+import { Card, Button, Popconfirm, Tooltip, Typography, Progress, Col, message } from 'antd'
 import {
   DeleteOutlined,
   RocketOutlined,
@@ -65,9 +56,10 @@ export function ModelCard({ model, onDelete, onDetail, baseModelMap }: ModelCard
   const displayName = model.model_name || model.display_name || model.model_id
 
   const pathSuffix = (p: string) => p.split('/').filter(Boolean).pop() || p
-  const resolvedBase = model.base_model_path && baseModelMap
-    ? baseModelMap[model.base_model_path] || baseModelMap[pathSuffix(model.base_model_path)]
-    : undefined
+  const resolvedBase =
+    model.base_model_path && baseModelMap
+      ? baseModelMap[model.base_model_path] || baseModelMap[pathSuffix(model.base_model_path)]
+      : undefined
 
   const sourceTypeLabels: Record<string, { label: string; color: string }> = {
     trained: { label: t('source.trained'), color: '#1677ff' },
@@ -85,12 +77,19 @@ export function ModelCard({ model, onDelete, onDetail, baseModelMap }: ModelCard
         style={{
           background: BG_ELEVATED,
           borderColor: BORDER_SECONDARY,
-          borderRadius: 12,
+          borderRadius: 'var(--tf-radius-lg)',
           height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
           cursor: 'pointer',
         }}
         styles={{
-          body: { padding: 16 }
+          body: {
+            padding: 'var(--tf-card-padding-sm)',
+            display: 'flex',
+            flexDirection: 'column',
+            flex: 1,
+          },
         }}
       >
         {/* 头部：类型图标 + 名称 */}
@@ -99,7 +98,7 @@ export function ModelCard({ model, onDelete, onDetail, baseModelMap }: ModelCard
             style={{
               width: 48,
               height: 48,
-              borderRadius: 10,
+              borderRadius: 'calc((var(--tf-radius) + var(--tf-radius-lg)) / 2)',
               backgroundColor: `${typeColor}20`,
               color: typeColor,
               display: 'flex',
@@ -140,10 +139,15 @@ export function ModelCard({ model, onDelete, onDetail, baseModelMap }: ModelCard
               </Tooltip>
             </div>
             <Text style={{ color: TEXT_SECONDARY, fontSize: 12, display: 'block' }}>
-              {modelTypeI18nKeys[model.model_type] ? t(modelTypeI18nKeys[model.model_type]) : model.model_type}
+              {modelTypeI18nKeys[model.model_type]
+                ? t(modelTypeI18nKeys[model.model_type])
+                : model.model_type}
             </Text>
             <Tooltip title={model.model_id}>
-              <Text copyable={{ text: model.model_id, tooltips: false }} style={{ color: TEXT_SECONDARY, fontSize: 11, display: 'block' }}>
+              <Text
+                copyable={{ text: model.model_id, tooltips: false }}
+                style={{ color: TEXT_SECONDARY, fontSize: 11, display: 'block' }}
+              >
                 {model.model_id.slice(0, 8)}
               </Text>
             </Tooltip>
@@ -154,7 +158,9 @@ export function ModelCard({ model, onDelete, onDetail, baseModelMap }: ModelCard
         {/* 基础模型 */}
         {model.base_model_path && (
           <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 4 }}>
-            <Text style={{ color: TEXT_SECONDARY, fontSize: 12, flexShrink: 0 }}>{t('card.baseModel')}</Text>
+            <Text style={{ color: TEXT_SECONDARY, fontSize: 12, flexShrink: 0 }}>
+              {t('card.baseModel')}
+            </Text>
             {resolvedBase ? (
               <Tooltip title={model.base_model_path}>
                 <Text
@@ -204,12 +210,14 @@ export function ModelCard({ model, onDelete, onDetail, baseModelMap }: ModelCard
             <Text style={{ color: TEXT_SECONDARY, fontSize: 12 }}>{t('card.source')}</Text>
             <span style={{ marginLeft: 6 }}>
               <Tooltip
-                title={model.extra_metadata ? JSON.stringify(model.extra_metadata, null, 2) : undefined}
+                title={
+                  model.extra_metadata ? JSON.stringify(model.extra_metadata, null, 2) : undefined
+                }
               >
                 <span>
                   <Text
                     style={{
-                      color: (sourceTypeLabels[model.source_type]?.color ?? TEXT_PRIMARY),
+                      color: sourceTypeLabels[model.source_type]?.color ?? TEXT_PRIMARY,
                       fontSize: 12,
                       fontWeight: 600,
                     }}
@@ -265,9 +273,15 @@ export function ModelCard({ model, onDelete, onDetail, baseModelMap }: ModelCard
         )}
 
         {/* 创建时间 */}
-        <div style={{ marginBottom: 12 }}>
+        <div style={{ marginTop: 'auto', marginBottom: 12 }}>
           <Text style={{ color: TEXT_SECONDARY, fontSize: 11 }}>
-            {t('card.createdAt', { date: formatDate(model.created_at, { year: 'numeric', month: '2-digit', day: '2-digit' }) })}
+            {t('card.createdAt', {
+              date: formatDate(model.created_at, {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+              }),
+            })}
           </Text>
         </div>
 

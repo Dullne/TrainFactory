@@ -50,9 +50,15 @@ class MetricsCallback(TrainerCallback):
         self.metrics_logger: Optional[TrainingMetricsLogger] = None
         self._last_logged_step = -1
         self._last_eval_logged_step = -1
+        self._run_start_step = 0
+        self._epoch_start_step = 0
+        self._pending_epoch = None
 
     def on_train_begin(self, args, state: TrainerState, control: TrainerControl, **kwargs):
         """Initialize metrics logger when training starts."""
+        self._run_start_step = self._epoch_start_step = state.global_step
+        self._pending_epoch = None
+        self._last_logged_step = self._last_eval_logged_step = -1
         try:
             self.metrics_logger = get_training_metrics_logger(self.output_dir, self.task_id)
 
@@ -153,36 +159,71 @@ class MetricsCallback(TrainerCallback):
             progress = 5.0 + train_progress * 90.0  # 5% - 95%
             self.progress_callback(progress)
 
+    def on_epoch_begin(self, args, state: TrainerState, control: TrainerControl, **kwargs):
+        self._finalize_pending_epoch(state)
+        self._epoch_start_step = state.global_step
+
     def on_epoch_end(self, args, state: TrainerState, control: TrainerControl, **kwargs):
-        """Record epoch summary."""
-        if not self.metrics_logger:
+        # Trainer emits epoch-strategy loss/evaluation logs AFTER this callback.
+        # Flush at the next epoch begin (or train end) to include those records.
+        self._pending_epoch = (
+            max(1, math.ceil(state.epoch or 0)),
+            self._epoch_start_step,
+            state.global_step,
+        )
+
+    def _finalize_pending_epoch(self, state: TrainerState):
+        if not self.metrics_logger or self._pending_epoch is None:
             return
 
         try:
+            current_epoch, start_step, end_step = self._pending_epoch
+            self._pending_epoch = None
+            steps = end_step - start_step
+            if steps <= 0:
+                return
             epoch_metrics = {
-                "total_steps_in_epoch": state.global_step,
+                "total_steps_in_epoch": steps,
+                "avg_train_loss": None,
             }
-
-            # Get latest loss from log history if available
-            if state.log_history:
-                latest_log = state.log_history[-1]
-                if "loss" in latest_log:
-                    epoch_metrics["avg_train_loss"] = latest_log["loss"]
-                if "eval_loss" in latest_log:
-                    epoch_metrics["eval_loss"] = latest_log["eval_loss"]
-
-            current_epoch = int(state.epoch) if state.epoch else 0
+            last_loss_step = self._run_start_step
+            covered_steps, weighted_loss = 0, 0.0
+            for record in state.log_history or []:
+                step = record.get("step")
+                if not isinstance(step, int) or isinstance(step, bool):
+                    continue
+                if start_step < step <= end_step and "eval_loss" in record:
+                    epoch_metrics["eval_loss"] = record["eval_loss"]
+                if "loss" not in record or not last_loss_step < step <= end_step:
+                    continue
+                loss = record["loss"]
+                # A logged loss averages the optimizer steps since the previous
+                # loss log. Cross-epoch intervals cannot be split accurately.
+                if (
+                    last_loss_step >= start_step
+                    and isinstance(loss, (int, float))
+                    and not isinstance(loss, bool)
+                    and math.isfinite(loss)
+                ):
+                    interval = step - last_loss_step
+                    covered_steps += interval
+                    weighted_loss += loss * interval
+                last_loss_step = step
+            # Do not mislabel a partial/invalid sample as a full epoch average.
+            if covered_steps == steps:
+                epoch_metrics["avg_train_loss"] = weighted_loss / steps
             self.metrics_logger.finalize_epoch(
                 current_epoch,
                 sanitize_json_value(epoch_metrics),
             )
 
         except Exception as e:
-            logger.error(f"Error in on_epoch_end: {e}")
+            logger.error(f"Error finalizing epoch metrics: {e}")
 
     def on_train_end(self, args, state: TrainerState, control: TrainerControl, **kwargs):
         """Finalize metrics when training ends."""
         try:
+            self._finalize_pending_epoch(state)
             final_metrics = {
                 "total_steps": state.global_step,
                 "total_epochs": args.num_train_epochs,

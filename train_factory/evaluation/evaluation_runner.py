@@ -591,7 +591,12 @@ def _cleanup_cancelled(task_id: str):
     _cancel_check_cache.pop(task_id, None)
 
 
-def run_evaluation_task(task_id: str, eval_config: Dict[str, Any]):
+def run_evaluation_task(
+    task_id: str,
+    eval_config: Dict[str, Any],
+    *,
+    expected_run_token: Optional[str] = None,
+):
     """
     Run evaluation task in background.
 
@@ -601,21 +606,26 @@ def run_evaluation_task(task_id: str, eval_config: Dict[str, Any]):
         task_id: Evaluation task ID
         eval_config: Configuration dict containing model_configs, dataset_configs, etc.
             - existing_results: Optional dict of already completed evaluations (for resume)
+        expected_run_token: Worker claim identity, available even if the first read fails.
     """
     from ..storage.services.evaluation_task_service import evaluation_task_service
 
-    run_token: Optional[str] = None
+    run_token = expected_run_token
     try:
         task = evaluation_task_service.get_task(task_id)
         if not task:
             raise ValueError(f"Evaluation task not found: {task_id}")
+        if expected_run_token is not None and task.get("run_token") != expected_run_token:
+            logger.info("Evaluation task %s belongs to another execution attempt", task_id)
+            return
+        if expected_run_token is None:
+            run_token = task.get("run_token")
         if task.get("status") != "running" or is_cancelled(task_id):
             logger.info(
                 "Evaluation task %s is no longer active before startup",
                 task_id,
             )
             return
-        run_token = task.get("run_token")
         user_id = task.get("user_id")
 
         persisted_model_configs = task.get("model_configs")

@@ -1,4 +1,38 @@
 {
+  "listState": {
+    "showingPrevious": "Updating results. Showing previous results until the current request succeeds.",
+    "refreshFailed": "Could not load the requested results. Showing previous results; refresh to retry.",
+    "loadFailed": "Could not load results. Refresh to retry."
+  },
+  "appearance": {
+    "title": "Appearance",
+    "style": "Theme style",
+    "styles": {
+      "classic": {
+        "name": "Classic Tech",
+        "description": "Familiar gradients and crisp panels"
+      },
+      "workbench": {
+        "name": "Minimal Workbench",
+        "description": "Compact spacing and precise edges"
+      },
+      "studio": {
+        "name": "Soft Studio",
+        "description": "Soft surfaces and generous spacing"
+      }
+    },
+    "advanced": "Advanced customization",
+    "mode": "Color mode",
+    "dark": "Dark",
+    "light": "Light",
+    "accent": "Accent color",
+    "blue": "Blue",
+    "purple": "Purple",
+    "cyan": "Cyan",
+    "green": "Green",
+    "rose": "Rose",
+    "hint": "Your preference is remembered in this browser."
+  },
   "nav": {
     "training": "Training",
     "datasets": "Datasets",

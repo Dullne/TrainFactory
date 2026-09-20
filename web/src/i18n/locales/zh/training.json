@@ -47,6 +47,32 @@
   },
   "create": {
     "title": "创建训练任务",
+    "description": "配置模型与数据集，设置训练参数和运行资源。",
+    "modelParams": "模型专项参数",
+    "sections": {
+      "expand": "展开",
+      "collapse": "收起",
+      "expandAll": "全部展开",
+      "collapseAll": "全部收起",
+      "datasetSummary": "已选择 {{count}} 个数据集",
+      "trainingSummary": "{{epochs}} 轮 · 批次 {{batch}} · 学习率 {{rate}}",
+      "eval_no": "不评估",
+      "eval_epoch": "每轮",
+      "eval_steps": "按步数",
+      "save_no": "不保存",
+      "save_epoch": "每轮",
+      "save_steps": "按步数"
+    },
+    "draft": {
+      "empty": "修改会为当前账户保存在此标签页。",
+      "saved": "草稿已保存",
+      "restored": "已恢复草稿",
+      "unavailable": "请保持此标签页打开。草稿仅保存在内存，刷新或关闭将丢失。",
+      "discard": "丢弃草稿",
+      "discardConfirm": "丢弃此草稿并重置所有训练配置？",
+      "discardConfirmAction": "丢弃",
+      "clearFailed": "浏览器阻止清除草稿，刷新后旧草稿可能再次出现。"
+    },
     "basicConfig": "基础配置",
     "trainingParams": "训练参数",
     "taskName": {
@@ -69,6 +95,10 @@
     },
     "dataset": {
       "title": "数据集配置",
+      "pathLabel": "数据集路径",
+      "splitLabel": "数据集用途",
+      "samplesLabel": "采样数量",
+      "remove": "删除数据集",
       "add": "添加数据集",
       "train": "训练集",
       "eval": "验证集",
@@ -191,6 +221,7 @@
     "lossAuto": "自动",
     "message": {
       "createSuccess": "训练任务创建成功",
+      "createdDraftKept": "任务 {{taskId}} 已创建，提交后的新修改仍保留在草稿中。",
       "createFailed": "创建失败"
     },
     "submitButton": "创建任务"

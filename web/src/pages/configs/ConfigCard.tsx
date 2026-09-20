@@ -1,13 +1,4 @@
-import {
-  Card,
-  Button,
-  Space,
-  Tag,
-  Popconfirm,
-  Tooltip,
-  Typography,
-  message,
-} from 'antd'
+import { Card, Button, Space, Tag, Popconfirm, Tooltip, Typography, message } from 'antd'
 import {
   EditOutlined,
   DeleteOutlined,
@@ -34,7 +25,7 @@ interface ConfigCardProps {
   config: ModelConfig
   connectionStatus: boolean | null
   checking: boolean
-  grouped?: boolean  // 在端点折叠组内时隐藏重复的端点和框架信息
+  grouped?: boolean // 在端点折叠组内时隐藏重复的端点和框架信息
   onEdit: (config: ModelConfig) => void
   onDelete: (configId: string) => void
   onCheckConnection: (configId: string) => void
@@ -65,40 +56,53 @@ export function ConfigCard({
         marginBottom: 12,
         background: BG_ELEVATED,
         borderColor: BORDER_SECONDARY,
-        borderRadius: 8,
+        borderRadius: 'var(--tf-radius)',
       }}
       styles={{
-        body: { padding: '12px 16px' }
+        body: { padding: 'calc(var(--tf-card-padding-sm) * 0.75) var(--tf-card-padding-sm)' },
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center' }}>
+      <div className="config-card-row">
         {/* 左侧：状态指示器 + 配置名称 + 端点 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
+        <div className="config-card-info">
           {/* 状态指示器 - 优先使用实时检测结果，否则使用 last_check_status */}
-          <Tooltip title={
-            connectionStatus === true ? t('card.connectionOk') :
-            connectionStatus === false ? t('card.connectionFailed') :
-            config.last_check_status === 'healthy' ? t('card.connectionOk') :
-            config.last_check_status === 'error' ? t('card.connectionFailedWithError', { error: config.last_check_error || t('card.unknownError') }) :
-            t('card.notTested')
-          }>
+          <Tooltip
+            title={
+              connectionStatus === true
+                ? t('card.connectionOk')
+                : connectionStatus === false
+                  ? t('card.connectionFailed')
+                  : config.last_check_status === 'healthy'
+                    ? t('card.connectionOk')
+                    : config.last_check_status === 'error'
+                      ? t('card.connectionFailedWithError', {
+                          error: config.last_check_error || t('card.unknownError'),
+                        })
+                      : t('card.notTested')
+            }
+          >
             <div
               style={{
                 width: 8,
                 height: 8,
+                flexShrink: 0,
                 borderRadius: '50%',
                 backgroundColor:
-                  connectionStatus === true ? STATUS_SUCCESS :
-                  connectionStatus === false ? STATUS_ERROR :
-                  config.last_check_status === 'healthy' ? STATUS_SUCCESS :
-                  config.last_check_status === 'error' ? STATUS_ERROR :
-                  STATUS_DEFAULT,
+                  connectionStatus === true
+                    ? STATUS_SUCCESS
+                    : connectionStatus === false
+                      ? STATUS_ERROR
+                      : config.last_check_status === 'healthy'
+                        ? STATUS_SUCCESS
+                        : config.last_check_status === 'error'
+                          ? STATUS_ERROR
+                          : STATUS_DEFAULT,
               }}
             />
           </Tooltip>
 
           {/* 配置名称 + 模型类型 + 框架 */}
-          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+          <div className="config-card-name">
             <Text strong style={{ color: TEXT_PRIMARY, fontSize: 14 }}>
               {config.config_name}
             </Text>
@@ -108,9 +112,11 @@ export function ConfigCard({
             {config.inference_framework && !grouped && (
               <Tag
                 color={
-                  config.inference_framework === 'sglang' ? 'purple' :
-                  config.inference_framework === 'vllm' ? 'orange' :
-                  'cyan'
+                  config.inference_framework === 'sglang'
+                    ? 'purple'
+                    : config.inference_framework === 'vllm'
+                      ? 'orange'
+                      : 'cyan'
                 }
                 style={{ fontSize: 11, margin: 0 }}
               >
@@ -133,7 +139,7 @@ export function ConfigCard({
 
           {/* 端点信息 - 紧跟在名称后面 */}
           {!grouped && (
-            <div style={{ display: 'flex', alignItems: 'center' }}>
+            <div className="config-card-endpoint">
               <Tooltip title={config.api_endpoint}>
                 <Text
                   style={{
@@ -152,6 +158,7 @@ export function ConfigCard({
                 type="text"
                 size="small"
                 icon={<CopyOutlined />}
+                aria-label={t('common:action.copy')}
                 onClick={() => handleCopy(config.api_endpoint)}
                 style={{ marginLeft: 4 }}
               />
@@ -160,48 +167,70 @@ export function ConfigCard({
         </div>
 
         {/* 右侧：状态 + 操作按钮 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
+        <div className="config-card-actions">
           {/* 状态标签 */}
           <Tag
-            color={config.status === 'active' ? 'success' : config.status === 'error' ? 'error' : 'default'}
+            color={
+              config.status === 'active'
+                ? 'success'
+                : config.status === 'error'
+                  ? 'error'
+                  : 'default'
+            }
             style={{ margin: 0 }}
           >
-            {config.status === 'active' ? t('card.statusActive') : config.status === 'error' ? t('card.statusError') : t('card.statusUnknown')}
+            {config.status === 'active'
+              ? t('card.statusActive')
+              : config.status === 'error'
+                ? t('card.statusError')
+                : t('card.statusUnknown')}
           </Tag>
 
           {/* 操作按钮 */}
           <Space size={4}>
-          <Tooltip title={t('card.apiTest')}>
-            <Button
-              type="text"
-              size="small"
-              icon={<CodeOutlined />}
-              onClick={() => onApiTest(config)}
-            />
-          </Tooltip>
-          <Tooltip title={t('card.testConnection')}>
-            <Button
-              type="text"
-              size="small"
-              icon={<ApiOutlined />}
-              loading={checking}
-              onClick={() => onCheckConnection(config.config_id)}
-            />
-          </Tooltip>
-          <Tooltip title={t('common:action.edit')}>
-            <Button
-              type="text"
-              size="small"
-              icon={<EditOutlined />}
-              onClick={() => onEdit(config)}
-            />
-          </Tooltip>
-          <Popconfirm title={t('card.deleteConfirm')} onConfirm={() => onDelete(config.config_id)}>
-            <Tooltip title={t('common:action.delete')}>
-              <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+            <Tooltip title={t('card.apiTest')}>
+              <Button
+                type="text"
+                size="small"
+                icon={<CodeOutlined />}
+                aria-label={t('card.apiTest')}
+                onClick={() => onApiTest(config)}
+              />
             </Tooltip>
-          </Popconfirm>
-        </Space>
+            <Tooltip title={t('card.testConnection')}>
+              <Button
+                type="text"
+                size="small"
+                icon={<ApiOutlined />}
+                aria-label={t('card.testConnection')}
+                loading={checking}
+                onClick={() => onCheckConnection(config.config_id)}
+              />
+            </Tooltip>
+            <Tooltip title={t('common:action.edit')}>
+              <Button
+                type="text"
+                size="small"
+                icon={<EditOutlined />}
+                aria-label={t('common:action.edit')}
+                onClick={() => onEdit(config)}
+              />
+            </Tooltip>
+            <Popconfirm
+              title={t('card.deleteConfirm')}
+              onConfirm={() => onDelete(config.config_id)}
+            >
+              <Tooltip title={t('common:action.delete')}>
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  aria-label={t('common:action.delete')}
+                />
+              </Tooltip>
+            </Popconfirm>
+          </Space>
         </div>
       </div>
     </Card>

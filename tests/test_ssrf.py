@@ -51,6 +51,55 @@ def test_allows_public_ip():
 
 
 @pytest.mark.parametrize("validator", [validate_outbound_url, resolve_outbound_url])
+@pytest.mark.parametrize("host", ["100.64.0.1", "100.100.100.200", "100.127.255.254", "[::ffff:100.100.100.200]"])
+def test_cgnat_requires_explicit_allowlist(validator, host):
+    with pytest.raises(SSRFError) as exc_info:
+        validator(f"http://{host}/v1", allow_private_all=False)
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.parametrize("validator", [validate_outbound_url, resolve_outbound_url])
+def test_cgnat_dns_allowlist_is_exact_destination(monkeypatch, validator):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda _host, port, **_kw: [_address("100.100.100.200", port)])
+    with pytest.raises(SSRFError):
+        validator("http://api.example.test:8443/v1", allow_private_all=False)
+    allowed = {("api.example.test", 8443)}
+    result = validator("http://api.example.test:8443/v1", allowed_destinations=allowed)
+    assert getattr(result, "url", result) == "http://api.example.test:8443/v1"
+    with pytest.raises(SSRFError):
+        validator("http://api.example.test:9443/v1", allowed_destinations=allowed)
+    with pytest.raises(SSRFError):
+        validator("http://other.example.test:8443/v1", allowed_destinations=allowed)
+
+
+@pytest.mark.parametrize("validator", [validate_outbound_url, resolve_outbound_url])
+def test_cgnat_ip_allowlist_supports_mapped_ipv6(validator):
+    result = validator("http://[::ffff:100.100.100.200]/v1", allowed_private_hosts={"100.100.100.200"})
+    assert getattr(result, "url", result) == "http://[::ffff:100.100.100.200]/v1"
+    with pytest.raises(SSRFError):
+        validator("http://100.100.100.201/v1", allowed_private_hosts={"100.100.100.200"})
+
+
+@pytest.mark.parametrize("validator", [validate_outbound_url, resolve_outbound_url])
+def test_cgnat_cannot_use_global_private_bypass(validator):
+    with pytest.raises(SSRFError):
+        validator("http://100.100.100.200/v1", allow_private_all=True)
+
+
+@pytest.mark.parametrize("validator", [validate_outbound_url, resolve_outbound_url])
+@pytest.mark.parametrize("answers", [["::ffff:100.100.100.200"], [PUBLIC_IP, "100.100.100.200"]])
+def test_cgnat_mapped_or_mixed_dns_answers_are_blocked(monkeypatch, validator, answers):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_args, **_kw: [_address(ip) for ip in answers])
+    with pytest.raises(SSRFError):
+        validator("http://api.example.test/v1")
+
+
+@pytest.mark.parametrize("host", ["100.63.255.254", "100.128.0.1"])
+def test_cgnat_guard_preserves_adjacent_public_addresses(host):
+    assert validate_outbound_url(f"http://{host}/v1") == f"http://{host}/v1"
+
+
+@pytest.mark.parametrize("validator", [validate_outbound_url, resolve_outbound_url])
 @pytest.mark.parametrize("resolution", ["empty", "error"])
 def test_domain_validation_fails_closed_when_dns_has_no_addresses(
     monkeypatch,
@@ -184,9 +233,7 @@ def test_private_host_allowed_via_allowlist():
     with pytest.raises(SSRFError):
         validate_outbound_url("http://10.0.0.5/")
     # With hostname in allowlist -> allowed
-    result = validate_outbound_url(
-        "http://10.0.0.5/v1", allowed_private_hosts={"10.0.0.5"}
-    )
+    result = validate_outbound_url("http://10.0.0.5/v1", allowed_private_hosts={"10.0.0.5"})
     assert result == "http://10.0.0.5/v1"
 
 
@@ -225,7 +272,4 @@ def test_normalize_api_endpoint_applies_user_scoped_ssrf_guard(monkeypatch):
     assert normalize_api_endpoint("https://8.8.8.8", "openai") == "https://8.8.8.8/v1"
     # Administrators can explicitly allow a private inference host.
     monkeypatch.setenv("DISCOVER_MODELS_ALLOWED_PRIVATE_HOSTS", "10.0.0.5")
-    assert (
-        normalize_api_endpoint("http://10.0.0.5:8080", "custom", "user-1")
-        == "http://10.0.0.5:8080/v1"
-    )
+    assert normalize_api_endpoint("http://10.0.0.5:8080", "custom", "user-1") == "http://10.0.0.5:8080/v1"

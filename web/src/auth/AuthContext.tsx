@@ -17,6 +17,7 @@ import {
 } from '@/services/api'
 import { isApiError } from '@/services/ApiError'
 import { offerLoginCredentialForSaving } from '@/auth/passwordCredential'
+import { clearWorkspaceSession } from '@/auth/clearWorkspaceSession'
 
 export type { AuthUser } from '@/services/api'
 
@@ -74,8 +75,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const setUnauthenticatedForOperation = useCallback(
-    (generation: number) => {
+    (generation: number, endSession = false) => {
       if (!isCurrentOperation(generation)) return
+      if (endSession) clearWorkspaceSession()
       setUser(null)
       setStatus('unauthenticated')
     },
@@ -100,7 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       // 仅会话失效（401）才清除身份；网络抖动/5xx 不清，避免误踢已登录用户
       if (isApiError(error) && error.status === 401) {
-        setUnauthenticatedForOperation(generation)
+        setUnauthenticatedForOperation(generation, true)
       }
       throw toError(error)
     }
@@ -152,12 +154,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 登出动作不应因服务端 401 而静默失败（残留 httpOnly cookie 无害，
       // 所有请求已 401）。
     }
-    setUnauthenticatedForOperation(generation)
+    setUnauthenticatedForOperation(generation, true)
   }, [beginOperation, setUnauthenticatedForOperation])
 
   const clearLocalSession = useCallback(() => {
     const generation = beginOperation()
-    setUnauthenticatedForOperation(generation)
+    setUnauthenticatedForOperation(generation, true)
   }, [beginOperation, setUnauthenticatedForOperation])
 
   useEffect(() => {
@@ -189,6 +191,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(userResult.value)
         setStatus('authenticated')
       } else {
+        if (isApiError(userResult.reason) && userResult.reason.status === 401) {
+          clearWorkspaceSession()
+        }
         setUser(null)
         setStatus('unauthenticated')
       }

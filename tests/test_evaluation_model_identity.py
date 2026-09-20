@@ -154,7 +154,7 @@ def test_trimmed_duplicate_model_identities_are_rejected_before_admission(monkey
     assert exc_info.value.status_code == 400
 
 
-def test_create_persists_canonical_model_name(monkeypatch):
+def test_create_persists_canonical_model_name(monkeypatch, empty_inference_catalog):
     creations = []
     lease = SimpleNamespace(release=lambda: None)
 
@@ -350,7 +350,7 @@ def test_create_rejects_inactive_legacy_zero_child_deployment_before_admission(
     assert exc_info.value.detail == "deployment is not running"
 
 
-def test_route_rejects_normalized_mteb_type_with_unknown_dataset(monkeypatch):
+def test_route_rejects_normalized_mteb_type_with_unknown_dataset(monkeypatch, empty_inference_catalog):
     request = evaluation_routes.CreateEvaluationRequest(
         model_configs=[
             evaluation_routes.ModelConfig(
@@ -606,6 +606,7 @@ def test_runner_falls_back_from_legacy_null_names_without_overwriting(monkeypatc
 
 def test_resume_maps_invalid_legacy_model_identity_to_400_before_admission(
     monkeypatch,
+    empty_inference_catalog,
 ):
     task = {
         "task_id": "legacy-resume",
@@ -1065,7 +1066,7 @@ def test_v1_snapshot_rejects_old_and_v2_result_key_collision():
         )
 
 
-def test_resume_route_admits_fully_migrated_v1_snapshot(monkeypatch):
+def test_resume_route_admits_fully_migrated_v1_snapshot(monkeypatch, empty_inference_catalog):
     local_path = "/managed/private/v1-local.jsonl"
     local_v2_key = "local:sha256:" + hashlib.sha256(local_path.encode()).hexdigest()
     task = {
@@ -1159,7 +1160,7 @@ def test_resume_route_admits_fully_migrated_v1_snapshot(monkeypatch):
     }
 
 
-def test_resume_rejects_legacy_model_progress_collision_before_admission(monkeypatch):
+def test_resume_rejects_legacy_model_progress_collision_before_admission(monkeypatch, empty_inference_catalog):
     task = {
         "task_id": "legacy-resume",
         "status": "failed",
@@ -1214,7 +1215,7 @@ def test_resume_rejects_legacy_model_progress_collision_before_admission(monkeyp
     assert "invalid" in str(exc_info.value.detail).lower()
 
 
-def test_resume_admission_receives_complete_canonical_snapshot(monkeypatch):
+def test_resume_admission_receives_complete_canonical_snapshot(monkeypatch, empty_inference_catalog):
     task = {
         "task_id": "legacy-resume",
         "status": "failed",

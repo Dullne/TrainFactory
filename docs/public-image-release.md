@@ -1,6 +1,37 @@
-# Public Image Release Preparation
+# Public Image Release
 
-TrainFactory publishes only the two project-owned runtime images:
+## Docker Hub publication
+
+The current release destination is Docker Hub. Publish the project-owned
+`<dockerhub-namespace>/trainfactory-api` and
+`<dockerhub-namespace>/trainfactory-web` repositories only. The namespace is
+the operator's verified Docker Hub account; do not embed registry credentials
+in source, build arguments, or release notes.
+
+Use an independent public GitHub clone on `master`, review the complete range
+from the previous public revision, and require all eight CI jobs to pass for
+the exact commit. Private checkout history, internal configuration, and local
+data must never enter the public build context. Build the clean public clone
+with `python -I scripts/build_release.py --build` using an empty temporary
+Docker client configuration. Keep the pinned GPU providers unchanged.
+
+After preparation, use native Docker commands with the operator's credential
+store to tag and push the validated immutable image IDs. Publish only
+`<version>-<short-commit-sha>` and `sha-<full-commit-sha>`; do not overwrite a
+different existing image or publish a floating `latest` tag. Verify both remote
+manifest config digests against the local image IDs, and verify `linux/amd64`
+and the OCI source/revision/version labels. Record the immutable remote
+digests in the release notes. Publishing does not restart running services;
+deployment is a separate operation.
+
+## Legacy GHCR preparation utility
+
+`scripts/prepare_public_release.py` remains a GHCR-only preparation utility.
+It does not publish to Docker Hub and should not be used to select a Docker
+Hub namespace. Its preparation and authentication boundaries below also apply
+to the Docker Hub workflow above.
+
+The legacy utility prepares only the two project-owned runtime images:
 
 - `ghcr.io/dullne/trainfactory-api`
 - `ghcr.io/dullne/trainfactory-web`

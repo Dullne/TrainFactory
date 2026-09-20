@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, File, Form, Dep
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ..concurrency import threadpool_endpoint
 from ...auth.dependencies import (
     get_current_user,
     requires_tenant_provenance,
@@ -791,7 +792,8 @@ async def upload_dataset(
 
 
 @router.get("/datasets", response_model=DatasetListResponse)
-async def list_datasets(
+@threadpool_endpoint
+def list_datasets(
     dataset_type: Optional[str] = None,
     usage: Optional[str] = None,
     model_type: Optional[str] = Query(default=None, description="Filter by model type tag (single value, matched via JSON_CONTAINS)"),
@@ -827,7 +829,8 @@ async def list_datasets(
 
 
 @router.get("/datasets/search", response_model=DatasetListResponse)
-async def search_datasets(
+@threadpool_endpoint
+def search_datasets(
     query: str = Query(..., description="Search query"),
     dataset_type: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
@@ -850,7 +853,8 @@ async def search_datasets(
 
 
 @router.get("/datasets/stats", response_model=StatsResponse)
-async def get_stats(current_user: Dict[str, Any] = Depends(get_current_user)):
+@threadpool_endpoint
+def get_stats(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Get dataset statistics for the current user."""
     user_id = current_user["user_id"]
     return dataset_service.get_stats(user_id=user_id)
@@ -1111,7 +1115,8 @@ async def download_dataset(
 
 
 @router.get("/datasets/download/{dataset_id}/progress", response_model=DownloadProgressResponse)
-async def get_download_progress(
+@threadpool_endpoint
+def get_download_progress(
     dataset_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -1140,7 +1145,8 @@ async def get_download_progress(
 
 
 @router.get("/datasets/downloads")
-async def list_downloads(current_user: Dict[str, Any] = Depends(get_current_user)):
+@threadpool_endpoint
+def list_downloads(current_user: Dict[str, Any] = Depends(get_current_user)):
     """List all dataset download tasks."""
     from ...storage.services.dataset_download_service import dataset_download_service
 
@@ -1289,7 +1295,8 @@ async def export_dataset(
 
 
 @router.get("/datasets/{dataset_id}/export/download", name="download_export_file")
-async def download_export_file(
+@threadpool_endpoint
+def download_export_file(
     dataset_id: str,
     storage_uri: str = Query(..., description="Exported object storage URI"),
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -1370,7 +1377,8 @@ async def download_export_file(
 # === Dataset CRUD (dynamic routes must be after static routes) ===
 
 @router.get("/datasets/{dataset_id}", response_model=DatasetResponse)
-async def get_dataset(
+@threadpool_endpoint
+def get_dataset(
     dataset_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -1716,7 +1724,8 @@ def _filter_visible_lineage_edges(
 
 
 @router.get("/datasets/{dataset_id}/upstream")
-async def get_dataset_upstream(
+@threadpool_endpoint
+def get_dataset_upstream(
     dataset_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -1733,7 +1742,8 @@ async def get_dataset_upstream(
 
 
 @router.get("/datasets/{dataset_id}/downstream")
-async def get_dataset_downstream(
+@threadpool_endpoint
+def get_dataset_downstream(
     dataset_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -1750,7 +1760,8 @@ async def get_dataset_downstream(
 
 
 @router.get("/datasets/{dataset_id}/preview")
-async def preview_dataset(
+@threadpool_endpoint
+def preview_dataset(
     dataset_id: str,
     limit: int = Query(default=10, ge=1, le=100, description="Number of rows to preview"),
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -1847,7 +1858,8 @@ async def preview_dataset(
 
 
 @router.get("/datasets/{dataset_id}/lineage")
-async def get_dataset_lineage(
+@threadpool_endpoint
+def get_dataset_lineage(
     dataset_id: str,
     direction: Literal["upstream", "downstream", "both"] = Query(
         default="both", description="Lineage direction",

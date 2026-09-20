@@ -8,6 +8,7 @@ import threading
 import time
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -1758,21 +1759,36 @@ def test_background_heartbeat_prevents_takeover_during_long_external_step(
         )
         session.commit()
 
-    monkeypatch.setattr(registry_module, "MODEL_DELETE_INTENT_LEASE_SECONDS", 0.05)
     monkeypatch.setattr(
         registry_module,
         "MODEL_DELETE_INTENT_HEARTBEAT_SECONDS",
         0.01,
     )
+    clock_lock = threading.Lock()
+    initial_time = datetime(2026, 1, 1)
+    expired_time = initial_time + timedelta(
+        seconds=registry_module.MODEL_DELETE_INTENT_LEASE_SECONDS + 1,
+    )
+    lease_time = initial_time
+
+    def lease_now() -> datetime:
+        with clock_lock:
+            return lease_time
+
+    monkeypatch.setattr(registry_module, "now_naive", lease_now)
     owner_in_cleanup = threading.Event()
     release_owner = threading.Event()
     heartbeat_after_lease = threading.Event()
-    cleanup_started_at: list[float] = []
     retry_cleanup_calls: list[str] = []
 
     def long_cleanup(*_args, **_kwargs) -> None:
+        nonlocal lease_time
         if threading.current_thread().name.startswith("model-delete-owner"):
-            cleanup_started_at.append(time.monotonic())
+            # The original lease is now expired. Keep the clock fixed so a
+            # real committed heartbeat, not host scheduling speed, determines
+            # whether the contender may take ownership.
+            with clock_lock:
+                lease_time = expired_time
             owner_in_cleanup.set()
             assert release_owner.wait(timeout=5)
         else:
@@ -1784,11 +1800,11 @@ def test_background_heartbeat_prevents_takeover_during_long_external_step(
     original_renew = service._renew_model_delete_intent
 
     def observe_renewal(model_id: str, token: str) -> None:
+        renewal_time = lease_now()
         original_renew(model_id, token)
         if (
-            cleanup_started_at
-            and time.monotonic() - cleanup_started_at[0]
-            > registry_module.MODEL_DELETE_INTENT_LEASE_SECONDS
+            threading.current_thread().name.startswith("model-delete-heartbeat")
+            and renewal_time == expired_time
         ):
             heartbeat_after_lease.set()
 
@@ -1802,8 +1818,13 @@ def test_background_heartbeat_prevents_takeover_during_long_external_step(
         if not owner_in_cleanup.wait(timeout=5):
             owner.result(timeout=1)
             pytest.fail("model delete did not reach runtime cleanup")
-        assert heartbeat_after_lease.wait(timeout=5)
         try:
+            assert heartbeat_after_lease.wait(timeout=5)
+            with Session(engine) as session:
+                current = session.exec(select(ModelRegistryDB)).one()
+                assert current.extra_metadata[DELETE_INTENT_KEY]["heartbeat_at"] == (
+                    expired_time.isoformat()
+                )
             with pytest.raises(
                 deployment_module.ReplicaOperationBusyError,
                 match="already in progress",

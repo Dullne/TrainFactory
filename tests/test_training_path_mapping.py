@@ -468,6 +468,7 @@ def test_run_training_task_persists_normalized_execution_config(monkeypatch):
     )
     monkeypatch.setattr(training_routes.training_task_service, "update_task_progress", lambda *args, **kwargs: True)
     monkeypatch.setattr(training_routes.training_task_service, "update_process_info", lambda *args, **kwargs: True)
+    monkeypatch.setattr(training_routes.training_task_service, "register_training_process", lambda *args, **kwargs: True)
     monkeypatch.setattr(
         training_routes.training_task_service,
         "update_task_execution_config",

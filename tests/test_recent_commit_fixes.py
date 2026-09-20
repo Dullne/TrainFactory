@@ -37,8 +37,13 @@ def _config_payload(**overrides):
     return payload
 
 
-def test_model_config_create_uses_authenticated_user(monkeypatch):
+def test_model_config_create_uses_authenticated_user(monkeypatch, empty_inference_catalog):
     captured = {}
+    monkeypatch.setattr(
+        model_config_routes.deployment_service,
+        "list_deployments",
+        lambda **_kwargs: ([], 0),
+    )
 
     async def fake_create_config_async(**kwargs):
         captured.update(kwargs)

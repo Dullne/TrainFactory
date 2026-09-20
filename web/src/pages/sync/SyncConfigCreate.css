@@ -1,0 +1,31 @@
+.sync-config-create-page {
+  min-width: 0;
+}
+
+.sync-config-create-page > .page-toolbar {
+  justify-content: flex-start;
+}
+
+.sync-config-create-page .ant-card-head-title,
+.sync-config-create-page .ant-form-item-label > label {
+  white-space: normal;
+  height: auto;
+}
+
+.sync-config-create-page .ant-card-head-title > .ant-space {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  padding-block: 4px;
+}
+
+.sync-config-create-page .ant-card-body,
+.sync-config-create-page .ant-collapse-content-box {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 575px) {
+  .sync-config-create-page .ant-collapse-content > .ant-collapse-content-box {
+    padding: 12px;
+  }
+}

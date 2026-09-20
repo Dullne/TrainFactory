@@ -1,0 +1,38 @@
+.generation-create-page {
+  min-width: 0;
+}
+
+.generation-create-page > .page-toolbar {
+  justify-content: flex-start;
+}
+
+.generation-create-page .ant-card-head-title,
+.generation-create-page .ant-form-item-label > label {
+  white-space: normal;
+  height: auto;
+}
+
+.generation-create-page .ant-card-body,
+.generation-create-page .ant-collapse-content-box {
+  overflow-wrap: anywhere;
+}
+
+.generation-create-page .ant-radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+@media (max-width: 575px) {
+  .generation-create-page .ant-radio-button-wrapper {
+    height: auto;
+    min-height: 32px;
+    line-height: 20px;
+    padding-block: 5px;
+    white-space: normal;
+  }
+
+  .generation-create-page .ant-collapse-content > .ant-collapse-content-box {
+    padding: 12px;
+  }
+}

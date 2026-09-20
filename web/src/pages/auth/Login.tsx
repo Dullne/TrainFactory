@@ -7,6 +7,7 @@ import { AccessiblePasswordInput } from '@/components/AccessiblePasswordInput'
 import { TrainFactoryWorkflow } from '@/components/brand/TrainFactoryWorkflow'
 import { TrainFactoryWordmark } from '@/components/brand/TrainFactoryWordmark'
 import { LanguageToggle } from '@/i18n/LanguageToggle'
+import { ThemeSelector } from '@/components/ThemeSelector'
 import './Login.css'
 
 type AuthMode = 'login' | 'register'
@@ -98,6 +99,7 @@ export default function Login() {
           <TrainFactoryWordmark />
         </div>
         <div className="auth-language">
+          <ThemeSelector />
           <LanguageToggle />
         </div>
       </header>

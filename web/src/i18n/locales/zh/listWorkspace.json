@@ -1,0 +1,6 @@
+{
+  "runningReplicas": "健康副本：{{running}} / {{total}}",
+  "replicas": "副本",
+  "details": "任务详情",
+  "loading": "正在加载结果"
+}

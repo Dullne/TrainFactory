@@ -508,7 +508,7 @@ export function EvaluationDetailModal({ visible, task, onClose }: EvaluationDeta
           size="small"
           style={{
             marginBottom: 16,
-            background: '#2a1f1f',
+            background: 'rgba(248, 81, 73, 0.10)',
             borderColor: STATUS_ERROR,
           }}
         >

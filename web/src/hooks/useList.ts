@@ -23,6 +23,8 @@ interface UseListReturn<T, E extends Record<string, unknown> = Record<string, un
   data: T[]
   loading: boolean
   error: Error | null
+  hasData: boolean
+  isStale: boolean
   page: number
   pageSize: number
   total: number
@@ -53,14 +55,22 @@ export function useList<T, E extends Record<string, unknown> = Record<string, un
 ): UseListReturn<T, E> {
   const { autoFetch = true, defaultPageSize = 10, defaultParams = {} } = options
 
-  const [data, setData] = useState<T[]>([])
+  // Pagination, rows and aggregates always describe one successful response.
+  const [result, setResult] = useState({
+    data: [] as T[],
+    page: 1,
+    pageSize: defaultPageSize,
+    total: 0,
+    extra: null as E | null,
+    hasData: false,
+  })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<Error | null>(null)
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(defaultPageSize)
-  const [total, setTotal] = useState(0)
-  const [extra, setExtra] = useState<E | null>(null)
-  const [extraParams, setExtraParams] = useState<Record<string, unknown>>(defaultParams)
+  const [isStale, setIsStale] = useState(false)
+  const queryRef = useRef<ListParams>({ ...defaultParams, page: 1, page_size: defaultPageSize })
+  const successfulQueryRef = useRef<string | null>(null)
+  const fetchFnRef = useRef(fetchFn)
+  fetchFnRef.current = fetchFn
 
   // Monotonic request id: every fetch increments it and captures its own id.
   // A response that returns after a newer fetch started is stale and is
@@ -70,41 +80,53 @@ export function useList<T, E extends Record<string, unknown> = Record<string, un
   const fetch = useCallback(
     async (params?: Partial<ListParams>) => {
       const requestId = ++reqIdRef.current
+      let query = { ...queryRef.current, ...params }
+      query.page = Math.max(1, query.page ?? 1)
+      query.page_size = Math.max(1, query.page_size ?? defaultPageSize)
+      queryRef.current = query
+      const queryKey = (value: ListParams) =>
+        JSON.stringify(
+          Object.keys(value)
+            .sort()
+            .filter((key) => value[key] !== undefined)
+            .map((key) => [key, value[key]])
+        )
+      setIsStale(
+        successfulQueryRef.current !== null && successfulQueryRef.current !== queryKey(query)
+      )
       setLoading(true)
       setError(null)
       try {
-        // Merge extra params if provided
-        if (params) {
-          const { page: newPage, page_size: newPageSize, ...rest } = params
-          if (newPage !== undefined) setPage(newPage)
-          if (newPageSize !== undefined) setPageSize(newPageSize)
-          if (Object.keys(rest).length > 0) {
-            setExtraParams((prev) => ({ ...prev, ...rest }))
+        // A shrinking total can invalidate the current offset. Fetch the valid
+        // page before publishing anything, including its page number and total.
+        while (requestId === reqIdRef.current) {
+          const response = await fetchFnRef.current(query)
+          if (requestId !== reqIdRef.current) return
+          const lastPage = Math.max(1, Math.ceil(response.total / query.page_size!))
+          if (query.page! > lastPage) {
+            query = { ...query, page: lastPage }
+            queryRef.current = query
+            setIsStale(successfulQueryRef.current !== null)
+            continue
           }
+          const extraFields = { ...(response as Record<string, unknown>) }
+          delete extraFields.items
+          delete extraFields.total
+          delete extraFields.page
+          delete extraFields.page_size
+          successfulQueryRef.current = queryKey(query)
+          setResult({
+            data: response.items,
+            total: response.total,
+            page: query.page!,
+            pageSize: query.page_size!,
+            extra: extraFields as E,
+            hasData: true,
+          })
+          setIsStale(false)
+          break
         }
-
-        const result = await fetchFn({
-          page: params?.page ?? page,
-          page_size: params?.page_size ?? pageSize,
-          ...extraParams,
-          ...params,
-        })
-
-        // A newer fetch (page change / filter / refresh) superseded this one.
-        if (requestId !== reqIdRef.current) return
-
-        setData(result.items)
-        setTotal(result.total)
-
-        // Extract extra fields (everything except items, total, page, page_size)
-        const extraFields = { ...(result as Record<string, unknown>) }
-        delete extraFields.items
-        delete extraFields.total
-        delete extraFields.page
-        delete extraFields.page_size
-        setExtra(extraFields as E)
       } catch (err) {
-        console.error('useList fetch error:', err)
         // Keep the last successful data/extra so a transient polling failure
         // (e.g. during 5s background refresh) doesn't blank the list and the
         // stats cards. Only surface the error if this is still the latest req.
@@ -117,28 +139,37 @@ export function useList<T, E extends Record<string, unknown> = Record<string, un
         }
       }
     },
-    [fetchFn, page, pageSize, extraParams]
+    [defaultPageSize]
   )
 
-  const refresh = useCallback(() => {
-    return fetch({ page, page_size: pageSize, ...extraParams })
-  }, [fetch, page, pageSize, extraParams])
+  // Retry the latest requested query, even when its previous request failed.
+  const refresh = useCallback(() => fetch(), [fetch])
+  const setPage = useCallback(
+    (page: number) => {
+      void fetch({ page })
+    },
+    [fetch]
+  )
+  const setPageSize = useCallback(
+    (size: number) => {
+      void fetch({ page: 1, page_size: size })
+    },
+    [fetch]
+  )
 
-  // Auto fetch on mount and when page/pageSize changes
   useEffect(() => {
-    if (autoFetch) {
-      fetch()
+    const requestSequence = reqIdRef
+    if (autoFetch) void fetch()
+    return () => {
+      ++requestSequence.current
     }
-  }, [page, pageSize]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoFetch, fetch])
 
   return {
-    data,
+    ...result,
     loading,
     error,
-    page,
-    pageSize,
-    total,
-    extra,
+    isStale,
     setPage,
     setPageSize,
     fetch,

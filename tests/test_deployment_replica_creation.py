@@ -74,6 +74,9 @@ class FakeDocker:
             2: {"free_mb": 20_000, "total_mb": 24_000},
         }
 
+    def select_gpu(self, min_free_mb=4000):
+        return 0
+
     def find_available_port(self, *, owner_token: str) -> int:
         port = next(self.ports)
         self.reserved.append((port, owner_token))
@@ -145,6 +148,9 @@ def replica_service(monkeypatch: pytest.MonkeyPatch, tmp_path):
     DeploymentDB.__table__.create(engine)
     DeploymentReplicaDB.__table__.create(engine)
     LoadedAdapterDB.__table__.create(engine)
+    # GPU admission reads the durable runtime evidence shared with training.
+    from train_factory.storage.entities.training_task_entity import TrainingTaskDB
+    TrainingTaskDB.__table__.create(engine)
 
     with Session(engine) as session:
         session.add(ModelArtifactMembershipGateDB(gate_id=1))
@@ -207,6 +213,67 @@ def _create(
         defer_start=defer_start,
         inference_framework="vllm",
     )
+
+
+def test_create_rejects_training_gpu_before_launch(monkeypatch, replica_service):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+    database = importlib.import_module("train_factory.storage.database")
+    service, engine = replica_service
+    docker = FakeDocker([11000])
+    monkeypatch.setattr(service_module, "docker_deployer", docker)
+    monkeypatch.setattr(database, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 3)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") == "cuda:0"
+
+    with pytest.raises(service_module.ReplicaOperationBusyError):
+        _create(service, replica=1)
+
+    assert docker.created == []
+    with Session(engine) as session:
+        assert session.exec(select(DeploymentDB)).all() == []
+
+
+def test_creation_reserves_gpu_before_runtime_launch(monkeypatch, replica_service):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+    database = importlib.import_module("train_factory.storage.database")
+    service, _engine = replica_service
+    docker = FakeDocker([11000])
+    monkeypatch.setattr(service_module, "docker_deployer", docker)
+    monkeypatch.setattr(database, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 3)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    allocations = []
+    docker.on_create = lambda: allocations.append(
+        manager.allocate_gpus_for_task("training-attempt", "cuda:0")
+    )
+
+    _create(service, replica=1)
+
+    assert allocations == [None]
+
+
+@pytest.mark.parametrize("config", [None, {"launch_config": {"framework": "vllm", "gpu_pool": [0, 1]}}])
+def test_automatic_placement_skips_gpu_reserved_for_training(monkeypatch, replica_service, config):
+    from train_factory.core.gpu_resource_manager import GPUResourceManager
+    database = importlib.import_module("train_factory.storage.database")
+    service, _engine = replica_service
+    docker = FakeDocker([11000])
+    monkeypatch.setattr(service_module, "docker_deployer", docker)
+    monkeypatch.setattr(database, "get_session", service_module.get_session)
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 3)
+    manager = GPUResourceManager()
+    monkeypatch.setattr(service_module, "gpu_resource_manager", manager)
+    assert manager.allocate_gpus_for_task("training-attempt", "cuda:0") == "cuda:0"
+
+    result = service.create_container_deployment(
+        model_id="model-1", inference_framework="vllm", config=config,
+        gpu_memory_utilization=0.8, user_id="user-1",
+    )
+
+    assert result["replica_instances"][0]["gpu_ids"] == [1]
 
 
 def test_happy_path_persists_parent_and_children_in_replica_order(

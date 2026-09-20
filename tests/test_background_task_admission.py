@@ -6,6 +6,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def external_inference_catalog(monkeypatch):
+    from train_factory.storage.services import inference_authorization_service
+
+    monkeypatch.setattr(
+        inference_authorization_service, "registered_shared_models_for_endpoint",
+        lambda *_args: (False, set()),
+    )
 import yaml
 from fastapi import BackgroundTasks, HTTPException
 from sqlmodel import Session, SQLModel, create_engine
@@ -567,6 +577,8 @@ def test_sync_manager_launch_releases_generation_execution_lease(monkeypatch):
 
     calls = []
     releases = []
+    admission = BackgroundTaskAdmissionService(global_limit=1, per_user_limit=1)
+    monkeypatch.setattr(admission_module, "background_task_admission_service", admission)
 
     async def fake_generation(
         task_id,
@@ -603,10 +615,17 @@ def test_sync_manager_launch_releases_generation_execution_lease(monkeypatch):
                 "execution_lease": lease,
             }
         )
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        # Completion belongs to a dedicated worker pool, so two event-loop
+        # ticks no longer imply the pipeline and its lease have finished.
+        launched = [task for task in asyncio.all_tasks()
+                    if task.get_name() == "gen-pipeline-sync-gen"]
+        assert len(launched) == 1
+        await asyncio.wait_for(launched[0], 3)
 
-    asyncio.run(launch())
+    try:
+        asyncio.run(launch())
+    finally:
+        admission.shutdown_async_workers()
 
     assert calls == [
         ("sync-generation-1", "config", "sync-generation-token")

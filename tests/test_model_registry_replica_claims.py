@@ -262,18 +262,20 @@ def test_delete_model_rejects_active_loaded_adapter_before_any_side_effect(
 )
 def test_force_delete_model_fails_closed_while_replica_lifecycle_is_claimed(
     monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
     claimed_model,
     operation: str,
     replica_id: str | None,
 ) -> None:
     engine, model_id, model_path = claimed_model
     service = deployment_module.DeploymentService()
-    service._claim_replica_operation(
+    claim = service._claim_replica_operation(
         "deployment-claimed",
         operation=operation,
         replica_id=replica_id,
         user_id="user-1",
     )
+    request.addfinalizer(lambda: service._release_replica_operation(claim))
     cleanup_calls: list[str] = []
     monkeypatch.setattr(
         registry_module,

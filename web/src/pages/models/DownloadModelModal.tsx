@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Modal,
@@ -18,23 +18,89 @@ import {
   CloseCircleOutlined,
   LoadingOutlined,
 } from '@ant-design/icons'
-import { modelApi, DownloadModelRequest, DownloadProgress } from '@/services/api'
+import {
+  modelApi,
+  DownloadModelRequest,
+  DownloadProgress,
+  SILENT_REQUEST_CONFIG,
+} from '@/services/api'
+import { useAuth } from '@/auth/AuthContext'
+import { DownloadTaskHistory } from '@/components/DownloadTaskHistory'
+import { useDownloadHistory } from '@/hooks/useDownloadHistory'
 
 const { Text } = Typography
+const getModelDownloadId = (task: DownloadProgress) => task.registry_id
+const isModelDownloadActive = (task: DownloadProgress) =>
+  task.status === 'pending' || task.status === 'downloading'
+const loadModelDownloads = () => modelApi.listDownloads(SILENT_REQUEST_CONFIG)
 
 interface DownloadModelModalProps {
   open: boolean
   onCancel: () => void
   onSuccess: () => void
+  onTasksChanged: () => void
 }
 
-export function DownloadModelModal({ open, onCancel, onSuccess }: DownloadModelModalProps) {
+export function DownloadModelModal({
+  open,
+  onCancel,
+  onSuccess,
+  onTasksChanged,
+}: DownloadModelModalProps) {
   const [form] = Form.useForm()
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [progress, setProgress] = useState<DownloadProgress | null>(null)
   const [registryId, setRegistryId] = useState<string | null>(null)
   const { t } = useTranslation(['models', 'common'])
+  const { user } = useAuth()
+  const scopeKey = user?.user_id ?? ''
+  const scopeRef = useRef(scopeKey)
+  const operationGenerationRef = useRef(0)
+
+  useEffect(() => {
+    scopeRef.current = scopeKey
+    operationGenerationRef.current += 1
+    setLoading(false)
+    setDownloading(false)
+    setProgress(null)
+    setRegistryId(null)
+  }, [scopeKey])
+
+  const handleTaskSettled = useCallback(
+    (task: DownloadProgress) => {
+      if (task.status === 'available') {
+        message.success(t('download.downloadComplete'))
+      } else if (task.status === 'failed') {
+        message.error(
+          t('download.downloadFailed', { error: task.error || t('download.unknownError') })
+        )
+      }
+
+      if (task.registry_id === registryId) {
+        setProgress(task)
+        setDownloading(false)
+        if (open && task.status === 'available') {
+          onSuccess()
+          return
+        }
+      }
+      onTasksChanged()
+    },
+    [onSuccess, onTasksChanged, open, registryId, t]
+  )
+
+  const history = useDownloadHistory({
+    scopeKey,
+    getId: getModelDownloadId,
+    isActive: isModelDownloadActive,
+    load: loadModelDownloads,
+    onTaskSettled: handleTaskSettled,
+  })
+  const refreshDownloads = history.refresh
+  useEffect(() => {
+    if (open) void refreshDownloads()
+  }, [open, refreshDownloads])
 
   const modelTypeOptions = [
     { label: t('download.embeddingLabel'), value: 'embedding' },
@@ -43,67 +109,46 @@ export function DownloadModelModal({ open, onCancel, onSuccess }: DownloadModelM
     { label: t('download.llmLabel'), value: 'llm' },
   ]
 
-  // Poll download progress with request guard
   useEffect(() => {
-    if (!registryId || !downloading) return
-
-    let polling = true
-    let fetching = false
-    let errorCount = 0
-    const MAX_ERRORS = 10
-
-    const poll = async () => {
-      if (!polling || fetching) return
-      fetching = true
-      try {
-        const data = await modelApi.getDownloadProgress(registryId)
-        errorCount = 0
-        setProgress(data)
-
-        if (data.status === 'available') {
-          polling = false
-          setDownloading(false)
-          message.success(t('download.downloadComplete'))
-          onSuccess()
-        } else if (data.status === 'failed') {
-          polling = false
-          setDownloading(false)
-          message.error(t('download.downloadFailed', { error: data.error || t('download.unknownError') }))
-        }
-      } catch {
-        errorCount++
-        if (errorCount >= MAX_ERRORS) {
-          polling = false
-          setDownloading(false)
-          message.error(t('download.progressFetchFailed'))
-        }
-      } finally {
-        fetching = false
-      }
-    }
-
-    const interval = setInterval(poll, 3000)
-    return () => { polling = false; clearInterval(interval) }
-  }, [registryId, downloading, onSuccess, t])
+    if (!registryId) return
+    const currentTask = history.tasks.find((task) => task.registry_id === registryId)
+    if (currentTask) setProgress(currentTask)
+  }, [history.tasks, registryId])
 
   const handleSubmit = async (values: DownloadModelRequest) => {
+    const requestScope = scopeKey
+    const operationGeneration = ++operationGenerationRef.current
     setLoading(true)
     try {
       const result = await modelApi.download(values)
-      setRegistryId(result.registry_id)
-      setDownloading(true)
-      setProgress({
+      if (scopeRef.current !== requestScope) return
+      const task: DownloadProgress = {
         registry_id: result.registry_id,
         model_name: result.model_name,
         display_name: result.display_name,
         status: 'downloading',
         progress: 0,
-      })
+      }
+      if (!history.upsert(task)) return
       message.info(t('download.taskCreated'))
+      if (operationGenerationRef.current !== operationGeneration) return
+      setRegistryId(result.registry_id)
+      setDownloading(true)
+      setProgress(task)
     } catch (err) {
-      message.error(t('download.taskCreateFailed'))
+      if (
+        operationGenerationRef.current === operationGeneration &&
+        scopeRef.current === requestScope
+      ) {
+        message.error(t('download.taskCreateFailed'))
+      }
     } finally {
-      setLoading(false)
+      if (
+        operationGenerationRef.current === operationGeneration &&
+        scopeRef.current === requestScope
+      ) {
+        setLoading(false)
+      }
     }
   }
 
@@ -111,7 +156,9 @@ export function DownloadModelModal({ open, onCancel, onSuccess }: DownloadModelM
     if (downloading) {
       message.info(t('download.backgroundContinue'))
     }
+    operationGenerationRef.current += 1
     form.resetFields()
+    setLoading(false)
     setProgress(null)
     setRegistryId(null)
     setDownloading(false)
@@ -214,7 +261,9 @@ export function DownloadModelModal({ open, onCancel, onSuccess }: DownloadModelM
                   {t('download.modelLabel')} <Text strong>{progress?.model_name}</Text>
                 </Text>
                 {progress?.remote_repo && (
-                  <Text type="secondary">{t('download.sourceLabel')} {progress.remote_repo}</Text>
+                  <Text type="secondary">
+                    {t('download.sourceLabel')} {progress.remote_repo}
+                  </Text>
                 )}
               </Space>
             }
@@ -230,8 +279,8 @@ export function DownloadModelModal({ open, onCancel, onSuccess }: DownloadModelM
               progress?.status === 'failed'
                 ? 'exception'
                 : progress?.status === 'available'
-                ? 'success'
-                : 'active'
+                  ? 'success'
+                  : 'active'
             }
           />
 
@@ -249,6 +298,23 @@ export function DownloadModelModal({ open, onCancel, onSuccess }: DownloadModelM
           </Text>
         </div>
       )}
+      <DownloadTaskHistory
+        items={history.tasks.map((task) => ({
+          id: task.registry_id,
+          name: task.display_name || task.model_name || task.registry_id,
+          source: task.remote_repo,
+          status: task.status,
+          progress: task.progress,
+          error: task.error,
+        }))}
+        loading={history.loading}
+        failed={history.failed}
+        title={t('download.history.title')}
+        emptyText={t('download.history.empty')}
+        errorText={t('download.history.error')}
+        retryText={t('download.history.retry')}
+        onRetry={() => void history.refresh()}
+      />
     </Modal>
   )
 }

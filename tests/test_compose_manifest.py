@@ -206,7 +206,7 @@ def _canonical_verify_environment(service):
             "MYSQL_USER": "trainfactory_app",
         }
     if service == "train-factory-web":
-        return {"API_HOST": "train-factory-api", "API_PORT": "18000"}
+        return {"API_HOST": "train-factory-api", "API_PORT": "18000", "MAX_UPLOAD_SIZE": "524288000"}
     if service != "train-factory-api":
         raise AssertionError("unknown canonical service")
     environment = copy.deepcopy(_API_ENVIRONMENT_DEFAULT_VALUES)
@@ -523,18 +523,7 @@ def test_release_policy_rejects_file_secret_direct_value_drift():
 def test_release_policy_accepts_custom_ports_and_rejects_duplicate_endpoint(tmp_path):
     from scripts import compose_release
 
-    base = tmp_path / "production.env"
-    base.write_text(
-        "HOST_BIND_ADDRESS=::1\n"
-        "PUBLIC_BASE_URL=http://[::1]:3100\n"
-        "API_PORT=19000\n"
-        "WEB_PORT=3100\n"
-        "XINFERENCE_PATCH_VOLUME=/workspace/train-factory/docker/xinference-patches:/opt/trainfactory/xinference-patches:ro\n"
-        "XINFERENCE_CONTRACT_VOLUME=/workspace/train-factory/docker/inference-contracts:/opt/trainfactory/inference-contracts:ro\n"
-        "SGLANG_TEMPLATE_VOLUME=/workspace/train-factory/docker/sglang-templates:/opt/trainfactory/sglang-templates:ro\n",
-        encoding="utf-8",
-    )
-    compose = _render_production(base)
+    compose = _render_production()
     api = compose["services"]["train-factory-api"]
     web = compose["services"]["train-factory-web"]
     api["environment"]["HOST_BIND_ADDRESS"] = "::1"
@@ -562,10 +551,7 @@ def test_release_policy_accepts_custom_ports_and_rejects_duplicate_endpoint(tmp_
         "HOST_BIND_ADDRESS=::1\n"
         "PUBLIC_BASE_URL=http://[::1]:3100\n"
         "API_PORT=19000\n"
-        "WEB_PORT=19000\n"
-        "XINFERENCE_PATCH_VOLUME=/workspace/train-factory/docker/xinference-patches:/opt/trainfactory/xinference-patches:ro\n"
-        "XINFERENCE_CONTRACT_VOLUME=/workspace/train-factory/docker/inference-contracts:/opt/trainfactory/inference-contracts:ro\n"
-        "SGLANG_TEMPLATE_VOLUME=/workspace/train-factory/docker/sglang-templates:/opt/trainfactory/sglang-templates:ro\n",
+        "WEB_PORT=19000\n",
         encoding="utf-8",
     )
     web["ports"][0]["published"] = "19000"
@@ -582,6 +568,7 @@ def test_release_policy_accepts_frozen_nondefault_runtime_values(tmp_path):
         "SELF_REGISTRATION_ENABLED": "true",
         "HF_ENDPOINT": "https://models.example.invalid",
         "LOG_LEVEL": "WARNING",
+        "MAX_UPLOAD_SIZE": "2097152",
         "API_SHM_SIZE": "2g",
         "API_MEM_LIMIT": "1g",
         "API_CPU_LIMIT": "2",
@@ -991,7 +978,7 @@ def _minimal_resolved_verify_config(project=PROJECT, *, root=None, gpu_mode="raw
                 "image": "local/web:fixed",
                 "restart": "no",
                 "networks": {"default": None},
-                "environment": {"API_HOST": "train-factory-api", "API_PORT": "18000"},
+                "environment": _canonical_verify_environment("train-factory-web"),
                 "healthcheck": copy.deepcopy(WEB_HEALTHCHECK),
                 "ports": [
                     {
@@ -2401,7 +2388,7 @@ def test_capture_rollback_uses_exact_labels_and_records_immutable_images(
     tags = {}
     fail_next_remove = [False]
     remove_attempts = []
-    source_compose = _render_production(root / ".env")
+    source_compose = _render_production()
     source_compose["services"]["mysql"]["image"] = (
         "example/mysql_image:fixed@sha256:" + f"{5:064x}"
     )

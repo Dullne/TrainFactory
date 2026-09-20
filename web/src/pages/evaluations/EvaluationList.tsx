@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useListWorkspace, useListScroll } from '@/hooks/useListWorkspace'
 import {
   Table,
   Typography,
@@ -49,30 +50,56 @@ import {
 
 const { Title, Text } = Typography
 
+const WORKSPACE_FILTERS = { tab: ['tasks', 'deep-eval', 'online-test'] }
+
 export default function EvaluationList() {
   const { t } = useTranslation(['evaluations', 'common'])
-  const [activeTab, setActiveTab] = useState('tasks')
+  const workspace = useListWorkspace({ filters: WORKSPACE_FILTERS })
+  const activeTab = workspace.values.tab || 'tasks'
+  const setActiveTab = (tab: string) => workspace.update({ tab })
 
-  const taskStatusConfig: Record<string, { color: string; icon: React.ReactNode; label: string }> = {
-    pending: { color: 'default', icon: <ClockCircleOutlined />, label: t('common:status.pending') },
-    running: { color: 'processing', icon: <PlayCircleOutlined spin />, label: t('common:status.running') },
-    succeeded: { color: 'success', icon: <CheckCircleOutlined />, label: t('common:status.succeeded') },
-    failed: { color: 'error', icon: <CloseCircleOutlined />, label: t('common:status.failed') },
-    cancelled: { color: 'warning', icon: <StopOutlined />, label: t('common:status.cancelled') },
-  }
+  const taskStatusConfig: Record<string, { color: string; icon: React.ReactNode; label: string }> =
+    {
+      pending: {
+        color: 'default',
+        icon: <ClockCircleOutlined />,
+        label: t('common:status.pending'),
+      },
+      running: {
+        color: 'processing',
+        icon: <PlayCircleOutlined spin />,
+        label: t('common:status.running'),
+      },
+      succeeded: {
+        color: 'success',
+        icon: <CheckCircleOutlined />,
+        label: t('common:status.succeeded'),
+      },
+      failed: { color: 'error', icon: <CloseCircleOutlined />, label: t('common:status.failed') },
+      cancelled: { color: 'warning', icon: <StopOutlined />, label: t('common:status.cancelled') },
+    }
 
   // Evaluation tasks state
   const [tasks, setTasks] = useState<EvaluationTask[]>([])
   const [tasksTotal, setTasksTotal] = useState(0)
   const [tasksLoading, setTasksLoading] = useState(false)
-  const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
+  const { page, pageSize } = workspace
+  const [committedPagination, setCommittedPagination] = useState({ page: 1, pageSize: 10 })
+  const [hasLoadedTasks, setHasLoadedTasks] = useState(false)
+  const requestedPageRef = useRef({ page, pageSize })
+  const urlPaginationRef = useRef({ page, pageSize })
+  urlPaginationRef.current = { page, pageSize }
+  const setUrlPaginationRef = useRef(workspace.setPagination)
+  setUrlPaginationRef.current = workspace.setPagination
+  const normalizedQueryRef = useRef<string | null>(null)
+  useListScroll(tasks.length > 0 && !tasksLoading)
   const [createModalVisible, setCreateModalVisible] = useState(false)
   const [detailModalVisible, setDetailModalVisible] = useState(false)
   const [selectedTask, setSelectedTask] = useState<EvaluationTask | null>(null)
   const [tasksStale, setTasksStale] = useState(false)
   const tasksRequestGenerationRef = useRef(0)
   const tasksLoadingOwnerRef = useRef(0)
+  const foregroundOwnerRef = useRef<number | null>(null)
   const mountedRef = useRef(true)
 
   // Check if there are running tasks
@@ -81,70 +108,103 @@ export default function EvaluationList() {
     [tasks]
   )
 
-  const fetchEvaluationTasks = useCallback(async (silent = false) => {
-    const requestGeneration = ++tasksRequestGenerationRef.current
-    const loadingOwner = silent ? null : ++tasksLoadingOwnerRef.current
-    // silent=true 用于后台轮询：不触发表格 loading 闪烁，也不在每 3 秒失败时弹 toast
-    if (loadingOwner !== null) setTasksLoading(true)
-    try {
-      // 真实分页：limit/offset 服务端拉取（此前只取前 50 条却按全局 total 分页）
-      const data = await evaluationApi.listTasks(
-        { limit: pageSize, offset: (page - 1) * pageSize },
-        SILENT_REQUEST_CONFIG
-      )
-      if (requestGeneration !== tasksRequestGenerationRef.current) return
-      const items = data.items || []
-      setTasks(items)
-      setTasksTotal(data.total || 0)
-      // Sync selectedTask with latest data if detail modal is open
-      setSelectedTask((prev) => {
-        if (!prev) return null
-        const updated = items.find((t) => t.task_id === prev.task_id)
-        return updated || prev
-      })
-      setTasksStale(false)
-    } catch {
-      if (requestGeneration !== tasksRequestGenerationRef.current) return
-      if (silent) {
+  const fetchEvaluationTasks = useCallback(
+    async (silent = false) => {
+      if (silent && foregroundOwnerRef.current !== null) return
+      const requestGeneration = ++tasksRequestGenerationRef.current
+      const loadingOwner = silent ? null : ++tasksLoadingOwnerRef.current
+      if (!silent) foregroundOwnerRef.current = requestGeneration
+      const requestedPage = requestedPageRef.current.page
+      const requestedSize = requestedPageRef.current.pageSize
+      let currentPage = requestedPage
+      // silent=true 用于后台轮询：不触发表格 loading 闪烁，也不在每 3 秒失败时弹 toast
+      if (loadingOwner !== null) setTasksLoading(true)
+      try {
+        // 真实分页：limit/offset 服务端拉取（此前只取前 50 条却按全局 total 分页）
+        while (requestGeneration === tasksRequestGenerationRef.current) {
+          const data = await evaluationApi.listTasks(
+            { limit: requestedSize, offset: (currentPage - 1) * requestedSize },
+            SILENT_REQUEST_CONFIG
+          )
+          if (requestGeneration !== tasksRequestGenerationRef.current) return
+          const lastPage = Math.max(1, Math.ceil((data.total || 0) / requestedSize))
+          if (currentPage > lastPage) {
+            currentPage = lastPage
+            requestedPageRef.current = { page: currentPage, pageSize: requestedSize }
+            continue
+          }
+          const items = data.items || []
+          setTasks(items)
+          setTasksTotal(data.total || 0)
+          setCommittedPagination({ page: currentPage, pageSize: requestedSize })
+          setHasLoadedTasks(true)
+          // Publish rows and pagination together, including after an offset correction.
+          if (
+            currentPage !== urlPaginationRef.current.page ||
+            requestedSize !== urlPaginationRef.current.pageSize
+          ) {
+            normalizedQueryRef.current = `${currentPage}:${requestedSize}`
+            setUrlPaginationRef.current(currentPage, requestedSize, true)
+          }
+          setSelectedTask((prev) => {
+            if (!prev) return null
+            const updated = items.find((task) => task.task_id === prev.task_id)
+            return updated || prev
+          })
+          setTasksStale(false)
+          break
+        }
+      } catch {
+        if (requestGeneration !== tasksRequestGenerationRef.current) return
         setTasksStale(true)
-      } else {
-        message.error({
-          key: 'evaluation-list-fetch-failed',
-          content: t('list.fetchTasksFailed'),
-        })
+        if (!silent) {
+          message.error({
+            key: 'evaluation-list-fetch-failed',
+            content: t('list.fetchTasksFailed'),
+          })
+        }
+      } finally {
+        if (!silent && foregroundOwnerRef.current === requestGeneration)
+          foregroundOwnerRef.current = null
+        if (
+          loadingOwner !== null &&
+          loadingOwner === tasksLoadingOwnerRef.current &&
+          mountedRef.current
+        ) {
+          setTasksLoading(false)
+        }
       }
-    } finally {
-      if (
-        loadingOwner !== null &&
-        loadingOwner === tasksLoadingOwnerRef.current &&
-        mountedRef.current
-      ) {
-        setTasksLoading(false)
-      }
-    }
-  }, [t, page, pageSize])
+    },
+    [t]
+  )
 
   // Initial fetch
   useEffect(() => {
+    requestedPageRef.current = { page, pageSize }
     if (activeTab === 'tasks') {
+      if (normalizedQueryRef.current === `${page}:${pageSize}`) {
+        normalizedQueryRef.current = null
+        return
+      }
+      normalizedQueryRef.current = null
       fetchEvaluationTasks()
     }
-  }, [activeTab, fetchEvaluationTasks])
+  }, [activeTab, fetchEvaluationTasks, page, pageSize])
 
-  useEffect(
-    () => {
-      mountedRef.current = true
-      return () => {
-        mountedRef.current = false
-        tasksRequestGenerationRef.current += 1
-        tasksLoadingOwnerRef.current += 1
-      }
-    },
-    []
-  )
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      tasksRequestGenerationRef.current += 1
+      tasksLoadingOwnerRef.current += 1
+      foregroundOwnerRef.current = null
+    }
+  }, [])
 
   // Check if detail modal shows a running task
-  const detailTaskRunning = detailModalVisible && selectedTask != null &&
+  const detailTaskRunning =
+    detailModalVisible &&
+    selectedTask != null &&
     (selectedTask.status === 'running' || selectedTask.status === 'pending')
 
   // Polling for running tasks (list tab or detail modal)
@@ -225,7 +285,10 @@ export default function EvaluationList() {
           </Text>
           <br />
           <Tooltip title={record.task_id}>
-            <Text copyable={{ text: record.task_id, tooltips: false }} style={{ color: TEXT_SECONDARY, fontSize: 11 }}>
+            <Text
+              copyable={{ text: record.task_id, tooltips: false }}
+              style={{ color: TEXT_SECONDARY, fontSize: 11 }}
+            >
               {record.task_id.substring(0, 8)}
             </Text>
           </Tooltip>
@@ -281,11 +344,7 @@ export default function EvaluationList() {
             </Tag>
             {status === 'running' && (
               <div style={{ width: 100 }}>
-                <Progress
-                  percent={Math.round(record.progress || 0)}
-                  size="small"
-                  status="active"
-                />
+                <Progress percent={Math.round(record.progress || 0)} size="small" status="active" />
               </div>
             )}
             {status === 'running' && record.current_model && (
@@ -296,7 +355,10 @@ export default function EvaluationList() {
             )}
             {status === 'failed' && record.error_message && (
               <Tooltip title={record.error_message}>
-                <Text style={{ fontSize: 11, color: STATUS_ERROR, maxWidth: 150, display: 'block' }} ellipsis>
+                <Text
+                  style={{ fontSize: 11, color: STATUS_ERROR, maxWidth: 150, display: 'block' }}
+                  ellipsis
+                >
                   {record.error_message}
                 </Text>
               </Tooltip>
@@ -316,7 +378,15 @@ export default function EvaluationList() {
       key: 'actions',
       render: (_, record) => (
         <Space>
-          <Tooltip title={record.status === 'succeeded' ? t('list.tooltip.viewResults') : record.status === 'failed' ? t('list.tooltip.viewDetails') : t('list.tooltip.viewConfig')}>
+          <Tooltip
+            title={
+              record.status === 'succeeded'
+                ? t('list.tooltip.viewResults')
+                : record.status === 'failed'
+                  ? t('list.tooltip.viewDetails')
+                  : t('list.tooltip.viewConfig')
+            }
+          >
             <Button
               type="text"
               size="small"
@@ -340,7 +410,12 @@ export default function EvaluationList() {
                 title={t('list.confirm.retryTask')}
                 onConfirm={() => handleResumeTask(record.task_id)}
               >
-                <Button type="text" size="small" icon={<RedoOutlined />} style={{ color: '#1890ff' }} />
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<RedoOutlined />}
+                  style={{ color: '#1890ff' }}
+                />
               </Popconfirm>
             </Tooltip>
           )}
@@ -382,18 +457,27 @@ export default function EvaluationList() {
             label: t('tabs.tasks'),
             children: (
               <>
-                {tasksStale && (
+                {(tasksStale ||
+                  (hasLoadedTasks &&
+                    (page !== committedPagination.page ||
+                      pageSize !== committedPagination.pageSize))) && (
                   <Alert
                     data-testid="evaluation-stale-state"
-                    type="warning"
+                    type={tasksStale ? 'warning' : 'info'}
                     showIcon
-                    message={t('list.pollingStale')}
+                    message={t(
+                      tasksStale
+                        ? hasLoadedTasks
+                          ? 'common:listState.refreshFailed'
+                          : 'common:listState.loadFailed'
+                        : 'common:listState.showingPrevious'
+                    )}
                     style={{ marginBottom: 16 }}
                   />
                 )}
                 {/* Task Statistics */}
-                <Row gutter={16} style={{ marginBottom: 20 }}>
-                  <Col span={6}>
+                <Row className="page-stats" gutter={[12, 12]} style={{ marginBottom: 20 }}>
+                  <Col xs={12} md={6}>
                     <StatCard
                       title={t('stats.totalTasks')}
                       value={taskStats.total}
@@ -401,7 +485,7 @@ export default function EvaluationList() {
                       color={STATUS_INFO}
                     />
                   </Col>
-                  <Col span={6}>
+                  <Col xs={12} md={6}>
                     <StatCard
                       title={t('stats.running')}
                       value={taskStats.running}
@@ -409,7 +493,7 @@ export default function EvaluationList() {
                       color={STATUS_WARNING}
                     />
                   </Col>
-                  <Col span={6}>
+                  <Col xs={12} md={6}>
                     <StatCard
                       title={t('stats.completed')}
                       value={taskStats.succeeded}
@@ -417,7 +501,7 @@ export default function EvaluationList() {
                       color={STATUS_SUCCESS}
                     />
                   </Col>
-                  <Col span={6}>
+                  <Col xs={12} md={6}>
                     <StatCard
                       title={t('stats.failed')}
                       value={taskStats.failed}
@@ -428,11 +512,11 @@ export default function EvaluationList() {
                 </Row>
 
                 {/* Toolbar */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+                <div className="page-toolbar">
                   <Title level={4} style={{ margin: 0 }}>
                     {t('list.title')}
                   </Title>
-                  <Space>
+                  <Space className="page-toolbar-actions" wrap>
                     <Button
                       icon={<ReloadOutlined />}
                       onClick={() => fetchEvaluationTasks()}
@@ -456,15 +540,15 @@ export default function EvaluationList() {
                   columns={tasksColumns}
                   dataSource={tasks}
                   loading={tasksLoading}
+                  scroll={{ x: 960 }}
                   pagination={{
-                    current: page,
-                    pageSize,
+                    current: committedPagination.page,
+                    pageSize: committedPagination.pageSize,
                     showSizeChanger: true,
                     showTotal: (total) => t('list.totalResults', { total }),
                     total: tasksTotal,
                     onChange: (p, ps) => {
-                      setPage(p)
-                      setPageSize(ps)
+                      workspace.setPagination(p, ps)
                     },
                   }}
                 />

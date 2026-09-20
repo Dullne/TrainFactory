@@ -1,0 +1,17 @@
+.deployment-model-selection {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.deployment-model-selection > .ant-select {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 575px) {
+  .deployment-model-selection {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -1,6 +1,9 @@
 """Admission control for long-running training, evaluation, and generation jobs."""
 
+import asyncio
+import contextvars
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from collections import Counter
 from typing import Any, Callable, Optional, TypeVar
 
@@ -83,6 +86,8 @@ class BackgroundTaskAdmissionService:
         self._lock = threading.RLock()
         self._executing: dict[str, Optional[str]] = {}
         self._deleting: set[str] = set()
+        self._async_executor: Optional[ThreadPoolExecutor] = None
+        self._async_workers_stopped = False
 
     def _active_task_owners(self) -> dict[str, Optional[str]]:
         with get_session() as session:
@@ -274,17 +279,75 @@ class BackgroundTaskAdmissionService:
         finally:
             guard.release()
 
-    @staticmethod
+    def start_async_workers(self) -> None:
+        """Allow submission when an application lifespan starts."""
+        with self._lock:
+            if self._async_workers_stopped and self._async_executor is not None:
+                raise RuntimeError("Background workers are still shutting down")
+            self._async_workers_stopped = False
+
+    def shutdown_async_workers(self) -> None:
+        """Cancel queued work and join running workers during app shutdown."""
+        with self._lock:
+            self._async_workers_stopped = True
+            executor = self._async_executor
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+            with self._lock:
+                if self._async_executor is executor:
+                    self._async_executor = None
+
     async def run_async(
+        self,
         lease: BackgroundTaskExecutionLease,
         operation: Callable[..., Any],
         *args: Any,
         **kwargs: Any,
     ) -> Any:
+        """Execute a generation coroutine on a worker-owned event loop.
+
+        Pipelines also perform synchronous database, file and Milvus work. A
+        BackgroundTask coroutine alone would run all of that on the API loop.
+        Keep the execution lease until the real worker exits, even if its API
+        waiter is cancelled; queued workers cancelled before start must not run.
+        """
+        state_lock = threading.Lock()
+        started = False
+        abandoned = False
+
+        def execute():
+            nonlocal started
+            with state_lock:
+                if abandoned:
+                    return None
+                started = True
+            try:
+                return asyncio.run(operation(*args, **kwargs))
+            finally:
+                lease.release()
+
         try:
-            return await operation(*args, **kwargs)
+            with self._lock:
+                if self._async_workers_stopped:
+                    raise RuntimeError("Background workers are shutting down")
+                if self._async_executor is None:
+                    self._async_executor = ThreadPoolExecutor(
+                        max_workers=self._limits()[0],
+                        thread_name_prefix="generation",
+                    )
+                # Long jobs have their own bounded pool; deployment stop and
+                # other short API operations retain the loop's default pool.
+                context = contextvars.copy_context()
+                future = self._async_executor.submit(context.run, execute)
+            future.add_done_callback(
+                lambda completed: lease.release() if completed.cancelled() else None
+            )
+            return await asyncio.wrap_future(future)
         finally:
-            lease.release()
+            with state_lock:
+                if not started:
+                    abandoned = True
+                    lease.release()
 
 
 background_task_admission_service = BackgroundTaskAdmissionService()

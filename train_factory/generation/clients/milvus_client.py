@@ -6,6 +6,7 @@ Milvus 向量数据库客户端
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -22,8 +23,11 @@ class MilvusConfig:
     host: str = ""
     port: int = 19530
     token: Optional[str] = None
+    timeout: float = 30.0
 
     def __post_init__(self):
+        if not math.isfinite(self.timeout) or not 0 < self.timeout <= 600:
+            raise ValueError("Milvus timeout must be finite and between 0 and 600 seconds")
         if not self.host:
             self.host = os.environ.get("MILVUS_HOST", "localhost")
         if not self.token:
@@ -43,6 +47,28 @@ class MilvusClient:
     def __init__(self, config: Optional[MilvusConfig] = None):
         self.config = config or MilvusConfig()
         self._connected = False
+        self._metadata_client = None
+
+    def _get_metadata_client(self):
+        """Use public metadata RPCs that accept deadlines (ORM properties do not)."""
+        if self._metadata_client is None:
+            from pymilvus import MilvusClient as MetadataClient
+
+            host = self.config.host
+            if ":" in host and not host.startswith("["):
+                host = f"[{host}]"
+            self._metadata_client = MetadataClient(
+                uri=f"http://{host}:{self.config.port}",
+                token=self.config.token or "",
+                timeout=self.config.timeout,
+            )
+        return self._metadata_client
+
+    def _count_entities(self, collection_name: str) -> int:
+        stats = self._get_metadata_client().get_collection_stats(
+            collection_name, timeout=self.config.timeout,
+        )
+        return int(stats["row_count"])
 
     def connect(self) -> None:
         """建立 Milvus 连接"""
@@ -53,6 +79,7 @@ class MilvusClient:
             "alias": alias,
             "host": self.config.host,
             "port": self.config.port,
+            "timeout": self.config.timeout,
         }
         if self.config.token:
             connect_params["token"] = self.config.token
@@ -64,6 +91,15 @@ class MilvusClient:
 
     def close(self) -> None:
         """断开 Milvus 连接"""
+        if self._metadata_client is not None:
+            try:
+                self._metadata_client.close()
+            except Exception:
+                # Still disconnect the ORM alias; cleanup must not mask an RPC
+                # error or turn a successful read into a failed API response.
+                logger.debug("Milvus metadata connection cleanup failed")
+            finally:
+                self._metadata_client = None
         if self._connected:
             from pymilvus import connections
             try:
@@ -82,7 +118,7 @@ class MilvusClient:
     def collection_exists(self, collection_name: str) -> bool:
         """检查 collection 是否存在"""
         from pymilvus import utility
-        return utility.has_collection(collection_name, using=self._alias)
+        return utility.has_collection(collection_name, using=self._alias, timeout=self.config.timeout)
 
     def create_collection(
         self,
@@ -155,6 +191,7 @@ class MilvusClient:
             name=collection_name,
             schema=schema,
             using=self._alias,
+            timeout=self.config.timeout,
         )
 
         # 创建 Dense 索引 (IVF_FLAT)
@@ -164,13 +201,14 @@ class MilvusClient:
             "index_type": "IVF_FLAT",
             "params": {"nlist": 128},
         }
-        collection.create_index("vector", index_params)
+        collection.create_index("vector", index_params, timeout=self.config.timeout)
 
         # 创建 Sparse 索引 (BM25)
         if enable_hybrid:
             collection.create_index(
                 "sparse_vector",
                 {"metric_type": "BM25", "index_type": "AUTOINDEX"},
+                timeout=self.config.timeout,
             )
 
         logger.info(
@@ -204,8 +242,8 @@ class MilvusClient:
         """
         from pymilvus import Collection
 
-        collection = Collection(collection_name, using=self._alias)
-        collection.load()
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
+        collection.load(timeout=self.config.timeout)
 
         # 检查集合是否有 metadata 字段
         has_metadata_field = any(f.name == "metadata" for f in collection.schema.fields)
@@ -217,7 +255,7 @@ class MilvusClient:
             # json.dumps 转义引号/反斜杠（repr 直拼在含 ' 或 \ 的 chunk_id
             # 时生成非法/可注入表达式——与 search_similar 的修复保持一致）
             expr = f'chunk_id in {json.dumps(batch, ensure_ascii=False)}'
-            results = collection.query(expr=expr, output_fields=["chunk_id"])
+            results = collection.query(expr=expr, output_fields=["chunk_id"], timeout=self.config.timeout)
             existing.update(r["chunk_id"] for r in results)
 
         # 过滤掉已存在的
@@ -240,10 +278,10 @@ class MilvusClient:
                     data.append([metadata[j] for j in batch_idx])
                 else:
                     data.append([{} for _ in batch_idx])
-            collection.insert(data)
+            collection.insert(data, timeout=self.config.timeout)
             total_inserted += len(batch_idx)
 
-        collection.flush()
+        collection.flush(timeout=self.config.timeout)
         logger.info(
             f"Inserted {total_inserted} new vectors into '{collection_name}' "
             f"(skipped {len(existing)} existing)"
@@ -272,8 +310,8 @@ class MilvusClient:
         if not self.collection_exists(collection_name):
             return {}
 
-        collection = Collection(collection_name, using=self._alias)
-        collection.load()
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
+        collection.load(timeout=self.config.timeout)
 
         result: Dict[str, np.ndarray] = {}
         for i in range(0, len(chunk_ids), batch_size):
@@ -284,6 +322,7 @@ class MilvusClient:
             records = collection.query(
                 expr=expr,
                 output_fields=["chunk_id", "vector"],
+                timeout=self.config.timeout,
             )
             for r in records:
                 result[r["chunk_id"]] = np.array(r["vector"])
@@ -314,8 +353,8 @@ class MilvusClient:
         """
         from pymilvus import Collection
 
-        collection = Collection(collection_name, using=self._alias)
-        collection.load()
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
+        collection.load(timeout=self.config.timeout)
 
         search_params = {"metric_type": "COSINE", "params": {"nprobe": 16}}
 
@@ -339,6 +378,7 @@ class MilvusClient:
             limit=top_k,
             expr=expr,
             output_fields=["chunk_id", "chunk_content"],
+            timeout=self.config.timeout,
         )
 
         output = []
@@ -361,7 +401,7 @@ class MilvusClient:
 
         if not self.collection_exists(collection_name):
             return False
-        collection = Collection(collection_name, using=self._alias)
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
         return any(f.name == "sparse_vector" for f in collection.schema.fields)
 
     def hybrid_search(
@@ -394,8 +434,8 @@ class MilvusClient:
         """
         from pymilvus import Collection, AnnSearchRequest, RRFRanker, WeightedRanker
 
-        collection = Collection(collection_name, using=self._alias)
-        collection.load()
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
+        collection.load(timeout=self.config.timeout)
 
         if search_mode == "sparse":
             if query_text is None:
@@ -408,6 +448,7 @@ class MilvusClient:
                 limit=top_k,
                 expr=filter_expr,
                 output_fields=["chunk_id", "chunk_content"],
+                timeout=self.config.timeout,
             )
             output = []
             for hit in results[0]:
@@ -428,6 +469,7 @@ class MilvusClient:
                 limit=top_k,
                 expr=filter_expr,
                 output_fields=["chunk_id", "chunk_content"],
+                timeout=self.config.timeout,
             )
             output = []
             for hit in results[0]:
@@ -477,6 +519,7 @@ class MilvusClient:
             rerank=fused_ranker,
             limit=top_k,
             output_fields=["chunk_id", "chunk_content"],
+            timeout=self.config.timeout,
         )
 
         output = []
@@ -493,7 +536,7 @@ class MilvusClient:
     def list_collections(self) -> List[str]:
         """列出所有 collection 名称"""
         from pymilvus import utility
-        return utility.list_collections(using=self._alias)
+        return utility.list_collections(using=self._alias, timeout=self.config.timeout)
 
     def get_collection_info(self, collection_name: str) -> Optional[Dict[str, Any]]:
         """
@@ -505,10 +548,10 @@ class MilvusClient:
         """
         from pymilvus import Collection, utility
 
-        if not utility.has_collection(collection_name, using=self._alias):
+        if not utility.has_collection(collection_name, using=self._alias, timeout=self.config.timeout):
             return None
 
-        collection = Collection(collection_name, using=self._alias)
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
 
         # 解析 schema
         schema_info = []
@@ -528,7 +571,11 @@ class MilvusClient:
 
         # 解析索引
         index_info = []
-        for idx in collection.indexes:
+        index_names = self._get_metadata_client().list_indexes(
+            collection_name, timeout=self.config.timeout,
+        )
+        for index_name in index_names:
+            idx = collection.index(index_name=index_name, timeout=self.config.timeout)
             index_info.append({
                 "field_name": idx.field_name,
                 "index_type": idx.params.get("index_type"),
@@ -538,7 +585,7 @@ class MilvusClient:
 
         # 加载状态
         try:
-            load_state = str(utility.load_state(collection_name, using=self._alias))
+            load_state = str(utility.load_state(collection_name, using=self._alias, timeout=self.config.timeout))
             # pymilvus 返回类似 <LoadState: Loaded>，提取值
             if "Loaded" in load_state:
                 load_state = "Loaded"
@@ -557,7 +604,7 @@ class MilvusClient:
         return {
             "name": collection_name,
             "description": collection.schema.description or "",
-            "num_entities": collection.num_entities,
+            "num_entities": self._count_entities(collection_name),
             "dim": dim,
             "schema": schema_info,
             "indexes": index_info,
@@ -575,9 +622,9 @@ class MilvusClient:
         """
         from pymilvus import utility
 
-        if not utility.has_collection(collection_name, using=self._alias):
+        if not utility.has_collection(collection_name, using=self._alias, timeout=self.config.timeout):
             return False
-        utility.drop_collection(collection_name, using=self._alias)
+        utility.drop_collection(collection_name, using=self._alias, timeout=self.config.timeout)
         logger.info(f"Dropped collection '{collection_name}'")
         return True
 
@@ -602,10 +649,10 @@ class MilvusClient:
         """
         from pymilvus import Collection
 
-        collection = Collection(collection_name, using=self._alias)
-        collection.load()
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
+        collection.load(timeout=self.config.timeout)
 
-        total = collection.num_entities
+        total = self._count_entities(collection_name)
 
         if output_fields is None:
             output_fields = [
@@ -620,28 +667,29 @@ class MilvusClient:
             output_fields=output_fields,
             offset=offset,
             limit=limit,
+            timeout=self.config.timeout,
         )
         return results, total
 
     def load_collection(self, collection_name: str) -> None:
         """加载 collection 到内存"""
         from pymilvus import Collection
-        collection = Collection(collection_name, using=self._alias)
-        collection.load()
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
+        collection.load(timeout=self.config.timeout)
         logger.info(f"Loaded collection '{collection_name}'")
 
     def release_collection(self, collection_name: str) -> None:
         """从内存释放 collection"""
         from pymilvus import Collection
-        collection = Collection(collection_name, using=self._alias)
-        collection.release()
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
+        collection.release(timeout=self.config.timeout)
         logger.info(f"Released collection '{collection_name}'")
 
     def flush_collection(self, collection_name: str) -> None:
         """刷新 collection 确保数据持久化"""
         from pymilvus import Collection
-        collection = Collection(collection_name, using=self._alias)
-        collection.flush()
+        collection = Collection(collection_name, using=self._alias, timeout=self.config.timeout)
+        collection.flush(timeout=self.config.timeout)
         logger.info(f"Flushed collection '{collection_name}'")
 
     @staticmethod

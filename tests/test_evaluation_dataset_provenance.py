@@ -155,7 +155,7 @@ def test_standard_evaluation_dataset_schema_preserves_dataset_id():
     assert config.model_dump().get("dataset_id") == "dataset-1"
 
 
-def test_standard_evaluation_requires_dataset_id_when_auth_is_enabled(monkeypatch):
+def test_standard_evaluation_requires_dataset_id_when_auth_is_enabled(monkeypatch, empty_inference_catalog):
     _enable_route_provenance(monkeypatch, evaluation_routes)
     monkeypatch.setattr(
         evaluation_routes,
@@ -189,7 +189,7 @@ def test_standard_evaluation_requires_dataset_id_when_auth_is_enabled(monkeypatc
     assert background_tasks.tasks == []
 
 
-def test_standard_evaluation_uses_owned_server_dataset_path(monkeypatch):
+def test_standard_evaluation_uses_owned_server_dataset_path(monkeypatch, empty_inference_catalog):
     _enable_route_provenance(monkeypatch, evaluation_routes)
     monkeypatch.setattr(
         evaluation_routes.background_task_admission_service,
@@ -283,7 +283,7 @@ def test_standard_evaluation_auth_disabled_keeps_legacy_local_path(monkeypatch):
     ]
 
 
-def test_standard_evaluation_resume_rejects_dataset_provenance_drift(monkeypatch):
+def test_standard_evaluation_resume_rejects_dataset_provenance_drift(monkeypatch, empty_inference_catalog):
     _enable_route_provenance(monkeypatch, evaluation_routes)
     task = {
         "task_id": "task-1",

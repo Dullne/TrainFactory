@@ -12,6 +12,7 @@ from typing import Optional, List, Dict, Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 from pydantic import BaseModel, Field, AliasChoices
 
+from ..concurrency import threadpool_endpoint
 from ...auth.dependencies import (
     get_current_user,
     requires_tenant_provenance,
@@ -343,7 +344,8 @@ async def register_model(
 
 
 @router.get("/models", response_model=ModelListResponse)
-async def list_models(
+@threadpool_endpoint
+def list_models(
     model_type: Optional[str] = None,
     status: Optional[str] = None,
     category: Optional[str] = None,
@@ -373,7 +375,8 @@ async def list_models(
 
 
 @router.get("/models/search", response_model=ModelListResponse)
-async def search_models(
+@threadpool_endpoint
+def search_models(
     query: str = Query(..., description="Search query"),
     model_type: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
@@ -532,7 +535,8 @@ async def download_model(
 
 
 @router.get("/models/download/{registry_id}/progress", response_model=DownloadProgressResponse)
-async def get_download_progress(
+@threadpool_endpoint
+def get_download_progress(
     registry_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -562,7 +566,8 @@ async def get_download_progress(
 
 
 @router.get("/models/downloads")
-async def list_downloads(current_user: Dict[str, Any] = Depends(get_current_user)):
+@threadpool_endpoint
+def list_downloads(current_user: Dict[str, Any] = Depends(get_current_user)):
     """List all download tasks."""
     from ...storage.services.model_download_service import model_download_service
 
@@ -573,7 +578,8 @@ async def list_downloads(current_user: Dict[str, Any] = Depends(get_current_user
 # === Model CRUD (dynamic routes must be after static routes) ===
 
 @router.get("/models/{model_id}", response_model=ModelResponse)
-async def get_model(
+@threadpool_endpoint
+def get_model(
     model_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -685,7 +691,8 @@ async def add_version(
 
 
 @router.get("/models/{model_id}/versions", response_model=VersionListResponse)
-async def get_versions(
+@threadpool_endpoint
+def get_versions(
     model_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):

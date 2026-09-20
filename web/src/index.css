@@ -1,4 +1,4 @@
-/* TrainFactory 全局样式 - 深色科技风主题 */
+/* Shared styles; the selected preset owns surfaces, geometry and density. */
 
 * {
   margin: 0;
@@ -6,14 +6,18 @@
   box-sizing: border-box;
 }
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
-  background: #0d1117;
+  background: var(--tf-bg-layout, #0d1117);
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  color: #e6edf3;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei',
+    'PingFang SC', 'Noto Sans CJK SC', Roboto, Arial, sans-serif;
+  color: var(--tf-text-primary, #e6edf3);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -25,21 +29,22 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: #161b22;
+  background: var(--tf-bg-container, #161b22);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #30363d;
+  background: var(--tf-border-primary, #30363d);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
+  background: var(--tf-text-disabled, #484f58);
 }
 
 /* 状态指示器动画 */
 @keyframes pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {
@@ -49,7 +54,7 @@ body {
 
 /* 渐变按钮 */
 .btn-gradient {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--tf-gradient-primary, linear-gradient(135deg, #667eea 0%, #764ba2 100%));
   border: none;
   color: #fff;
   font-weight: 500;
@@ -58,7 +63,7 @@ body {
 
 .btn-gradient:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  box-shadow: 0 4px 12px var(--tf-primary-border, rgba(22, 119, 255, 0.25));
 }
 
 /* 卡片 hover 效果 */
@@ -71,9 +76,95 @@ body {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
 }
 
+.ant-card {
+  box-shadow: var(--tf-panel-shadow, none);
+}
+
+/* A coordinated accent pair belongs to the action; semantic danger buttons keep their red. */
+.ant-btn-primary:not(:disabled):not(.ant-btn-disabled):not(.ant-btn-dangerous) {
+  border-color: transparent;
+  background: var(--tf-action-gradient, var(--tf-primary));
+  background-color: var(--tf-primary-active, var(--tf-primary));
+  color: #fff;
+}
+
+.ant-btn-primary:not(:disabled):not(.ant-btn-disabled):not(.ant-btn-dangerous):hover {
+  background: var(--tf-action-gradient, var(--tf-primary));
+  background-color: var(--tf-primary-active, var(--tf-primary));
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--tf-primary) 20%, transparent);
+}
+
+.stat-card.ant-card {
+  background-image: linear-gradient(
+    120deg,
+    color-mix(in srgb, var(--tf-stat-accent) 8%, transparent),
+    transparent 65%
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--tf-stat-accent) 22%,
+    var(--tf-border-secondary)
+  ) !important;
+  border-top: 2px solid color-mix(in srgb, var(--tf-stat-accent) 65%, var(--tf-border-secondary));
+}
+
+:root[data-style='workbench'] .stat-card.ant-card {
+  background-image: none;
+  border-top-width: 1px;
+}
+
+:root .ant-menu-item-selected {
+  background-image: var(--tf-navigation-gradient);
+}
+
+.training-create-section[data-training-section='datasets'] {
+  --tf-section-accent: var(--tf-accent-teal);
+}
+
+.training-create-section[data-training-section='model'],
+.training-create-section[data-training-section='tuner'] {
+  --tf-section-accent: var(--tf-accent-violet);
+}
+
+.training-create-section[data-training-section='evaluation'] {
+  --tf-section-accent: var(--tf-accent-amber);
+}
+
+.training-create-section[data-training-section='resources'] {
+  --tf-section-accent: var(--tf-accent-rose);
+}
+
+:root .training-create-section > .ant-card-head {
+  background-image: linear-gradient(
+    105deg,
+    color-mix(in srgb, var(--tf-section-accent) 9%, transparent),
+    transparent 70%
+  );
+  box-shadow: inset 3px 0 var(--tf-section-accent);
+}
+
+.training-create-section-arrow {
+  color: var(--tf-section-accent);
+}
+
+:root[data-style='workbench'] .training-create-section > .ant-card-head {
+  background-image: none;
+  box-shadow: inset 2px 0 var(--tf-section-accent);
+}
+
+:root[data-style='workbench'] .card-hover:hover,
+:root[data-style='workbench'] .btn-gradient:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+:root[data-style='studio'] .card-hover:hover {
+  box-shadow: var(--tf-panel-shadow);
+}
+
 /* 统计数字渐变 */
 .stat-gradient {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--tf-gradient-primary, linear-gradient(135deg, #667eea 0%, #764ba2 100%));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -81,19 +172,19 @@ body {
 
 /* 表格行 hover */
 .ant-table-tbody > tr:hover > td {
-  background: rgba(255, 255, 255, 0.04) !important;
+  background: var(--tf-hover-bg, rgba(255, 255, 255, 0.04)) !important;
 }
 
 /* 输入框焦点效果 */
 .ant-input:focus,
 .ant-input-focused,
 .ant-select-focused .ant-select-selector {
-  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.2) !important;
+  box-shadow: 0 0 0 2px var(--tf-primary-border, rgba(22, 119, 255, 0.2)) !important;
 }
 
 /* 输入框 placeholder */
 .ant-input::placeholder {
-  color: #c9d1d9 !important;
+  color: var(--tf-text-tertiary, #6e7681) !important;
   opacity: 1 !important;
 }
 
@@ -115,85 +206,113 @@ body {
   transform: translateY(-50%);
   width: 3px;
   height: 24px;
-  background: #1677ff;
+  background: var(--tf-primary, #1677ff);
   border-radius: 0 2px 2px 0;
 }
 
 /* 模态框深色背景 */
 .ant-modal-mask {
-  background: rgba(0, 0, 0, 0.6) !important;
+  background: var(--tf-mask, rgba(0, 0, 0, 0.6)) !important;
 }
 
 /* 下拉菜单深色背景 */
 .ant-select-dropdown,
 .ant-dropdown-menu {
-  background: #21262d !important;
-  border: 1px solid #30363d;
+  background: var(--tf-bg-elevated, #21262d) !important;
+  border: 1px solid var(--tf-border-primary, #30363d);
 }
 
 /* Select 选择器文字颜色 */
 .ant-select-selection-item {
-  color: #e6edf3 !important;
+  color: var(--tf-text-primary, #e6edf3) !important;
 }
 
 .ant-select-selection-placeholder {
-  color: #c9d1d9 !important;
+  color: var(--tf-text-tertiary, #6e7681) !important;
   opacity: 1 !important;
 }
 
 .ant-select-item-option-content {
-  color: #e6edf3;
+  color: var(--tf-text-primary, #e6edf3);
 }
 
 /* 空状态文字 */
 .ant-empty-description {
-  color: #8b949e;
+  color: var(--tf-text-secondary, #8b949e);
 }
 
 /* 标签页 */
 .ant-tabs-tab {
-  color: #8b949e !important;
+  color: var(--tf-text-secondary, #8b949e) !important;
 }
 
 .ant-tabs-tab-active .ant-tabs-tab-btn {
-  color: #1677ff !important;
+  color: var(--tf-primary-text, #1677ff) !important;
 }
 
 /* 面包屑 */
 .ant-breadcrumb-link,
 .ant-breadcrumb-separator {
-  color: #8b949e !important;
+  color: var(--tf-text-secondary, #8b949e) !important;
 }
 
 /* 分页器 */
 .ant-pagination-item {
-  background: #21262d !important;
-  border-color: #30363d !important;
+  background: var(--tf-bg-elevated, #21262d) !important;
+  border-color: var(--tf-border-primary, #30363d) !important;
 }
 
 .ant-pagination-item a {
-  color: #8b949e !important;
+  color: var(--tf-text-secondary, #8b949e) !important;
 }
 
 .ant-pagination-item-active {
-  border-color: #1677ff !important;
+  border-color: var(--tf-primary, #1677ff) !important;
 }
 
 .ant-pagination-item-active a {
-  color: #1677ff !important;
+  color: var(--tf-primary-text, #1677ff) !important;
 }
 
 /* 工具提示 */
 .ant-tooltip-inner {
-  background: #21262d !important;
-  color: #e6edf3 !important;
+  background: var(--tf-bg-elevated, #21262d) !important;
+  color: var(--tf-text-primary, #e6edf3) !important;
 }
 
 .ant-tooltip-arrow::before {
-  background: #21262d !important;
+  background: var(--tf-bg-elevated, #21262d) !important;
 }
 
 /* 已排除的表格行灰化 */
 .ant-table-row-excluded > td {
   opacity: 0.45;
+}
+
+.status-tag.ant-tag {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: var(--tf-radius-sm);
+}
+
+.status-tag-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-hover,
+  .btn-gradient,
+  .ant-btn {
+    transition: none;
+  }
+
+  .card-hover:hover,
+  .btn-gradient:hover {
+    transform: none;
+  }
 }

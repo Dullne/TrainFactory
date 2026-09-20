@@ -1,7 +1,8 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Table,
+  Alert,
   Button,
   Space,
   Tag,
@@ -31,7 +32,7 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import { useTranslation } from 'react-i18next'
 import { datasetApi } from '@/services/api'
-import { useList } from '@/hooks'
+import { useWorkspaceList } from '@/hooks/useListWorkspace'
 import { formatDate, formatBytes } from '@/utils'
 import type { Dataset, DatasetType, DatasetUsage, DatasetModelType } from '@/types'
 import { StatCard } from '@/components/StatCard'
@@ -67,14 +68,17 @@ const typeColorMap: Record<DatasetType, string> = {
   custom: 'default',
 }
 
+const LIST_FILTERS = {
+  dataset_type: Object.keys(typeColorMap),
+  usage: ['raw', 'train', 'eval', 'test'],
+  model_type: ['embedding', 'rerank', 'llm'],
+  status: ['ready', 'registered', 'uploading', 'downloading', 'processing', 'error', 'archived'],
+}
+
 export default function DatasetList() {
   const { t } = useTranslation(['datasets', 'common'])
   const navigate = useNavigate()
   const { config } = useAuth()
-  const [typeFilter, setTypeFilter] = useState<string>()
-  const [usageFilter, setUsageFilter] = useState<DatasetUsage>()
-  const [modelTypeFilter, setModelTypeFilter] = useState<DatasetModelType>()
-  const [statusFilter, setStatusFilter] = useState<string>()
   const [downloadModalOpen, setDownloadModalOpen] = useState(false)
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
 
@@ -101,30 +105,19 @@ export default function DatasetList() {
     { label: t('options.status.archived'), value: 'archived' },
   ]
 
-  const fetchDatasets = useCallback(
-    (params: Parameters<typeof datasetApi.list>[0]) =>
-      datasetApi.list({
-        ...(params ?? {}),
-        dataset_type: typeFilter,
-        usage: usageFilter,
-        model_type: modelTypeFilter,
-        status: statusFilter,
-      }),
-    [typeFilter, usageFilter, modelTypeFilter, statusFilter]
-  )
-
   const {
     data: datasets,
     loading,
+    error,
+    hasData,
+    isStale,
     page,
     pageSize,
     total,
-    setPage,
-    setPageSize,
-    fetch,
     refresh,
     extra,
-  } = useList<
+    workspace,
+  } = useWorkspaceList<
     Dataset,
     {
       stats?: {
@@ -133,7 +126,15 @@ export default function DatasetList() {
         by_status?: Record<string, number>
       }
     }
-  >(fetchDatasets, { defaultPageSize: 10 })
+  >(datasetApi.list, { filters: LIST_FILTERS })
+  const typeFilter = workspace.values.dataset_type
+  const usageFilter = workspace.values.usage
+  const modelTypeFilter = workspace.values.model_type
+  const statusFilter = workspace.values.status
+  const setTypeFilter = (value: string | undefined) => workspace.setFilter('dataset_type', value)
+  const setUsageFilter = (value: string | undefined) => workspace.setFilter('usage', value)
+  const setModelTypeFilter = (value: string | undefined) => workspace.setFilter('model_type', value)
+  const setStatusFilter = (value: string | undefined) => workspace.setFilter('status', value)
 
   // Global stats from the backend (filter/pagination-independent); fall back to
   // the current page only if the API did not return stats.
@@ -158,11 +159,6 @@ export default function DatasetList() {
   }, [datasets, total, extra])
 
   // Refetch when filters change
-  /* eslint-disable react-hooks/exhaustive-deps */
-  useEffect(() => {
-    fetch({ page: 1 })
-  }, [typeFilter, usageFilter, modelTypeFilter, statusFilter])
-  /* eslint-enable react-hooks/exhaustive-deps */
 
   const handleDelete = async (datasetId: string) => {
     try {
@@ -548,6 +544,20 @@ export default function DatasetList() {
         </Space>
       </div>
 
+      {(error || isStale) && (
+        <Alert
+          showIcon
+          type={error ? 'warning' : 'info'}
+          style={{ marginBottom: 16 }}
+          message={t(
+            error
+              ? hasData
+                ? 'common:listState.refreshFailed'
+                : 'common:listState.loadFailed'
+              : 'common:listState.showingPrevious'
+          )}
+        />
+      )}
       <Table
         rowKey="dataset_id"
         columns={columns}
@@ -561,8 +571,7 @@ export default function DatasetList() {
           showSizeChanger: true,
           showTotal: (total) => t('common:pagination.total', { total }),
           onChange: (p, ps) => {
-            setPage(p)
-            setPageSize(ps)
+            workspace.setPagination(p, ps)
           },
         }}
       />
@@ -570,6 +579,7 @@ export default function DatasetList() {
       <DownloadDatasetModal
         open={downloadModalOpen}
         onCancel={() => setDownloadModalOpen(false)}
+        onTasksChanged={() => refresh()}
         onSuccess={() => {
           setDownloadModalOpen(false)
           refresh()

@@ -109,6 +109,10 @@ class SecureAPIReranker:
         if not documents:
             return [], {}
 
+        from ..storage.services.inference_authorization_service import authorize_inference_model
+
+        authorize_inference_model(self.endpoint, self.model, self.user_id)
+
         payload = {
             "model": self.model,
             "query": query,

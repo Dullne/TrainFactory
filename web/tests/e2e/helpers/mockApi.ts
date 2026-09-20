@@ -380,6 +380,10 @@ export async function mockApi(
       })
     }
 
+    if (method === 'GET' && path.endsWith('/api/datasets/downloads')) {
+      return jsonResponse(route, { downloads: [], total: 0 })
+    }
+
     if (method === 'GET' && path.endsWith('/api/datasets')) {
       return jsonResponse(route, {
         datasets: [
@@ -620,6 +624,10 @@ export async function mockApi(
           overall: { mean: 0.8, min: 0.8, max: 0.8 },
         },
       })
+    }
+
+    if (method === 'GET' && path.endsWith('/api/models/downloads')) {
+      return jsonResponse(route, { downloads: [], total: 0 })
     }
 
     if (method === 'GET' && path.endsWith('/api/models')) {

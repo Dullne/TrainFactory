@@ -1849,6 +1849,7 @@ def test_adapter_sync_route_maps_invalid_replica_selection_to_bad_request(
 
 def test_evaluation_deployment_source_uses_trusted_replica_endpoint(
     monkeypatch: pytest.MonkeyPatch,
+    empty_inference_catalog,
 ) -> None:
     selections: list[tuple[str, str | None, str | None, bool]] = []
 
@@ -1895,7 +1896,22 @@ def test_evaluation_deployment_source_uses_trusted_replica_endpoint(
 
 def test_evaluation_legacy_deployment_uses_trusted_parent_endpoint(
     monkeypatch: pytest.MonkeyPatch,
+    empty_inference_catalog,
 ) -> None:
+    from train_factory.auth.user_service import user_service
+
+    with config_module.Session(empty_inference_catalog) as session:
+        session.add(DeploymentDB(
+            deployment_id="deployment-legacy", model_id="model-1",
+            xinference_endpoint="http://xinference:9997",
+            inference_framework="xinference", model_uid="trusted-model-uid",
+            user_id="user-1", status="running",
+        ))
+        session.commit()
+    monkeypatch.setattr(
+        user_service, "get_user",
+        lambda user_id: {"user_id": user_id, "is_active": True, "is_admin": False},
+    )
     selections: list[tuple[str, str | None, str | None, bool]] = []
 
     def resolve(deployment_id, replica_id, *, user_id, require_healthy):

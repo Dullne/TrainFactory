@@ -499,6 +499,7 @@ def test_evaluation_route_rejects_private_model_endpoint_before_task_creation(
 def test_evaluation_route_rejects_local_dataset_outside_managed_root(
     monkeypatch,
     tmp_path,
+    empty_inference_catalog,
 ):
     outside_file = tmp_path / "outside.jsonl"
     outside_file.write_text("{}\n", encoding="utf-8")

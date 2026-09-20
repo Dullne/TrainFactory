@@ -122,14 +122,19 @@ class DeepEvaluationTaskService:
             logger.info("Created deep evaluation task: %s (type=%s)", task.task_id, eval_type)
             return self._to_task_dict(task)
 
-    def get_task(self, task_id: str, include_secrets: bool = False) -> Optional[Dict[str, Any]]:
+    def get_task(
+        self, task_id: str, include_secrets: bool = False, *, run_token: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Get deep evaluation task by task_id."""
         with get_session() as session:
+            conditions = [
+                EvaluationTaskDB.task_id == task_id,
+                EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
+            ]
+            if run_token is not None:
+                conditions.append(EvaluationTaskDB.run_token == run_token)
             task = session.exec(
-                select(EvaluationTaskDB).where(
-                    EvaluationTaskDB.task_id == task_id,
-                    EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
-                )
+                select(EvaluationTaskDB).where(*conditions)
             ).first()
             return self._to_task_dict(task, mask_api_key=not include_secrets) if task else None
 
@@ -209,7 +214,7 @@ class DeepEvaluationTaskService:
                 in normalized_names
             ]
 
-    def claim_running(self, task_id: str) -> bool:
+    def claim_running(self, task_id: str, *, run_token: Optional[str] = None) -> bool:
         """Atomically claim a pending DeepEval task for worker execution."""
         now = now_naive()
         with get_session() as session:
@@ -235,8 +240,31 @@ class DeepEvaluationTaskService:
                 .where(*conditions)
                 .values(
                     status=EvaluationStatus.RUNNING,
+                    run_token=run_token if run_token is not None else EvaluationTaskDB.run_token,
                     started_at=func.coalesce(EvaluationTaskDB.started_at, now),
                     completed_at=None,
+                    updated_at=now,
+                )
+            )
+            session.commit()
+            return result.rowcount == 1
+
+    def fail_claimed_startup(self, task_id: str, run_token: str) -> bool:
+        """Fail only the worker attempt that could not enter its runner."""
+        now = now_naive()
+        with get_session() as session:
+            result = session.exec(
+                update(EvaluationTaskDB)
+                .where(
+                    EvaluationTaskDB.task_id == task_id,
+                    EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
+                    EvaluationTaskDB.status == EvaluationStatus.RUNNING,
+                    EvaluationTaskDB.run_token == run_token,
+                )
+                .values(
+                    status=EvaluationStatus.FAILED,
+                    error_message="Task could not start background execution",
+                    completed_at=now,
                     updated_at=now,
                 )
             )
@@ -564,6 +592,8 @@ class DeepEvaluationTaskService:
         results: Optional[Dict[str, Any]] = None,
         report_path: Optional[str] = None,
         error_message: Optional[str] = None,
+        *,
+        run_token: Optional[str] = None,
     ) -> bool:
         """Atomically complete a running DeepEval task with its final results."""
         if status not in {EvaluationStatus.COMPLETED, EvaluationStatus.FAILED}:
@@ -585,14 +615,17 @@ class DeepEvaluationTaskService:
             values["error_message"] = None
             values["progress"] = 100.0
 
+        conditions = [
+            EvaluationTaskDB.task_id == task_id,
+            EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
+            EvaluationTaskDB.status == EvaluationStatus.RUNNING,
+        ]
+        if run_token is not None:
+            conditions.append(EvaluationTaskDB.run_token == run_token)
         with get_session() as session:
             result = session.exec(
                 update(EvaluationTaskDB)
-                .where(
-                    EvaluationTaskDB.task_id == task_id,
-                    EvaluationTaskDB.eval_framework == EvaluationFramework.DEEPEVAL,
-                    EvaluationTaskDB.status == EvaluationStatus.RUNNING,
-                )
+                .where(*conditions)
                 .values(**values)
             )
             session.commit()

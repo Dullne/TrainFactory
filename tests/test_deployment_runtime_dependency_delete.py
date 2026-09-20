@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlmodel import Session, SQLModel, select
 
+from train_factory.core.gpu_resource_manager import GPUResourceManager
 from train_factory.enums.sync_status import SyncStatus
 from train_factory.storage.entities.deployment_entity import DeploymentDB
 from train_factory.storage.entities.deployment_replica_entity import (
@@ -115,6 +116,10 @@ def deployment_runtime_guard_db(
                 raise
 
     docker = _DeletionDocker()
+    # These tests exercise runtime cleanup on an assigned local GPU, not
+    # recovery of an unknown assignment or discovery of real host hardware.
+    monkeypatch.setattr(GPUResourceManager, "_detect_max_gpus", lambda _self: 1)
+    monkeypatch.setattr(deployment_module, "gpu_resource_manager", GPUResourceManager())
     monkeypatch.setattr(deployment_module, "get_session", test_session)
     monkeypatch.setattr(deployment_module, "docker_deployer", docker)
     monkeypatch.setattr(
@@ -155,6 +160,7 @@ def deployment_runtime_guard_db(
                     "trainfactory-vllm-model-deployme" if canonical else None
                 ),
                 inference_framework="vllm" if canonical else "xinference",
+                gpu_id=0,
                 config=(
                     {
                         "launch_config": {"framework": "vllm"},
@@ -623,7 +629,8 @@ def test_legacy_shared_lifecycle_reconciles_uncertain_terminate_result(
             return None
 
         @staticmethod
-        def launch_model(**_kwargs) -> None:
+        def launch_model(**kwargs) -> None:
+            assert kwargs["gpu_idx"] == 0
             runtime_calls.append("launch")
 
     service = deployment_module.DeploymentService()

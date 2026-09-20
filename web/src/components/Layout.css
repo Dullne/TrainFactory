@@ -24,14 +24,14 @@
   flex: 0 0 44px;
   width: 44px;
   height: 44px;
-  color: #8b949e;
+  color: var(--tf-text-secondary, #8b949e);
   font-size: 18px;
 }
 
 .main-layout-nav-trigger:hover,
 .main-layout-nav-trigger:focus-visible {
-  background: #1c2128 !important;
-  color: #f0f6fc !important;
+  background: var(--tf-hover-bg, #1c2128) !important;
+  color: var(--tf-text-primary, #e6edf3) !important;
 }
 
 .main-layout-content {
@@ -41,7 +41,26 @@
 }
 
 .main-layout-navigation-drawer .ant-drawer-title {
-  color: #f0f6fc;
+  color: var(--tf-text-primary, #e6edf3);
+}
+
+:root[data-style='workbench'] .main-layout-brand {
+  justify-content: flex-start !important;
+  padding-left: 12px;
+  border-bottom: 1px solid var(--tf-border-secondary);
+}
+
+:root[data-style='studio'] .main-layout-sidebar .ant-menu {
+  padding: 0 8px;
+}
+
+:root[data-style='studio'] .ant-menu-item-selected::before {
+  display: none;
+}
+
+:root[data-style='workbench'] .ant-table,
+:root[data-style='workbench'] .ant-statistic-content {
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 820px) {
@@ -81,7 +100,7 @@
   .main-layout-content {
     width: calc(100% - 16px);
     max-width: calc(100vw - 16px);
-    min-height: calc(100vh - 72px) !important;
+    min-height: calc(100vh - var(--tf-header-height) - 16px) !important;
     margin: 8px !important;
     padding: 12px !important;
     border-radius: 6px !important;

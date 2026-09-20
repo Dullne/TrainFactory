@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Table,
+  Alert,
   Button,
   Space,
   Tag,
@@ -33,7 +34,7 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { modelApi } from '@/services/api'
-import { useList } from '@/hooks'
+import { useWorkspaceList, useListWorkspace } from '@/hooks/useListWorkspace'
 import { formatDate, copyToClipboard } from '@/utils'
 import type { RegisteredModel, ModelStatus, ModelType } from '@/types'
 import { StatusTag } from '@/components/StatusTag'
@@ -53,14 +54,20 @@ import {
 
 const { Title, Text } = Typography
 
+const LIST_FILTERS = {
+  model_type: ['embedding', 'reranker', 'decoder_reranker', 'llm'],
+  status: ['available', 'registered', 'archived'],
+}
+const VIEW_FILTERS = { view: ['card', 'table'] }
+
 export default function ModelList() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const { t } = useTranslation(['models', 'common'])
   const { config } = useAuth()
-  const [typeFilter, setTypeFilter] = useState<string>()
-  const [statusFilter, setStatusFilter] = useState<string>()
-  const [viewMode, setViewMode] = useState<'card' | 'table'>('card')
+  const viewWorkspace = useListWorkspace({ filters: VIEW_FILTERS })
+  const viewMode = viewWorkspace.values.view || 'card'
+  const setViewMode = (view: string) => viewWorkspace.update({ view })
   const [registerModalOpen, setRegisterModalOpen] = useState(false)
   const [downloadModalOpen, setDownloadModalOpen] = useState(false)
   const [detailModel, setDetailModel] = useState<RegisteredModel | null>(null)
@@ -80,24 +87,19 @@ export default function ModelList() {
     { label: t('common:status.archived'), value: 'archived' },
   ]
 
-  const fetchModels = useCallback(
-    (params: Parameters<typeof modelApi.list>[0]) =>
-      modelApi.list({ ...(params ?? {}), model_type: typeFilter, status: statusFilter }),
-    [typeFilter, statusFilter]
-  )
-
   const {
     data: models,
     loading,
+    error,
+    hasData,
+    isStale,
     page,
     pageSize,
     total,
-    setPage,
-    setPageSize,
-    fetch,
     refresh,
     extra,
-  } = useList<
+    workspace,
+  } = useWorkspaceList<
     RegisteredModel,
     {
       stats?: {
@@ -106,7 +108,11 @@ export default function ModelList() {
         by_type?: Record<string, number>
       }
     }
-  >(fetchModels, { defaultPageSize: 10 })
+  >(modelApi.list, { filters: LIST_FILTERS })
+  const typeFilter = workspace.values.model_type
+  const statusFilter = workspace.values.status
+  const setTypeFilter = (value: string | undefined) => workspace.setFilter('model_type', value)
+  const setStatusFilter = (value: string | undefined) => workspace.setFilter('status', value)
 
   // 统计数据：优先用后端全局 stats（不受分页影响），无则回退当前页
   const stats = useMemo(() => {
@@ -126,13 +132,8 @@ export default function ModelList() {
     return { total: models.length, available, registered, archived }
   }, [models, total, extra])
 
-  // Refetch when filters change
-  /* eslint-disable react-hooks/exhaustive-deps */
-  useEffect(() => {
-    fetch({ page: 1 })
-  }, [typeFilter, statusFilter])
-
   // Handle ?detail=model_id URL param
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     const detailId = searchParams.get('detail')
     if (detailId) {
@@ -430,8 +431,8 @@ export default function ModelList() {
   return (
     <div>
       {/* 统计面板 */}
-      <Row gutter={16} style={{ marginBottom: 20 }}>
-        <Col span={6}>
+      <Row className="page-stats" gutter={[12, 12]} style={{ marginBottom: 20 }}>
+        <Col xs={12} md={6}>
           <StatCard
             title={t('list.totalModels')}
             value={stats.total}
@@ -439,7 +440,7 @@ export default function ModelList() {
             color={STATUS_INFO}
           />
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <StatCard
             title={t('list.available')}
             value={stats.available}
@@ -448,7 +449,7 @@ export default function ModelList() {
             tooltip={t('list.availableDesc')}
           />
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <StatCard
             title={t('list.registered')}
             value={stats.registered}
@@ -457,7 +458,7 @@ export default function ModelList() {
             tooltip={t('list.registeredDesc')}
           />
         </Col>
-        <Col span={6}>
+        <Col xs={12} md={6}>
           <StatCard
             title={t('list.archived')}
             value={stats.archived}
@@ -469,35 +470,11 @@ export default function ModelList() {
       </Row>
 
       {/* 工具栏 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div className="page-toolbar">
         <Title level={4} style={{ margin: 0 }}>
           {t('list.title')}
         </Title>
-        <Space>
-          <Segmented
-            value={viewMode}
-            onChange={(v) => setViewMode(v as 'card' | 'table')}
-            options={[
-              { value: 'card', icon: <AppstoreOutlined /> },
-              { value: 'table', icon: <UnorderedListOutlined /> },
-            ]}
-          />
-          <Select
-            placeholder={t('list.typeFilter')}
-            allowClear
-            style={{ width: 150 }}
-            value={typeFilter}
-            onChange={setTypeFilter}
-            options={typeFilterOptions}
-          />
-          <Select
-            placeholder={t('list.statusFilter')}
-            allowClear
-            style={{ width: 120 }}
-            value={statusFilter}
-            onChange={setStatusFilter}
-            options={statusFilterOptions}
-          />
+        <Space className="page-toolbar-actions" wrap>
           <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>
             {t('common:action.refresh')}
           </Button>
@@ -516,7 +493,46 @@ export default function ModelList() {
         </Space>
       </div>
 
+      <div className="model-list-filters">
+        <Segmented
+          value={viewMode}
+          onChange={(v) => setViewMode(v as 'card' | 'table')}
+          options={[
+            { value: 'card', icon: <AppstoreOutlined /> },
+            { value: 'table', icon: <UnorderedListOutlined /> },
+          ]}
+        />
+        <Select
+          placeholder={t('list.typeFilter')}
+          allowClear
+          value={typeFilter}
+          onChange={setTypeFilter}
+          options={typeFilterOptions}
+        />
+        <Select
+          placeholder={t('list.statusFilter')}
+          allowClear
+          value={statusFilter}
+          onChange={setStatusFilter}
+          options={statusFilterOptions}
+        />
+      </div>
+
       {/* 内容区域 */}
+      {(error || isStale) && (
+        <Alert
+          showIcon
+          type={error ? 'warning' : 'info'}
+          style={{ marginBottom: 16 }}
+          message={t(
+            error
+              ? hasData
+                ? 'common:listState.refreshFailed'
+                : 'common:listState.loadFailed'
+              : 'common:listState.showingPrevious'
+          )}
+        />
+      )}
       {viewMode === 'card' ? (
         models.length > 0 ? (
           <>
@@ -539,8 +555,7 @@ export default function ModelList() {
                 showSizeChanger
                 showTotal={(total) => t('common:pagination.total', { total })}
                 onChange={(p, ps) => {
-                  setPage(p)
-                  setPageSize(ps)
+                  workspace.setPagination(p, ps)
                 }}
               />
             </div>
@@ -565,8 +580,7 @@ export default function ModelList() {
             showSizeChanger: true,
             showTotal: (total) => t('common:pagination.total', { total }),
             onChange: (p, ps) => {
-              setPage(p)
-              setPageSize(ps)
+              workspace.setPagination(p, ps)
             },
           }}
         />
@@ -589,6 +603,10 @@ export default function ModelList() {
       <DownloadModelModal
         open={downloadModalOpen}
         onCancel={() => setDownloadModalOpen(false)}
+        onTasksChanged={() => {
+          refresh()
+          fetchBaseModelMap()
+        }}
         onSuccess={() => {
           setDownloadModalOpen(false)
           refresh()

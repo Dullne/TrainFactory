@@ -1549,11 +1549,20 @@ def test_stop_after_handoff_return_is_cleaned_before_manager_launch(
 def test_stop_after_manager_preflight_is_cleaned_before_worker_claim(
     monkeypatch,
     tmp_path,
+    request,
 ):
     from train_factory.api.routes import generation_routes
     from train_factory.storage.entities.generation_task_entity import GenerationStatus
     from train_factory.sync import sync_manager as manager_module
 
+    admission_module = importlib.import_module(
+        "train_factory.storage.services.background_task_admission_service"
+    )
+    admission = admission_module.BackgroundTaskAdmissionService(
+        global_limit=1, per_user_limit=1,
+    )
+    monkeypatch.setattr(admission_module, "background_task_admission_service", admission)
+    request.addfinalizer(admission.shutdown_async_workers)
     state, handoff = _create_staged_sync_generation_handoff(monkeypatch, tmp_path)
     generation_service_module = importlib.import_module(
         "train_factory.storage.services.generation_task_service"

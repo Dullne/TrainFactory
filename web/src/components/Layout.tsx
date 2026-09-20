@@ -34,15 +34,11 @@ import {
   UserOutlined,
   CloseOutlined,
 } from '@ant-design/icons'
-import {
-  BG_LAYOUT,
-  BG_CONTAINER,
-  BORDER_SECONDARY,
-  TEXT_PRIMARY,
-  TEXT_SECONDARY,
-  GRADIENT_PRIMARY,
-} from '@/theme'
+import { BG_LAYOUT, BORDER_SECONDARY, TEXT_PRIMARY, TEXT_SECONDARY } from '@/theme'
+import { getStyleTokens } from '@/theme/appearance'
 import { LanguageToggle } from '@/i18n/LanguageToggle'
+import { ThemeSelector } from './ThemeSelector'
+import { useAppearance } from '@/theme/ThemeProvider'
 import { useAuth } from '@/auth/AuthContext'
 import ChangePasswordModal from '@/pages/auth/ChangePasswordModal'
 import './Layout.css'
@@ -78,6 +74,8 @@ export default function MainLayout() {
   const { t } = useTranslation('common')
   const { user, logout } = useAuth()
   const isMobile = useMobileLayout()
+  const { mode, accent, style } = useAppearance()
+  const appearanceTokens = getStyleTokens({ mode, accent, style })
   const accountRole = user
     ? user.is_admin
       ? t('account.administratorRole')
@@ -229,18 +227,20 @@ export default function MainLayout() {
       >
         {!isMobile ? (
           <Sider
+            className="main-layout-sidebar"
             trigger={null}
             collapsible
             collapsed={collapsed}
-            width={220}
+            width={appearanceTokens.sidebarWidth}
             collapsedWidth={64}
             style={{
-              background: BG_LAYOUT,
+              background: 'var(--tf-sidebar-bg)',
               borderRight: `1px solid ${BORDER_SECONDARY}`,
             }}
           >
             {/* Logo 区域 */}
             <Link
+              className="main-layout-brand"
               to="/training"
               aria-label="TrainFactory"
               style={{
@@ -248,10 +248,10 @@ export default function MainLayout() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                background: GRADIENT_PRIMARY,
+                background: 'var(--tf-brand-bg)',
                 margin: collapsed ? 8 : 12,
                 marginBottom: 16,
-                borderRadius: 8,
+                borderRadius: 'var(--tf-radius)',
                 cursor: 'pointer',
                 textDecoration: 'none',
                 transition: 'all 0.2s',
@@ -261,9 +261,9 @@ export default function MainLayout() {
                 style={{
                   fontSize: collapsed ? 18 : 20,
                   fontWeight: 700,
-                  color: '#fff',
+                  color: 'var(--tf-brand-text)',
                   letterSpacing: collapsed ? 0 : 1,
-                  textShadow: '0 2px 4px rgba(0,0,0,0.2)',
+                  textShadow: style === 'workbench' ? 'none' : '0 2px 4px rgba(0,0,0,0.2)',
                 }}
               >
                 {collapsed ? 'TF' : 'TrainFactory'}
@@ -273,7 +273,7 @@ export default function MainLayout() {
             {/* 菜单 */}
             <Menu
               mode="inline"
-              theme="dark"
+              theme={mode}
               selectedKeys={[selectedKey]}
               items={menuItems}
               onClick={handleNavigationAction}
@@ -291,12 +291,12 @@ export default function MainLayout() {
             className="main-layout-header"
             style={{
               padding: '0 24px',
-              background: BG_CONTAINER,
+              background: 'var(--tf-header-bg)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
               borderBottom: `1px solid ${BORDER_SECONDARY}`,
-              height: 56,
+              height: 'var(--tf-header-height)',
             }}
           >
             <div className="main-layout-header-left">
@@ -339,6 +339,7 @@ export default function MainLayout() {
 
             {/* 右侧区域 */}
             <div className="main-layout-header-right">
+              <ThemeSelector />
               <LanguageToggle />
               {user ? (
                 <Dropdown
@@ -417,12 +418,12 @@ export default function MainLayout() {
           <Content
             className="main-layout-content"
             style={{
-              margin: 16,
-              padding: 20,
-              background: BG_CONTAINER,
-              borderRadius: 12,
+              margin: 'var(--tf-content-margin)',
+              padding: 'var(--tf-content-padding)',
+              background: 'var(--tf-content-bg)',
+              borderRadius: 'var(--tf-radius-lg)',
               overflow: 'auto',
-              minHeight: 'calc(100vh - 88px)',
+              minHeight: 'calc(100vh - var(--tf-header-height) - 2 * var(--tf-content-margin))',
             }}
           >
             <Outlet />
@@ -447,13 +448,13 @@ export default function MainLayout() {
           />
         }
         styles={{
-          header: { background: BG_LAYOUT, borderBottomColor: BORDER_SECONDARY },
-          body: { padding: '12px 0', background: BG_LAYOUT },
+          header: { background: 'var(--tf-sidebar-bg)', borderBottomColor: BORDER_SECONDARY },
+          body: { padding: '12px 0', background: 'var(--tf-sidebar-bg)' },
         }}
       >
         <Menu
           mode="inline"
-          theme="dark"
+          theme={mode}
           selectedKeys={[selectedKey]}
           items={menuItems}
           onClick={handleNavigationAction}

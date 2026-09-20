@@ -924,6 +924,57 @@ def test_materializer_windows_hardening_removes_preexisting_explicit_rules(tmp_p
     assert module._verify_hardened_path(secret_file) is True
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL semantics")
+@pytest.mark.parametrize("kind", ("file", "directory"))
+def test_materializer_windows_hardening_preserves_owner_and_group(tmp_path, kind):
+    module = _materializer_module()
+    target = tmp_path / kind
+    if kind == "directory":
+        target.mkdir()
+    else:
+        target.write_text("permission-probe", encoding="utf-8")
+    identity_command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "& { param([string]$TargetPath) $ErrorActionPreference = 'Stop'; "
+        "Get-Acl -LiteralPath $TargetPath | Select-Object Owner, Group | "
+        "ConvertTo-Json -Compress }",
+        str(target),
+    ]
+    before = subprocess.run(identity_command, capture_output=True, text=True, check=True)
+
+    assert module._harden_path(target) is True
+
+    assert module._verify_hardened_path(target) is True
+    after = subprocess.run(identity_command, capture_output=True, text=True, check=True)
+    assert json.loads(after.stdout) == json.loads(before.stdout)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL semantics")
+def test_materializer_windows_hardening_script_returns_failure_for_missing_path(tmp_path):
+    module = _materializer_module()
+    target = tmp_path / "missing"
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            module.WINDOWS_HARDEN_SCRIPT,
+            str(target),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert not target.exists()
+
+
 def test_materializer_reverifies_permissions_before_and_after_publish(
     tmp_path,
     monkeypatch,

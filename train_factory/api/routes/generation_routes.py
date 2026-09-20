@@ -15,8 +15,10 @@ from typing import Optional, List, Dict, Any, Callable
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Query
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, model_validator
 
+from ..concurrency import threadpool_endpoint
 from ...auth.dependencies import get_current_user
 from ...auth.resource_provenance import ResourceProvenanceError
 from ...config.settings import get_settings
@@ -50,6 +52,7 @@ from ...generation.security import (
 from ...storage.entities.generation_task_entity import GenerationStatus
 from ...storage.services.model_config_service import model_config_service
 from ...storage.services.outbound_endpoint_policy import validate_user_outbound_url
+from ...storage.services.inference_authorization_service import authorize_inference_config
 from ...storage.services.generation_task_service import generation_task_service
 from ...storage.services.generation_publication_service import (
     generation_publication_service,
@@ -1465,6 +1468,7 @@ def _normalize_model_config_endpoints(
             endpoints.append(item)
         normalized["endpoints"] = endpoints
 
+    authorize_inference_config(normalized, user_id)
     return normalized
 
 
@@ -1912,8 +1916,9 @@ async def create_task(
             eval_llm_config_data = request.eval_llm_config.model_dump(exclude_none=True)
 
     user_id = current_user.get("user_id")
-    llm_config_data = _normalize_model_config_endpoints(llm_config_data, user_id)
-    eval_llm_config_data = _normalize_model_config_endpoints(
+    llm_config_data = await run_in_threadpool(_normalize_model_config_endpoints, llm_config_data, user_id)
+    eval_llm_config_data = await run_in_threadpool(
+        _normalize_model_config_endpoints,
         eval_llm_config_data,
         user_id,
     )
@@ -1954,11 +1959,13 @@ async def create_task(
         else:
             rerank_config_data = request.rerank_config.model_dump(exclude_none=True)
 
-    embedding_config_data = _normalize_model_config_endpoints(
+    embedding_config_data = await run_in_threadpool(
+        _normalize_model_config_endpoints,
         embedding_config_data,
         user_id,
     )
-    rerank_config_data = _normalize_model_config_endpoints(
+    rerank_config_data = await run_in_threadpool(
+        _normalize_model_config_endpoints,
         rerank_config_data,
         user_id,
     )
@@ -2288,7 +2295,8 @@ async def create_task(
 
 
 @router.get("/tasks", response_model=TaskListResponse)
-async def list_tasks(
+@threadpool_endpoint
+def list_tasks(
     status: Optional[str] = None,
     generation_mode: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=1000),
@@ -2336,7 +2344,8 @@ async def list_tasks(
 
 
 @router.get("/tasks/{task_id}", response_model=TaskDetailResponse)
-async def get_task(
+@threadpool_endpoint
+def get_task(
     task_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -2395,7 +2404,8 @@ async def get_task(
 
 
 @router.get("/tasks/{task_id}/progress", response_model=TaskProgressResponse)
-async def get_task_progress(
+@threadpool_endpoint
+def get_task_progress(
     task_id: str,
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
@@ -3192,7 +3202,8 @@ def _infer_artifact_role(task: Dict[str, Any], dataset: Dict[str, Any], stage_ke
 
 
 @router.get("/tasks/{task_id}/artifacts", response_model=TaskArtifactsResponse)
-async def list_task_artifacts(
+@threadpool_endpoint
+def list_task_artifacts(
     task_id: str,
     include_empty: bool = True,
     current_user: Dict[str, Any] = Depends(get_current_user),
@@ -3314,7 +3325,8 @@ async def list_task_artifacts(
 
 
 @router.get("/tasks/{task_id}/preview", response_model=PreviewResponse)
-async def preview_output(
+@threadpool_endpoint
+def preview_output(
     task_id: str,
     limit: int = Query(default=10, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),

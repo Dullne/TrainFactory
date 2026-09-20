@@ -889,18 +889,26 @@ async def _evaluate_samples(
     return results, skipped_count
 
 
-def run_deep_evaluation_task(task_id: str, *, existing_results: Optional[Dict[str, Any]] = None) -> None:
+def run_deep_evaluation_task(
+    task_id: str,
+    *,
+    existing_results: Optional[Dict[str, Any]] = None,
+    expected_run_token: Optional[str] = None,
+) -> None:
     """Run deep evaluation task in background.
 
     Args:
         task_id: The task ID to run.
         existing_results: Previously completed group results (keyed by group_name).
             When provided, groups that already have successful results will be skipped.
+        expected_run_token: Worker claim identity for startup reads and terminal writes.
     """
 
     async def _run() -> None:
         try:
-            task = deep_evaluation_task_service.get_task(task_id, include_secrets=True)
+            task = deep_evaluation_task_service.get_task(
+                task_id, include_secrets=True, run_token=expected_run_token,
+            )
             if not task:
                 logger.error("Deep evaluation task not found: %s", task_id)
                 return
@@ -1418,6 +1426,7 @@ def run_deep_evaluation_task(task_id: str, *, existing_results: Optional[Dict[st
                 "completed",
                 results=summary,
                 report_path=str(results_path),
+                run_token=expected_run_token,
             )
             if not completed:
                 logger.info(
@@ -1446,6 +1455,7 @@ def run_deep_evaluation_task(task_id: str, *, existing_results: Optional[Dict[st
                 task_id,
                 "failed",
                 error_message=str(exc),
+                run_token=expected_run_token,
             )
             if not completed:
                 logger.info(

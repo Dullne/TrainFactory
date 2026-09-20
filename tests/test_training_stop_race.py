@@ -14,6 +14,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from train_factory.api.routes import training_routes
 from train_factory.enums import TrainingStatus
 from train_factory.storage.entities.training_task_entity import TrainingTaskDB
+from train_factory.storage.entities.training_task_event_entity import TrainingTaskEventDB
 from train_factory.storage.entities.model_registry_entity import ModelRegistryDB
 from train_factory.storage.entities.model_artifact_membership_gate_entity import (
     ModelArtifactMembershipGateDB,
@@ -36,6 +37,7 @@ def _training_service():
             ModelArtifactMembershipGateDB.__table__,
             ModelRegistryDB.__table__,
             TrainingTaskDB.__table__,
+            TrainingTaskEventDB.__table__,
         ],
     )
     with Session(engine) as session:
@@ -221,6 +223,9 @@ def test_child_skips_registration_when_completion_loses_to_stop(monkeypatch):
     registrations = []
 
     class CompletionLostService:
+        def register_training_process(self, *_args, **_kwargs):
+            return True
+
         def get_task(self, _task_id):
             return {
                 "task_id": "completion-lost",
@@ -304,6 +309,9 @@ def test_child_failure_does_not_compensate_when_failure_cas_loses(monkeypatch):
     status_updates = []
 
     class FailureCasLostService:
+        def register_training_process(self, *_args, **_kwargs):
+            return True
+
         def get_task(self, _task_id):
             return {
                 "task_id": "child-cas-lost",
@@ -345,6 +353,9 @@ def test_child_failure_defers_recovery_after_failure_cas_succeeds(monkeypatch):
     recovered_failures = []
 
     class FailurePersistedService:
+        def register_training_process(self, *_args, **_kwargs):
+            return True
+
         def get_task(self, _task_id):
             return {
                 "task_id": "child-failure-deferred",
@@ -386,6 +397,9 @@ def test_child_success_defers_post_completion_work_to_parent(monkeypatch):
 
     class SuccessfulChildService:
         status = TrainingStatus.RUNNING.value
+
+        def register_training_process(self, *_args, **_kwargs):
+            return True
 
         def get_task(self, _task_id):
             return {
@@ -727,6 +741,14 @@ class _RaceTrainingService:
     def update_task_execution_config(self, *_args, **kwargs):
         with self._lock:
             return kwargs.get("run_token") == self.task["run_token"]
+
+    def register_training_process(self, task_id, process_pid, process_create_time, *, run_token):
+        if self.task["status"] not in {"preparing", "running"}:
+            return False
+        return self.update_process_info(
+            task_id, process_pid=process_pid, process_create_time=process_create_time,
+            process_status="running", run_token=run_token,
+        )
 
     def update_process_info(
         self,

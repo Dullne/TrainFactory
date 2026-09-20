@@ -17,6 +17,7 @@ import {
 import { DeleteOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import { GpuSelect } from '@/components/GpuSelect'
+import './CreateDeploymentModal.css'
 import { deploymentApi, DiscoveredModel, externalApiConfigApi } from '@/services/api'
 import {
   isSglangRerankerLoraUnsupported,
@@ -615,11 +616,10 @@ export function CreateDeploymentModal({
           <>
             {/* Deploy New Model Form */}
             <Form.Item label={t('create.selectModel')} required style={{ marginBottom: 0 }}>
-              <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
+              <div className="deployment-model-selection">
                 <Select
                   allowClear
                   placeholder={t('create.modelTypeFilter')}
-                  style={{ width: 160 }}
                   options={MODEL_TYPE_OPTIONS}
                   value={modelTypeFilter}
                   onChange={(v) => {
@@ -638,14 +638,13 @@ export function CreateDeploymentModal({
                       (option?.label as string ?? '').toLowerCase().includes(input.toLowerCase())
                     }
                     placeholder={t('create.selectModelPlaceholder')}
-                    style={{ flex: 1 }}
                     options={filteredModels.map((m) => ({
                       label: `${m.model_name} (${m.model_type})`,
                       value: m.model_id,
                     }))}
                   />
                 </Form.Item>
-              </Space.Compact>
+              </div>
             </Form.Item>
 
             <Form.Item

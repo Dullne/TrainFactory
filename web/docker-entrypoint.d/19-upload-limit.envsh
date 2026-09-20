@@ -1,0 +1,19 @@
+#!/bin/sh
+# Sourced by the official Nginx entrypoint before 20-envsubst-on-templates.sh.
+# Keep one file-size setting shared with the API; reserve 1 MiB for multipart.
+tf_upload_bytes=${MAX_UPLOAD_SIZE-524288000}
+case "$tf_upload_bytes" in
+    ''|*[!0-9]*)
+        printf '%s\n' 'MAX_UPLOAD_SIZE must be a positive integer byte count supported by Nginx.' >&2
+        return 1
+        ;;
+esac
+tf_upload_bytes=$(printf '%s' "$tf_upload_bytes" | sed 's/^0*//')
+if [ -z "$tf_upload_bytes" ] || [ "${#tf_upload_bytes}" -gt 19 ] ||
+    ! [ "$tf_upload_bytes" -le 9223372036853727231 ] 2>/dev/null; then
+    printf '%s\n' 'MAX_UPLOAD_SIZE must be a positive integer byte count supported by Nginx.' >&2
+    return 1
+fi
+WEB_MAX_BODY_SIZE=$((tf_upload_bytes + 1048576))
+export WEB_MAX_BODY_SIZE
+unset tf_upload_bytes

@@ -10,6 +10,7 @@ import type {
   UpdateDatasetRequest,
   RegisteredModel,
   Deployment,
+  DeploymentStats,
   DeploymentReplica,
   CreateDeploymentRequest,
   CreateContainerDeploymentRequest,
@@ -64,10 +65,14 @@ const api = axios.create({
 // Migrate from localStorage to httpOnly cookies
 // Remove old localStorage token on first load (one-time cleanup)
 if (typeof window !== 'undefined') {
-  const oldToken = localStorage.getItem('auth_token')
-  if (oldToken) {
-    // Clear the old token - the httpOnly cookie will be used instead
-    localStorage.removeItem('auth_token')
+  try {
+    const oldToken = localStorage.getItem('auth_token')
+    if (oldToken) {
+      // Clear the old token - the httpOnly cookie will be used instead
+      localStorage.removeItem('auth_token')
+    }
+  } catch {
+    // Storage may be unavailable in restricted browser contexts. Cookie auth still works.
   }
 }
 
@@ -164,8 +169,7 @@ api.interceptors.response.use(
     // Entry-form errors are rendered inline, while /auth/me 401 is an expected
     // anonymous-session probe. Other failures keep the global handling below.
     const suppressErrorToast = requestConfig?.suppressErrorToast === true
-    const suppressUnauthorizedRedirect =
-      requestConfig?.suppressUnauthorizedRedirect === true
+    const suppressUnauthorizedRedirect = requestConfig?.suppressUnauthorizedRedirect === true
 
     if (isAuthEntryRequest || isUnauthorizedMeProbe) {
       // Intentionally silent.
@@ -366,14 +370,17 @@ export interface DatasetPreviewResponse {
 
 // Dataset API
 export const datasetApi = {
-  list: async (params?: {
-    dataset_type?: string
-    usage?: string
-    model_type?: string
-    status?: string
-    page?: number
-    page_size?: number
-  }, config?: AppRequestConfig) => {
+  list: async (
+    params?: {
+      dataset_type?: string
+      usage?: string
+      model_type?: string
+      status?: string
+      page?: number
+      page_size?: number
+    },
+    config?: AppRequestConfig
+  ) => {
     const res = await api.get<
       never,
       {
@@ -433,8 +440,11 @@ export const datasetApi = {
   getDownloadProgress: (datasetId: string) =>
     api.get<never, DatasetDownloadProgress>(`/datasets/download/${datasetId}/progress`),
 
-  listDownloads: () =>
-    api.get<never, { downloads: DatasetDownloadProgress[]; total: number }>('/datasets/downloads'),
+  listDownloads: (config?: AppRequestConfig) =>
+    api.get<never, { downloads: DatasetDownloadProgress[]; total: number }>(
+      '/datasets/downloads',
+      config
+    ),
 
   export: (datasetId: string, data?: ExportDatasetRequest) =>
     api.post<never, ExportDatasetResponse>(`/datasets/${datasetId}/export`, data || {}),
@@ -554,14 +564,22 @@ export const modelApi = {
   getDownloadProgress: (registryId: string) =>
     api.get<never, DownloadProgress>(`/models/download/${registryId}/progress`),
 
-  listDownloads: () =>
-    api.get<never, { downloads: DownloadProgress[]; total: number }>('/models/downloads'),
+  listDownloads: (config?: AppRequestConfig) =>
+    api.get<never, { downloads: DownloadProgress[]; total: number }>('/models/downloads', config),
 }
 
 // Deployment API
 export const deploymentApi = {
-  list: async (params?: { status?: string; model_id?: string; page?: number; page_size?: number }) => {
-    const res = await api.get<never, { deployments: Deployment[]; total: number }>('/deployments', {
+  list: async (params?: {
+    status?: string
+    model_id?: string
+    page?: number
+    page_size?: number
+  }) => {
+    const res = await api.get<
+      never,
+      { deployments: Deployment[]; total: number; stats?: DeploymentStats }
+    >('/deployments', {
       params: { ...buildListParams(params), sync: true },
     })
     return {
@@ -569,6 +587,7 @@ export const deploymentApi = {
       total: res.total || 0,
       page: params?.page || 1,
       page_size: params?.page_size || 10,
+      stats: res.stats,
     }
   },
 
@@ -592,14 +611,10 @@ export const deploymentApi = {
     api.get<never, DeploymentReplica[]>(`/deployments/${deploymentId}/replicas`),
 
   startReplica: (deploymentId: string, replicaId: string) =>
-    api.post<never, DeploymentReplica>(
-      `/deployments/${deploymentId}/replicas/${replicaId}/start`
-    ),
+    api.post<never, DeploymentReplica>(`/deployments/${deploymentId}/replicas/${replicaId}/start`),
 
   stopReplica: (deploymentId: string, replicaId: string) =>
-    api.post<never, DeploymentReplica>(
-      `/deployments/${deploymentId}/replicas/${replicaId}/stop`
-    ),
+    api.post<never, DeploymentReplica>(`/deployments/${deploymentId}/replicas/${replicaId}/stop`),
 
   restartReplica: (deploymentId: string, replicaId: string) =>
     api.post<never, DeploymentReplica>(
@@ -657,12 +672,7 @@ export const adapterApi = {
   ) => api.post<never, LoadedAdapter>(`/deployments/${deploymentId}/adapters`, data),
 
   // Load adapter from a training task
-  loadFromTask: (
-    deploymentId: string,
-    taskId: string,
-    adapterName?: string,
-    replicaId?: string
-  ) =>
+  loadFromTask: (deploymentId: string, taskId: string, adapterName?: string, replicaId?: string) =>
     api.post<never, LoadedAdapter>(`/deployments/${deploymentId}/adapters/from-task`, {
       task_id: taskId,
       adapter_name: adapterName,
@@ -671,18 +681,15 @@ export const adapterApi = {
 
   // Unload an adapter
   unload: (deploymentId: string, adapterName: string, replicaId?: string) =>
-    api.delete<never, { message: string }>(
-      `/deployments/${deploymentId}/adapters/${adapterName}`,
-      { params: { replica_id: replicaId } }
-    ),
+    api.delete<never, { message: string }>(`/deployments/${deploymentId}/adapters/${adapterName}`, {
+      params: { replica_id: replicaId },
+    }),
 
   // Sync loaded adapters with actual state
   sync: (deploymentId: string, replicaId?: string) =>
-    api.post<never, { message: string }>(
-      `/deployments/${deploymentId}/adapters/sync`,
-      undefined,
-      { params: { replica_id: replicaId } }
-    ),
+    api.post<never, { message: string }>(`/deployments/${deploymentId}/adapters/sync`, undefined, {
+      params: { replica_id: replicaId },
+    }),
 
   // List available adapters
   listAvailable: (baseModelId?: string) =>
@@ -1347,7 +1354,6 @@ export const generationApi = {
       }
     >(`/generation/tasks/${taskId}/artifacts`, { params }),
 
-
   // Stop task
   stopTask: (taskId: string) =>
     api.post<never, { status: string }>(`/generation/tasks/${taskId}/stop`),
@@ -1492,11 +1498,14 @@ export const syncApi = {
   createTask: (data: import('@/types').CreateSyncConfigRequest) =>
     api.post<never, { message: string; task: import('@/types').SyncConfig }>('/sync/tasks', data),
 
-  listTasks: (params?: {
-    limit: number
-    offset: number
-    external_api_config_id?: string
-  }, config?: AppRequestConfig) =>
+  listTasks: (
+    params?: {
+      limit: number
+      offset: number
+      external_api_config_id?: string
+    },
+    config?: AppRequestConfig
+  ) =>
     api.get<never, { tasks: import('@/types').SyncConfig[]; total: number }>('/sync/tasks', {
       ...config,
       params: buildListParams(params),
@@ -1610,7 +1619,6 @@ export const syncApi = {
     api.post<never, { message: string }>(
       `/sync/tasks/${taskId}/targets/${targetId}/trigger-training`
     ),
-
 }
 
 // External API Config

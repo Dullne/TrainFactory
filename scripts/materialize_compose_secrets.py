@@ -37,11 +37,15 @@ PATH_VARIABLES = {
 WINDOWS_FULL_CONTROL = 2_032_127
 WINDOWS_HARDEN_SCRIPT = r"""& {
 param([string]$TargetPath)
-$acl = Get-Acl -LiteralPath $TargetPath
-$acl.SetAccessRuleProtection($true, $false)
-foreach ($existing in @($acl.Access)) {
-  [void]$acl.RemoveAccessRuleAll($existing)
+$ErrorActionPreference = 'Stop'
+$isDirectory = [System.IO.Directory]::Exists($TargetPath)
+# Persist only a new DACL, without requesting owner or SACL privileges.
+if ($isDirectory) {
+  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+} else {
+  $acl = [System.Security.AccessControl.FileSecurity]::new()
 }
+$acl.SetAccessRuleProtection($true, $false)
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
   $currentSid,
@@ -49,7 +53,11 @@ $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
   [System.Security.AccessControl.AccessControlType]::Allow
 )
 [void]$acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $TargetPath -AclObject $acl
+if ($isDirectory) {
+  [System.IO.Directory]::SetAccessControl($TargetPath, $acl)
+} else {
+  [System.IO.File]::SetAccessControl($TargetPath, $acl)
+}
 }"""
 WINDOWS_ACL_SCRIPT = r"""& {
 param([string]$TargetPath)

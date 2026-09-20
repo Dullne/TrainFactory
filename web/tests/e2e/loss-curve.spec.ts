@@ -288,6 +288,35 @@ async function waitForAnimationFrames(page: Page) {
   )
 }
 
+async function observeCanvasTextBounds(page: Page) {
+  await page.addInitScript(() => {
+    type TextBounds = { left: number; right: number; top: number; bottom: number }
+    type ObservedCanvas = HTMLCanvasElement & { drawnTextBounds?: Record<string, TextBounds> }
+    const fillText = CanvasRenderingContext2D.prototype.fillText
+
+    // Observe real paint calls without replacing ECharts or the browser renderer.
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, maxWidth) {
+      const metrics = this.measureText(text)
+      const transform = this.getTransform()
+      const corners = [
+        [x - metrics.actualBoundingBoxLeft, y - metrics.actualBoundingBoxAscent],
+        [x + metrics.actualBoundingBoxRight, y - metrics.actualBoundingBoxAscent],
+        [x - metrics.actualBoundingBoxLeft, y + metrics.actualBoundingBoxDescent],
+        [x + metrics.actualBoundingBoxRight, y + metrics.actualBoundingBoxDescent],
+      ].map(([left, top]) => new DOMPoint(left, top).matrixTransform(transform))
+      const canvas = this.canvas as ObservedCanvas
+      canvas.drawnTextBounds ??= {}
+      canvas.drawnTextBounds[text] = {
+        left: Math.min(...corners.map((point) => point.x)),
+        right: Math.max(...corners.map((point) => point.x)),
+        top: Math.min(...corners.map((point) => point.y)),
+        bottom: Math.max(...corners.map((point) => point.y)),
+      }
+      fillText.call(this, text, x, y, maxWidth)
+    }
+  })
+}
+
 const axisTestLabels: LossChartLabels = {
   stepAxis: 'Step',
   trainSeries: 'Training loss',
@@ -453,6 +482,78 @@ test('loss chart model keeps same-sign near-MAX x and y spans renderable', () =>
 })
 
 for (const locale of locales) {
+  for (const width of [1440, 390]) {
+    test(`${locale.language} loss curve keeps its painted axis title inside the canvas at ${width}px`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 })
+      await preparePage(page, locale.language)
+      await observeCanvasTextBounds(page)
+      await mockLossHistory(page, comprehensiveHistory)
+      await page.goto('/training/task-loss-curve')
+      await expect(page).toHaveURL(/\/training\/task-loss-curve$/)
+      await expect(page.locator('vite-error-overlay')).toHaveCount(0)
+
+      const card = lossCard(page, locale.title)
+      const canvas = card.locator('canvas')
+      await expect(canvas).toBeVisible()
+      await canvas.scrollIntoViewIfNeeded()
+      await expect
+        .poll(() =>
+          canvas.evaluate((element, text) => {
+            const observed = element as HTMLCanvasElement & {
+              drawnTextBounds?: Record<string, unknown>
+            }
+            return Boolean(observed.drawnTextBounds?.[text])
+          }, locale.axisStep)
+        )
+        .toBe(true)
+      await waitForAnimationFrames(page)
+      await card.screenshot({
+        path: testInfo.outputPath(`loss-axis-${locale.language}-${width}.png`),
+      })
+
+      const geometry = await canvas.evaluate((element, text) => {
+        const observed = element as HTMLCanvasElement & {
+          drawnTextBounds: Record<
+            string,
+            {
+              left: number
+              right: number
+              top: number
+              bottom: number
+            }
+          >
+        }
+        return {
+          title: observed.drawnTextBounds[text],
+          width: observed.width,
+          height: observed.height,
+          ticks: Object.entries(observed.drawnTextBounds)
+            .filter(([label]) => /^\d+(?:\.\d+)?$/.test(label))
+            .map(([, bounds]) => bounds),
+        }
+      }, locale.axisStep)
+      expect(geometry.title.right).toBeGreaterThan(geometry.title.left)
+      expect(geometry.title.left).toBeGreaterThanOrEqual(0)
+      expect(geometry.title.right).toBeLessThanOrEqual(geometry.width)
+      expect(geometry.title.top).toBeGreaterThanOrEqual(0)
+      expect(geometry.title.bottom).toBeLessThanOrEqual(geometry.height)
+      expect(geometry.ticks.length).toBeGreaterThan(0)
+      for (const tick of geometry.ticks) {
+        const overlaps =
+          geometry.title.left < tick.right &&
+          geometry.title.right > tick.left &&
+          geometry.title.top < tick.bottom &&
+          geometry.title.bottom > tick.top
+        expect(overlaps, 'axis title must not overlap painted numeric tick labels').toBe(false)
+      }
+
+      await card.locator('details summary').click()
+      await expect(card.getByRole('table', { name: locale.tableCaption })).toBeVisible()
+    })
+  }
+
   test(`${locale.language} loss curve localizes chart semantics and exposes one normalized table`, async ({
     page,
   }) => {

@@ -1,4 +1,38 @@
 {
+  "listState": {
+    "showingPrevious": "正在更新结果，当前请求成功前暂时显示上次的结果。",
+    "refreshFailed": "未能加载所请求的结果，当前显示上次的结果，请刷新重试。",
+    "loadFailed": "未能加载结果，请刷新重试。"
+  },
+  "appearance": {
+    "title": "外观",
+    "style": "整体风格",
+    "styles": {
+      "classic": {
+        "name": "经典科技",
+        "description": "熟悉的渐变与利落面板"
+      },
+      "workbench": {
+        "name": "极简工作台",
+        "description": "紧凑留白与清晰边界"
+      },
+      "studio": {
+        "name": "柔和工作室",
+        "description": "柔和层次与舒展空间"
+      }
+    },
+    "advanced": "高级选项",
+    "mode": "显示模式",
+    "dark": "深色",
+    "light": "浅色",
+    "accent": "主题色",
+    "blue": "蓝色",
+    "purple": "紫色",
+    "cyan": "青色",
+    "green": "绿色",
+    "rose": "玫瑰",
+    "hint": "自动记住此浏览器的主题偏好。"
+  },
   "nav": {
     "training": "训练管理",
     "datasets": "数据集管理",

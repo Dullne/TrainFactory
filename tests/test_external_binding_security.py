@@ -144,7 +144,7 @@ class _FakeSession:
                 return _FakeResult(rowcount=1)
             return _FakeResult(first=self._gate, rows=[self._gate])
 
-        if "model_registry" in sql:
+        if "from model_registry" in sql or sql.lstrip().startswith("update model_registry "):
             if is_update:
                 return _FakeResult(rowcount=1)
             return _FakeResult(first=self._model, rows=[self._model])
@@ -717,6 +717,11 @@ def test_stop_does_not_release_transient_port_for_non_running_container(
     released_ports = []
     stopped_containers = []
     monkeypatch.setattr(
+        deployment_service_module.docker_deployer,
+        "container_exists_authoritative",
+        lambda _container_name: False,
+    )
+    monkeypatch.setattr(
         deployment_service_module,
         "get_session",
         lambda: session,
@@ -755,8 +760,8 @@ def test_stop_does_not_release_transient_port_for_non_running_container(
     assert deployment.status == "stopped"
     assert released_ports == []
     assert stopped_containers == []
-    # Durable parent fencing adds one claim and one exact-release commit.
-    assert session.commits == (2 if initial_status == "stopped" else 3)
+    # Durable parent fencing plus verified cleanup transitions.
+    assert session.commits == (2 if initial_status == "stopped" else 4)
 
 
 def test_repeat_stop_does_not_release_an_unrelated_transient_port_reservation(
@@ -1252,6 +1257,7 @@ def test_start_shared_failure_terminates_possibly_launched_runtime(monkeypatch):
         config={},
         status="pending",
         model_uid=None,
+        gpu_id=0,
     )
     session = _FakeSession([_FakeResult(first=deployment)])
     terminated = []
@@ -1734,35 +1740,31 @@ def test_regular_discovery_without_owned_bindings_does_not_query_endpoint(
     assert result.models == []
 
 
-def _owned_deployments(**kwargs):  # noqa: ARG001
-    return (
-        [
-            {
-                "deployment_id": "deployment-1",
-                "model_uid": "owned-model",
-                "xinference_endpoint": SHARED_ENDPOINT,
-                "inference_framework": "xinference",
-                "status": "running",
-                "user_id": "user-1",
-            }
-        ],
-        1,
-    )
+@pytest.fixture
+def owned_shared_catalog(empty_inference_catalog, monkeypatch):
+    """Keep the real ownership query, including foreign models at both aliases."""
+    from sqlmodel import Session
+    from train_factory.config.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "auth_enabled", True)
+    with Session(empty_inference_catalog) as session:
+        for endpoint in (SHARED_ENDPOINT, "https://gateway.example.com/inference"):
+            for user_id, model_uid in (("user-1", "owned-model"), ("user-2", "foreign-model")):
+                session.add(DeploymentDB(
+                    model_id=f"registry-{user_id}", user_id=user_id, model_uid=model_uid,
+                    xinference_endpoint=endpoint, inference_framework="xinference",
+                    deploy_mode="shared", status="running",
+                ))
+        session.commit()
 
 
-def test_regular_config_validation_filters_shared_model_enumeration(monkeypatch):
+def test_regular_config_validation_filters_shared_model_enumeration(monkeypatch, owned_shared_catalog):
     monkeypatch.setattr(
         model_config_routes,
         "get_settings",
         lambda: SimpleNamespace(auth_enabled=True),
         raising=False,
     )
-    monkeypatch.setattr(
-        model_config_routes.deployment_service,
-        "list_deployments",
-        _owned_deployments,
-    )
-
     async def fake_validate(**kwargs):  # noqa: ARG001
         return {
             "valid": True,
@@ -1794,6 +1796,7 @@ def test_regular_config_validation_filters_shared_model_enumeration(monkeypatch)
 def test_regular_config_validation_rejects_unowned_shared_model(
     monkeypatch,
     provider,
+    owned_shared_catalog,
 ):
     calls = []
     monkeypatch.setattr(
@@ -1802,12 +1805,6 @@ def test_regular_config_validation_rejects_unowned_shared_model(
         lambda: SimpleNamespace(auth_enabled=True),
         raising=False,
     )
-    monkeypatch.setattr(
-        model_config_routes.deployment_service,
-        "list_deployments",
-        _owned_deployments,
-    )
-
     async def fake_validate(**kwargs):
         calls.append(kwargs)
         return {"valid": True, "models": ["foreign-model"]}
@@ -1836,6 +1833,7 @@ def test_regular_config_validation_rejects_unowned_shared_model(
 
 def test_custom_provider_alias_cannot_bypass_owned_shared_endpoint_scope(
     monkeypatch,
+    owned_shared_catalog,
 ):
     endpoint = "https://gateway.example.com/inference"
     calls = []
@@ -1845,23 +1843,6 @@ def test_custom_provider_alias_cannot_bypass_owned_shared_endpoint_scope(
         lambda: SimpleNamespace(auth_enabled=True),
         raising=False,
     )
-    monkeypatch.setattr(
-        model_config_routes.deployment_service,
-        "list_deployments",
-        lambda **kwargs: (
-            [
-                {
-                    "model_uid": "owned-model",
-                    "xinference_endpoint": endpoint,
-                    "inference_framework": "xinference",
-                    "status": "running",
-                    "user_id": "user-1",
-                }
-            ],
-            1,
-        ),
-    )
-
     async def fake_validate(**kwargs):
         calls.append(kwargs)
         return {"valid": True, "models": ["foreign-model"]}
@@ -1918,17 +1899,12 @@ def test_auth_disabled_config_validation_keeps_full_model_list(monkeypatch):
     assert result.models == ["first", "second"]
 
 
-def test_regular_check_all_filters_shared_model_lists_and_details(monkeypatch):
+def test_regular_check_all_filters_shared_model_lists_and_details(monkeypatch, owned_shared_catalog):
     monkeypatch.setattr(
         model_config_routes,
         "get_settings",
         lambda: SimpleNamespace(auth_enabled=True),
         raising=False,
-    )
-    monkeypatch.setattr(
-        model_config_routes.deployment_service,
-        "list_deployments",
-        _owned_deployments,
     )
     monkeypatch.setattr(
         model_config_routes.model_config_service,

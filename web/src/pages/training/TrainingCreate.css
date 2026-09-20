@@ -1,0 +1,352 @@
+.training-create {
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+/* This long form scrolls with the page. The layout's unbounded overflow:auto
+   would otherwise trap sticky actions in a scroll container that never scrolls. */
+.main-layout-content:has(.training-create) {
+  overflow: visible !important;
+}
+
+.training-create-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: calc(var(--tf-section-gap) + 8px);
+}
+
+.training-create-header h1.ant-typography {
+  margin: 0 0 6px;
+  font-size: var(--tf-heading-size);
+  line-height: 1.4;
+}
+
+.training-create-header .ant-typography-secondary {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.training-create-back {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.training-create-section-actions {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.training-create-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: var(--tf-section-gap);
+  min-width: 0;
+}
+
+.training-create-columns > [data-training-section='training'],
+.training-create-columns > [data-training-section='model'] {
+  grid-column: 1 / -1;
+}
+
+.training-create-section.ant-card {
+  border-color: var(--tf-border-secondary);
+  box-shadow: var(--tf-panel-shadow);
+}
+
+.training-create-section > .ant-card-head {
+  min-height: var(--tf-section-header-height);
+  padding: 0 var(--tf-card-padding);
+  background: var(--tf-card-header-bg);
+  border-bottom-color: var(--tf-border-secondary);
+  border-left: 3px solid var(--tf-section-accent, var(--tf-primary));
+}
+
+.training-create-section h2 {
+  margin: 0;
+  color: var(--tf-text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.training-create-section > .ant-card-head .ant-card-head-title {
+  padding: 0;
+  white-space: normal;
+}
+
+.training-create-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: var(--tf-section-header-height);
+  padding: 10px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.training-create-section-toggle:focus-visible {
+  outline: 2px solid var(--tf-primary);
+  outline-offset: -3px;
+  border-radius: 4px;
+}
+
+.training-create-section-title {
+  min-width: 0;
+}
+
+.training-create-section-label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 3px;
+}
+
+.training-create-section-summary {
+  color: var(--tf-text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.training-create-section-arrow {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.training-create-section-hint {
+  margin-left: auto;
+  padding-right: 8px;
+  color: var(--tf-text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.training-create-section.is-collapsed > .ant-card-body {
+  display: none;
+}
+
+.training-create-section.is-collapsed > .ant-card-head {
+  border-bottom: 0;
+  border-radius: inherit;
+}
+
+.training-create-section.is-collapsed .training-create-section-arrow {
+  transform: rotate(-90deg);
+}
+
+.training-create-section > .ant-card-body {
+  padding: var(--tf-card-padding);
+}
+
+.training-create .ant-form-item {
+  margin-bottom: var(--tf-form-gap);
+}
+
+.training-create .ant-form-item-label {
+  padding-bottom: 7px;
+}
+
+.training-create .ant-form-vertical .ant-form-item .ant-form-item-label > label {
+  height: auto;
+  font-size: 13px;
+  white-space: normal;
+}
+
+.training-create .ant-form-item-extra {
+  padding-top: 5px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.training-create-section-content > .ant-form-item:last-child,
+.training-create-section-content > .ant-row:last-child > .ant-col > .ant-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.training-create-model-options .training-create-section-content > .ant-divider:first-child {
+  margin-top: 0;
+}
+
+.training-create .ant-select,
+.training-create .ant-input-number,
+.training-create .ant-input-number-group-wrapper {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.training-create .ant-form-item-control,
+.training-create .ant-form-item-control-input-content,
+.training-create .ant-col {
+  min-width: 0;
+}
+
+.training-create-dataset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 40px;
+  grid-template-areas: 'path path path' 'split samples remove';
+  gap: 14px 12px;
+  margin-bottom: 12px;
+  padding: 16px;
+  border: 1px solid var(--tf-border-secondary);
+  border-radius: var(--tf-radius);
+  background: var(--tf-bg-elevated);
+}
+
+.training-create-dataset-row > div {
+  min-width: 0;
+}
+
+.training-create-dataset-row label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--tf-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.training-create-dataset-path {
+  grid-area: path;
+}
+.training-create-dataset-split {
+  grid-area: split;
+}
+.training-create-dataset-samples {
+  grid-area: samples;
+}
+.training-create-dataset-remove {
+  grid-area: remove;
+  align-self: end;
+}
+
+.training-create-resources {
+  margin-top: 24px;
+}
+
+.training-create-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 16px;
+  margin-top: 24px;
+  padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+  border: 1px solid var(--tf-border-secondary);
+  border-radius: var(--tf-radius);
+  background: var(--tf-bg-container, var(--tf-bg-elevated));
+  box-shadow: 0 -4px 18px rgb(0 0 0 / 8%);
+}
+
+.training-create-draft {
+  flex: 1;
+  min-width: 0;
+  color: var(--tf-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.training-create-draft.is-unsaved {
+  color: var(--tf-status-warning);
+}
+
+.training-create-actions .ant-btn-primary {
+  background: var(--tf-action-gradient, var(--tf-primary));
+}
+
+.training-create input,
+.training-create .ant-select {
+  scroll-margin-block: 100px 155px;
+}
+
+.training-create-actions .ant-btn {
+  min-width: 112px;
+}
+
+@media (max-width: 1199px) {
+  .training-create-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 575px) {
+  .training-create-header {
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .training-create-header h1.ant-typography {
+    font-size: 22px;
+  }
+
+  .training-create-section-actions {
+    margin-left: 0;
+  }
+
+  .training-create-section-hint {
+    display: none;
+  }
+
+  .training-create-section > .ant-card-head {
+    padding: 0 14px;
+  }
+
+  .training-create-section > .ant-card-body {
+    padding: 16px 14px;
+  }
+
+  .training-create-dataset-row {
+    padding: 12px;
+    gap: 12px 8px;
+  }
+
+  .training-create-section-content > .ant-row:last-child > .ant-col:not(:last-child) {
+    margin-bottom: 16px;
+  }
+
+  .training-create .ant-divider-inner-text {
+    white-space: normal;
+    text-align: center;
+  }
+
+  .training-create-actions .ant-space {
+    display: flex;
+    width: 100%;
+  }
+
+  .training-create-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  }
+
+  .training-create-draft .ant-btn {
+    min-width: 0;
+    width: auto;
+    min-height: 0;
+    padding-inline: 6px;
+    font-size: 12px;
+  }
+
+  .training-create-actions .ant-space-item {
+    flex: 1;
+  }
+
+  .training-create-actions .ant-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+}

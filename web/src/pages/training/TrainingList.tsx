@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Table,
+  Alert,
   Button,
   Space,
   Tag,
@@ -14,6 +14,7 @@ import {
   Tooltip,
   Row,
   Col,
+  Grid,
 } from 'antd'
 import {
   PlusOutlined,
@@ -28,7 +29,9 @@ import {
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { trainingApi } from '@/services/api'
-import { useList, usePolling } from '@/hooks'
+import { usePolling } from '@/hooks'
+import { useWorkspaceList } from '@/hooks/useListWorkspace'
+import { MobileList, renderListCell } from '@/components/ListWorkspace'
 import { formatDate, getStatusDescription, isActiveStatus } from '@/utils'
 import { StatusTag } from '@/components/StatusTag'
 import { StatCard } from '@/components/StatCard'
@@ -64,36 +67,41 @@ const MODEL_TYPE_KEYS: Record<string, string> = {
   llm: 'common:modelType.llm',
 }
 
+const LIST_FILTERS = {
+  status: [
+    'pending',
+    'preparing',
+    'running',
+    'evaluating',
+    'succeeded',
+    'failed',
+    'stopped',
+    'cancelled',
+  ],
+}
+
 export default function TrainingList() {
   const navigate = useNavigate()
   const { t } = useTranslation(['training', 'common'])
-  const [statusFilter, setStatusFilter] = useState<string>()
-
-  const fetchTasks = useCallback(
-    (params: Parameters<typeof trainingApi.list>[0]) =>
-      trainingApi.list({ ...(params ?? {}), status: statusFilter }),
-    [statusFilter]
-  )
+  const mobile = Grid.useBreakpoint().xs === true
 
   const {
     data: tasks,
     loading,
+    error,
+    hasData,
+    isStale,
     page,
     pageSize,
     total,
     extra,
-    setPage,
-    setPageSize,
-    fetch,
     refresh,
-  } = useList<TrainingTask, { stats?: TaskStats }>(fetchTasks, { defaultPageSize: 10 })
-
-  // Refetch when status filter changes
-  /* eslint-disable react-hooks/exhaustive-deps */
-  useEffect(() => {
-    fetch({ page: 1 })
-  }, [statusFilter])
-  /* eslint-enable react-hooks/exhaustive-deps */
+    workspace,
+  } = useWorkspaceList<TrainingTask, { stats?: TaskStats }>(trainingApi.list, {
+    filters: LIST_FILTERS,
+  })
+  const statusFilter = workspace.values.status
+  const setStatusFilter = (value: string | undefined) => workspace.setFilter('status', value)
 
   // Auto refresh when there are running tasks
   const hasRunningTasks = tasks.some((t) => isActiveStatus(t.status))
@@ -140,8 +148,7 @@ export default function TrainingList() {
       )
       refresh()
     } catch (err: unknown) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      message.error(detail || t('list.message.resumeFailed'))
+      message.error(err instanceof Error ? err.message : t('list.message.resumeFailed'))
     }
   }
 
@@ -290,6 +297,7 @@ export default function TrainingList() {
               type="text"
               size="small"
               icon={<EyeOutlined />}
+              aria-label={t('common:action.detail')}
               onClick={() => navigate(`/training/${record.task_id}`)}
             />
           </Tooltip>
@@ -299,7 +307,13 @@ export default function TrainingList() {
                 title={t('list.actions.confirmStop')}
                 onConfirm={() => handleStop(record.task_id)}
               >
-                <Button type="text" size="small" danger icon={<StopOutlined />} />
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<StopOutlined />}
+                  aria-label={t('common:action.stop')}
+                />
               </Popconfirm>
             </Tooltip>
           )}
@@ -309,7 +323,12 @@ export default function TrainingList() {
                 title={t('list.actions.confirmResume')}
                 onConfirm={() => handleResume(record.task_id)}
               >
-                <Button type="text" size="small" icon={<PlayCircleOutlined />} />
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<PlayCircleOutlined />}
+                  aria-label={t('list.actions.resumeFromCheckpoint')}
+                />
               </Popconfirm>
             </Tooltip>
           )}
@@ -319,7 +338,13 @@ export default function TrainingList() {
                 title={t('list.actions.confirmDelete')}
                 onConfirm={() => handleDelete(record.task_id)}
               >
-                <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  aria-label={t('common:action.delete')}
+                />
               </Popconfirm>
             </Tooltip>
           )}
@@ -403,24 +428,87 @@ export default function TrainingList() {
       </div>
 
       {/* Table */}
-      <Table
-        rowKey="task_id"
-        columns={columns}
-        dataSource={tasks}
-        loading={loading}
-        scroll={{ x: 1000 }}
-        pagination={{
-          current: page,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (total) => t('common:pagination.total', { total }),
-          onChange: (p, ps) => {
-            setPage(p)
-            setPageSize(ps)
-          },
-        }}
-      />
+      {(error || isStale) && (
+        <Alert
+          showIcon
+          type={error ? 'warning' : 'info'}
+          style={{ marginBottom: 16 }}
+          message={t(
+            error
+              ? hasData
+                ? 'common:listState.refreshFailed'
+                : 'common:listState.loadFailed'
+              : 'common:listState.showingPrevious'
+          )}
+        />
+      )}
+      {mobile ? (
+        <MobileList
+          loading={loading}
+          empty={tasks.length === 0}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            showTotal: (count) => t('common:pagination.total', { total: count }),
+            onChange: workspace.setPagination,
+          }}
+        >
+          {tasks.map((task) => (
+            <article
+              key={task.task_id}
+              className="list-workspace-card"
+              aria-label={task.task_name || task.task_id}
+            >
+              <div className="list-workspace-card-header">
+                {renderListCell(columns, 'task_name', task)}
+                <StatusTag status={task.status} />
+              </div>
+              {renderListCell(columns, 'progress', task)}
+              <dl className="list-workspace-fields">
+                <div className="list-workspace-field list-workspace-field-wide">
+                  <dt>{t('list.columns.baseModel')}</dt>
+                  <dd>{renderListCell(columns, 'base_model_path', task)}</dd>
+                </div>
+                <div className="list-workspace-field">
+                  <dt>{t('list.columns.type')}</dt>
+                  <dd>{renderListCell(columns, 'type_method', task)}</dd>
+                </div>
+                <div className="list-workspace-field">
+                  <dt>{t('list.columns.loss')}</dt>
+                  <dd>{renderListCell(columns, 'loss', task)}</dd>
+                </div>
+                <div className="list-workspace-field list-workspace-field-wide">
+                  <dt>{t('list.columns.createdAt')}</dt>
+                  <dd>{formatDate(task.created_at)}</dd>
+                </div>
+              </dl>
+              <div className="list-workspace-actions">
+                {renderListCell(columns, 'actions', task)}
+              </div>
+            </article>
+          ))}
+        </MobileList>
+      ) : (
+        <Table
+          rowKey="task_id"
+          columns={columns}
+          dataSource={tasks}
+          loading={loading}
+          scroll={{ x: 1000 }}
+          pagination={{
+            current: page,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            showTotal: (total) => t('common:pagination.total', { total }),
+            onChange: (p, ps) => {
+              workspace.setPagination(p, ps)
+            },
+          }}
+        />
+      )}
     </div>
   )
 }

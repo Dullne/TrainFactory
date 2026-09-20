@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { Card, Empty, Spin } from 'antd'
+import { Button, Card, Empty, Spin, Typography, theme } from 'antd'
 import { useTranslation } from 'react-i18next'
 import type { LineSeriesOption } from 'echarts/charts'
 import type {
@@ -9,6 +9,8 @@ import type {
   TooltipComponentOption,
 } from 'echarts/components'
 import type { TrainingMetricsResponse } from '@/services/api'
+import { getPalette } from '@/theme/appearance'
+import { useAppearance } from '@/theme/ThemeProvider'
 import { init, type ComposeOption, type EChartsType } from './echarts'
 import {
   createLossChartModel,
@@ -20,6 +22,9 @@ interface LossCurveProps {
   metrics: TrainingMetricsResponse | null
   loading?: boolean
   height?: number
+  taskStatus?: string
+  failed?: boolean
+  onRetry?: () => void
 }
 
 type LossChartOption = ComposeOption<
@@ -30,8 +35,20 @@ type LossChartOption = ComposeOption<
   | TooltipComponentOption
 >
 
-export function LossCurve({ metrics, loading = false, height = 300 }: LossCurveProps) {
+export function LossCurve({
+  metrics,
+  loading = false,
+  height = 300,
+  taskStatus,
+  failed = false,
+  onRetry,
+}: LossCurveProps) {
   const { t, i18n } = useTranslation('training')
+  const { t: extra } = useTranslation('trainingDetailExtras')
+  const colors = getPalette(useAppearance())
+  const {
+    token: { colorText, colorTextSecondary, colorBorder, colorBorderSecondary, colorBgElevated },
+  } = theme.useToken()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartInstanceRef = useRef<EChartsType | null>(null)
   const chartData = useMemo(
@@ -40,13 +57,17 @@ export function LossCurve({ metrics, loading = false, height = 300 }: LossCurveP
   )
   const chartModel = useMemo(
     () =>
-      createLossChartModel(chartData, {
-        stepAxis: t('detail.lossCurve.axis.step'),
-        trainSeries: t('detail.lossCurve.series.train'),
-        evalSeries: t('detail.lossCurve.series.eval'),
-        tooltipStep: t('detail.lossCurve.tooltip.step'),
-      }),
-    [chartData, t]
+      createLossChartModel(
+        chartData,
+        {
+          stepAxis: t('detail.lossCurve.axis.step'),
+          trainSeries: t('detail.lossCurve.series.train'),
+          evalSeries: t('detail.lossCurve.series.eval'),
+          tooltipStep: t('detail.lossCurve.tooltip.step'),
+        },
+        { train: colors.statusInfo, eval: colors.statusSuccess }
+      ),
+    [chartData, colors.statusInfo, colors.statusSuccess, t]
   )
   const hasLossData = chartData.some((row) => row.train !== null || row.eval !== null)
   const hasRenderableChart = !loading && hasLossData && chartModel.renderable
@@ -86,34 +107,54 @@ export function LossCurve({ metrics, loading = false, height = 300 }: LossCurveP
 
     const ariaDescription = t('detail.lossCurve.ariaDescription')
     const option: LossChartOption = {
+      textStyle: { color: colorTextSecondary },
       aria: {
         enabled: true,
         description: ariaDescription,
       },
       tooltip: {
         trigger: 'axis',
-        axisPointer: { type: 'cross' },
+        backgroundColor: colorBgElevated,
+        borderColor: colorBorder,
+        textStyle: { color: colorText },
+        axisPointer: {
+          type: 'cross',
+          lineStyle: { color: colorTextSecondary },
+          crossStyle: { color: colorTextSecondary },
+          label: {
+            backgroundColor: colorBgElevated,
+            borderColor: colorBorder,
+            color: colorText,
+          },
+        },
         formatter: chartModel.formatTooltip,
       },
       legend: {
         data: chartModel.legend,
         top: 4,
         right: 0,
+        textStyle: { color: colorTextSecondary },
       },
       grid: {
         left: '3%',
         right: '4%',
-        bottom: '3%',
+        // containLabel reserves tick labels, but not the axis title below them.
+        bottom: 32,
         top: 36,
         containLabel: true,
       },
       xAxis: {
         type: 'value',
         name: chartModel.xAxis.name,
-        nameLocation: 'end',
+        nameLocation: 'middle',
+        nameGap: 30,
+        nameTextStyle: { color: colorTextSecondary },
         minInterval: 1,
+        axisLine: { lineStyle: { color: colorBorder } },
+        axisTick: { lineStyle: { color: colorBorder } },
         splitLine: { show: false },
         axisLabel: {
+          color: colorTextSecondary,
           formatter: chartModel.xAxis.formatLabel,
         },
       },
@@ -122,7 +163,11 @@ export function LossCurve({ metrics, loading = false, height = 300 }: LossCurveP
         ...(chartModel.yAxis.min === undefined ? {} : { min: chartModel.yAxis.min }),
         ...(chartModel.yAxis.max === undefined ? {} : { max: chartModel.yAxis.max }),
         ...(chartModel.yAxis.interval === undefined ? {} : { interval: chartModel.yAxis.interval }),
+        axisLine: { lineStyle: { color: colorBorder } },
+        axisTick: { lineStyle: { color: colorBorder } },
+        splitLine: { lineStyle: { color: colorBorderSecondary } },
         axisLabel: {
+          color: colorTextSecondary,
           formatter: chartModel.yAxis.formatLabel,
         },
       },
@@ -132,7 +177,18 @@ export function LossCurve({ metrics, loading = false, height = 300 }: LossCurveP
     if (chartInstanceRef.current === chart && !chart.isDisposed()) {
       chart.setOption(option, true)
     }
-  }, [chartData, chartModel, hasRenderableChart, i18n.resolvedLanguage, t])
+  }, [
+    chartData,
+    chartModel,
+    colorBgElevated,
+    colorBorder,
+    colorBorderSecondary,
+    colorText,
+    colorTextSecondary,
+    hasRenderableChart,
+    i18n.resolvedLanguage,
+    t,
+  ])
 
   const title = t('detail.lossCurve.title')
 
@@ -157,12 +213,39 @@ export function LossCurve({ metrics, loading = false, height = 300 }: LossCurveP
   }
 
   if (!hasLossData) {
+    const reason = failed
+      ? 'unavailable'
+      : taskStatus === 'pending' || taskStatus === 'preparing'
+        ? 'pending'
+        : taskStatus === 'running' || taskStatus === 'evaluating'
+          ? 'active'
+          : taskStatus === 'failed'
+            ? 'failed'
+            : taskStatus
+              ? 'finished'
+              : null
     return (
       <Card title={title} size="small">
         <Empty
-          description={t('detail.lossCurve.empty')}
-          style={{ height, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}
-        />
+          description={
+            <>
+              {!failed && <div>{t('detail.lossCurve.empty')}</div>}
+              {reason && (
+                <Typography.Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+                  {extra(`loss.${reason}`)}
+                </Typography.Paragraph>
+              )}
+            </>
+          }
+          style={{
+            minHeight: height,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+          }}
+        >
+          {failed && onRetry && <Button onClick={onRetry}>{extra('loss.retry')}</Button>}
+        </Empty>
       </Card>
     )
   }

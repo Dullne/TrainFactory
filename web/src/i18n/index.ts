@@ -12,6 +12,8 @@ import zhEvaluations from './locales/zh/evaluations.json'
 import zhVectordb from './locales/zh/vectordb.json'
 import zhResources from './locales/zh/resources.json'
 import zhSync from './locales/zh/sync.json'
+import zhListWorkspace from './locales/zh/listWorkspace.json'
+import zhTrainingDetailExtras from './locales/zh/trainingDetailExtras.json'
 
 import enCommon from './locales/en/common.json'
 import enTraining from './locales/en/training.json'
@@ -24,6 +26,8 @@ import enEvaluations from './locales/en/evaluations.json'
 import enVectordb from './locales/en/vectordb.json'
 import enResources from './locales/en/resources.json'
 import enSync from './locales/en/sync.json'
+import enListWorkspace from './locales/en/listWorkspace.json'
+import enTrainingDetailExtras from './locales/en/trainingDetailExtras.json'
 
 const LANGUAGE_KEY = 'tf_language'
 
@@ -68,6 +72,8 @@ i18n.use(initReactI18next).init({
       vectordb: zhVectordb,
       resources: zhResources,
       sync: zhSync,
+      listWorkspace: zhListWorkspace,
+      trainingDetailExtras: zhTrainingDetailExtras,
     },
     en: {
       common: enCommon,
@@ -81,15 +87,27 @@ i18n.use(initReactI18next).init({
       vectordb: enVectordb,
       resources: enResources,
       sync: enSync,
+      listWorkspace: enListWorkspace,
+      trainingDetailExtras: enTrainingDetailExtras,
     },
   },
   lng: getStoredLanguage(),
   fallbackLng: 'zh',
   defaultNS: 'common',
   ns: [
-    'common', 'training', 'datasets', 'generation',
-    'models', 'configs', 'deployments', 'evaluations',
-    'vectordb', 'resources', 'sync',
+    'common',
+    'training',
+    'datasets',
+    'generation',
+    'models',
+    'configs',
+    'deployments',
+    'evaluations',
+    'vectordb',
+    'resources',
+    'sync',
+    'listWorkspace',
+    'trainingDetailExtras',
   ],
   interpolation: {
     escapeValue: false,
