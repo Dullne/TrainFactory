@@ -32,6 +32,22 @@ def _completed(stdout, *, returncode=0, stderr=""):
     )
 
 
+@pytest.mark.parametrize("exit_code", [0, 7, 125])
+def test_process_tree_preserves_child_exit_code(exit_code):
+    module = _module()
+    completed = module._run_process_tree(
+        [sys.executable, "-I", "-c", f"raise SystemExit({exit_code})"],
+        timeout=10,
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+    )
+    assert completed.returncode == exit_code
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+
+
 def test_host_tools_marker_is_registered():
     project = tomllib.loads((ROOT_DIR / "pyproject.toml").read_text(encoding="utf-8"))
 

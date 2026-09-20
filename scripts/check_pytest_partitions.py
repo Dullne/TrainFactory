@@ -62,6 +62,7 @@ import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
 from collections.abc import Callable, Sequence  # noqa: E402
+from typing import NoReturn  # noqa: E402
 
 
 ROOT_DIR = Path(_root_entry)
@@ -172,16 +173,22 @@ class _WindowsJob:
             self._handle = None
 
 
-def _run_owned_windows_job(arguments: Sequence[str]) -> int:
+def _run_owned_windows_job(arguments: Sequence[str]) -> NoReturn:
     job = _WindowsJob()
+    exit_code = 125
     try:
         job.assign_current_process()
         child = subprocess.Popen(arguments)
-        return child.wait()
+        exit_code = child.wait()
     except (OSError, subprocess.SubprocessError):
-        return 125
+        exit_code = 125
     finally:
-        job.close()
+        # Closing our kill-on-close job while we are still a member kills this
+        # launcher with status zero before it can return the child's status.
+        # Process exit closes the handle and reaps descendants after preserving
+        # the intended status. Normalize Windows DWORD codes for os._exit's int.
+        signed_code = ((exit_code + 2**31) % 2**32) - 2**31
+        os._exit(signed_code)
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> bool:

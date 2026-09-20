@@ -903,10 +903,7 @@ def verify_deployment(
             or (rollback_mode is not None and not shared_revision_expectation)
         ):
             raise VerificationError("deployment verification failed")
-        if (
-            expected_alembic != "053_validate_lifecycle_schema"
-            or _repository_head(root) != expected_alembic
-        ):
+        if _repository_head(root) != expected_alembic:
             raise VerificationError("deployment verification failed")
         from scripts import compose_manifest as manifest_module
         from scripts.compose_release import _clean_environment, _run_private

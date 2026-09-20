@@ -46,8 +46,11 @@ def _manifest(selection: Path, *, gpu_mode="raw"):
     }
 
 
+@pytest.mark.parametrize("schema_head", [
+    "053_validate_lifecycle_schema", "058_add_model_artifact_membership_gate",
+])
 def test_verifier_full_scope_checks_identity_health_restart_proxy_schema_and_gpu(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, schema_head
 ):
     from scripts import compose_manifest
     from scripts import verify_deployment
@@ -72,7 +75,7 @@ def test_verifier_full_scope_checks_identity_health_restart_proxy_schema_and_gpu
     monkeypatch.setattr(
         verify_deployment,
         "_repository_head",
-        lambda _root: "053_validate_lifecycle_schema",
+        lambda _root: schema_head,
     )
     monkeypatch.setattr(
         verify_deployment,
@@ -119,7 +122,7 @@ def test_verifier_full_scope_checks_identity_health_restart_proxy_schema_and_gpu
         if args[:2] == ["docker", "exec"]:
             if "SELECT version_num FROM alembic_version" in " ".join(args):
                 return subprocess.CompletedProcess(
-                    args, 0, '["053_validate_lifecycle_schema"]\n', ""
+                    args, 0, json.dumps([schema_head]) + "\n", ""
                 )
             return subprocess.CompletedProcess(
                 args,
@@ -168,7 +171,7 @@ def test_verifier_full_scope_checks_identity_health_restart_proxy_schema_and_gpu
         compose_manifest=manifest_path,
         release_env=selection,
         expected_revision=REVISION,
-        expected_alembic="053_validate_lifecycle_schema",
+        expected_alembic=schema_head,
         require_gpu=True,
         scope="full",
         root=tmp_path,
