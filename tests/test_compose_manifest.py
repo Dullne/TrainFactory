@@ -50,6 +50,16 @@ WEB_HEALTHCHECK = {
 }
 
 
+def _example_inference_volumes():
+    """Keep the frozen fixture aligned with the example used by Compose."""
+    names = {"XINFERENCE_PATCH_VOLUME", "XINFERENCE_CONTRACT_VOLUME", "SGLANG_TEMPLATE_VOLUME"}
+    return "".join(
+        line + "\n"
+        for line in EXAMPLE_ENV.read_text(encoding="utf-8").splitlines()
+        if line.partition("=")[0] in names
+    )
+
+
 def test_manifest_name_accepts_only_exact_web_promotion_prepared_name():
     from scripts import compose_manifest
 
@@ -534,7 +544,8 @@ def test_release_policy_accepts_custom_ports_and_rejects_duplicate_endpoint(tmp_
     web["ports"][0].update({"host_ip": "::1", "published": "3100"})
     base = tmp_path / "production.env"
     base.write_text(
-        "HOST_BIND_ADDRESS=::1\n"
+        _example_inference_volumes()
+        + "HOST_BIND_ADDRESS=::1\n"
         "PUBLIC_BASE_URL=http://[::1]:3100\n"
         "API_PORT=19000\n"
         "WEB_PORT=3100\n",
@@ -548,7 +559,8 @@ def test_release_policy_accepts_custom_ports_and_rejects_duplicate_endpoint(tmp_
     compose_release._validate_resolved_config(manifest, compose, root=ROOT_DIR)
 
     base.write_text(
-        "HOST_BIND_ADDRESS=::1\n"
+        _example_inference_volumes()
+        + "HOST_BIND_ADDRESS=::1\n"
         "PUBLIC_BASE_URL=http://[::1]:3100\n"
         "API_PORT=19000\n"
         "WEB_PORT=19000\n",
@@ -2326,7 +2338,8 @@ def test_capture_rollback_uses_exact_labels_and_records_immutable_images(
     root, _secret_env, release_env = _fake_manifest_root(tmp_path)
     project = "trainfactory"
     (root / ".env").write_text(
-        "COMPOSE_PROJECT_NAME=trainfactory\n"
+        _example_inference_volumes()
+        + "COMPOSE_PROJECT_NAME=trainfactory\n"
         "MYSQL_APP_USER=trainfactory_app\n"
         "DEFAULT_ADMIN_USERNAME=admin\n"
         "DEBUG=false\n",

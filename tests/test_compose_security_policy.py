@@ -2164,7 +2164,8 @@ def test_ci_workflow_has_exact_jobs_pinned_actions_and_tool_versions():
     )[0]
     lock_check = "python -I scripts/check_dependency_locks.py"
     locked_install = (
-        "uv pip install --system --require-hashes -r requirements/test-cpu.lock"
+        "uv pip install --system --require-hashes --torch-backend cpu "
+        "-r requirements/test-cpu.lock"
     )
     compose_validation = "python -I scripts/validate_compose_config.py"
     assert lock_check in lock_job
