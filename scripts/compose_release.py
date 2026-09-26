@@ -152,8 +152,8 @@ _SERVICE_KEYS = {
         "restart secrets volumes".split()
     ),
     "train-factory-api": frozenset(
-        "command container_name depends_on deploy entrypoint environment image "
-        "networks pid ports restart secrets shm_size volumes".split()
+        "command container_name depends_on deploy entrypoint environment healthcheck "
+        "image networks pid ports restart secrets shm_size volumes".split()
     ),
     "train-factory-web": frozenset(
         "command container_name depends_on entrypoint environment healthcheck image "
@@ -282,6 +282,7 @@ XINFERENCE_PATCH_VOLUME=/workspace/train-factory/docker/xinference-patches:/opt/
 )
 _HEALTHCHECK_HASHES = {
     "mysql": "3a8e6220e9e064cbbb5d4798114c8c4b6dae601c9a1fb646d4d00682df279c81",
+    "train-factory-api": "0320fcefa064dc1ae638c7b35ca951daa18b1533ff663cee8c65d6f0824bec67",
     "train-factory-web": "82a1c0ce480c669c97dc5e1c777ce54628a59aff0104781ebee952b83de49490",
 }
 
@@ -881,7 +882,7 @@ def _validate_resolved_config(
             },
             "train-factory-web": {
                 "train-factory-api": {
-                    "condition": "service_started",
+                    "condition": "service_healthy",
                     "required": True,
                 }
             },

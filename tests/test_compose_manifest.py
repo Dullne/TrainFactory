@@ -33,6 +33,20 @@ MYSQL_HEALTHCHECK = {
     "retries": 10,
     "start_period": "30s",
 }
+API_HEALTHCHECK = {
+    "test": [
+        "CMD",
+        "python",
+        "-c",
+        "import os, urllib.request; urllib.request.urlopen( "
+        'f"http://127.0.0.1:{os.environ.get(\'API_PORT\', \'18000\')}/health", '
+        "timeout=5 )",
+    ],
+    "timeout": "10s",
+    "interval": "30s",
+    "retries": 3,
+    "start_period": "30s",
+}
 WEB_HEALTHCHECK = {
     "test": [
         "CMD",
@@ -533,42 +547,39 @@ def test_release_policy_rejects_file_secret_direct_value_drift():
 def test_release_policy_accepts_custom_ports_and_rejects_duplicate_endpoint(tmp_path):
     from scripts import compose_release
 
-    compose = _render_production()
-    api = compose["services"]["train-factory-api"]
-    web = compose["services"]["train-factory-web"]
-    api["environment"]["HOST_BIND_ADDRESS"] = "::1"
-    api["environment"]["PUBLIC_BASE_URL"] = "http://[::1]:3100"
-    api["environment"]["API_PORT"] = "19000"
-    web["environment"]["API_PORT"] = "19000"
-    api["ports"][0].update({"host_ip": "::1", "target": 19000, "published": "19000"})
-    web["ports"][0].update({"host_ip": "::1", "published": "3100"})
     base = tmp_path / "production.env"
     base.write_text(
         _example_inference_volumes()
-        + "HOST_BIND_ADDRESS=::1\n"
-        "PUBLIC_BASE_URL=http://[::1]:3100\n"
+        + "HOST_BIND_ADDRESS=127.0.0.1\n"
+        "PUBLIC_BASE_URL=http://localhost:3100\n"
         "API_PORT=19000\n"
         "WEB_PORT=3100\n",
         encoding="utf-8",
     )
+    compose = _render_production(base)
+    api = compose["services"]["train-factory-api"]
+    web = compose["services"]["train-factory-web"]
     manifest = {
         **_production_validation_manifest(),
         "env_files": [{"role": "base-environment", "path": os.fspath(base)}],
     }
 
+    assert api["environment"]["API_PORT"] == "19000"
+    assert web["environment"]["API_PORT"] == "19000"
+    assert api["healthcheck"] == API_HEALTHCHECK
     compose_release._validate_resolved_config(manifest, compose, root=ROOT_DIR)
 
     base.write_text(
         _example_inference_volumes()
-        + "HOST_BIND_ADDRESS=::1\n"
-        "PUBLIC_BASE_URL=http://[::1]:3100\n"
+        + "HOST_BIND_ADDRESS=127.0.0.1\n"
+        "PUBLIC_BASE_URL=http://localhost:19000\n"
         "API_PORT=19000\n"
         "WEB_PORT=19000\n",
         encoding="utf-8",
     )
-    web["ports"][0]["published"] = "19000"
+    duplicate = _render_production(base)
     with pytest.raises(compose_release.ReleaseComposeError):
-        compose_release._validate_resolved_config(manifest, compose, root=ROOT_DIR)
+        compose_release._validate_resolved_config(manifest, duplicate, root=ROOT_DIR)
 
 
 @pytest.mark.host_tools
@@ -639,6 +650,49 @@ def test_release_policy_rejects_inference_payload_volume_drift(variable):
             compose,
             root=ROOT_DIR,
         )
+
+
+@pytest.mark.host_tools
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "disable-api-healthcheck",
+        "malformed-api-healthcheck",
+        "remove-api-healthcheck",
+        "change-api-health-command",
+        "weaken-api-health-retries",
+        "downgrade-web-dependency",
+    ),
+)
+def test_release_policy_accepts_health_contract_and_rejects_tampering(mutation):
+    from scripts import compose_release
+
+    manifest = _production_validation_manifest()
+    compose = _render_production()
+
+    compose_release._validate_resolved_config(manifest, compose, root=ROOT_DIR)
+
+    tampered = copy.deepcopy(compose)
+    api = tampered["services"]["train-factory-api"]
+    web = tampered["services"]["train-factory-web"]
+    if mutation == "disable-api-healthcheck":
+        api["healthcheck"] = {"disable": True}
+    elif mutation == "malformed-api-healthcheck":
+        api["healthcheck"] = {"test": "CMD true"}
+    elif mutation == "remove-api-healthcheck":
+        api.pop("healthcheck")
+    elif mutation == "change-api-health-command":
+        api["healthcheck"]["test"][-1] = (
+            "import urllib.request; "
+            "urllib.request.urlopen('http://127.0.0.1:18000/live')"
+        )
+    elif mutation == "weaken-api-health-retries":
+        api["healthcheck"]["retries"] = 1
+    else:
+        web["depends_on"]["train-factory-api"]["condition"] = "service_started"
+
+    with pytest.raises(compose_release.ReleaseComposeError):
+        compose_release._validate_resolved_config(manifest, tampered, root=ROOT_DIR)
 
 
 @pytest.mark.host_tools
@@ -909,6 +963,7 @@ def _minimal_resolved_verify_config(project=PROJECT, *, root=None, gpu_mode="raw
                     "mysql": {"condition": "service_healthy", "required": True}
                 },
                 "image": "local/api:fixed",
+                "healthcheck": copy.deepcopy(API_HEALTHCHECK),
                 "restart": "no",
                 "networks": {"default": None},
                 "shm_size": "1073741824",
@@ -983,7 +1038,7 @@ def _minimal_resolved_verify_config(project=PROJECT, *, root=None, gpu_mode="raw
                 "entrypoint": None,
                 "depends_on": {
                     "train-factory-api": {
-                        "condition": "service_started",
+                        "condition": "service_healthy",
                         "required": True,
                     }
                 },

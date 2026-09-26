@@ -33,6 +33,10 @@ def _sync_limit_settings(**overrides):
 
 
 def _install_staging_harness(monkeypatch, tmp_path):
+    # Import route aliases before replacing service singletons, then patch both
+    # references so the fake cannot remain cached after this test is restored.
+    from train_factory.api.routes import generation_routes
+
     asset_module = importlib.import_module(
         "train_factory.storage.services.dataset_asset_service"
     )
@@ -276,6 +280,11 @@ def _install_staging_harness(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         generation_module,
+        "generation_task_service",
+        fake_generation_service,
+    )
+    monkeypatch.setattr(
+        generation_routes,
         "generation_task_service",
         fake_generation_service,
     )

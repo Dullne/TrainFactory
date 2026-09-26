@@ -250,6 +250,10 @@ POST /api/sync/tasks/{task_id}/sync-now
 
 手动触发一次同步周期，不等待轮询间隔。
 
+数据源抓取或记录校验失败时返回 `502`，响应为
+`{"detail":"Sync source fetch or validation failed"}`，不会返回同步成功。
+失败不会推进本轮数据游标；已有批次仍可按阈值进入生成流程。成功重试会清除旧的同步错误信息。
+
 ---
 
 ### 手动触发生成

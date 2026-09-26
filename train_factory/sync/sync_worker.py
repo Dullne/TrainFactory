@@ -400,7 +400,9 @@ async def run_once(config: Dict[str, Any]):
         since = previous_cursor - timedelta(seconds=rollback)
     # else: since=None → first sync, fetch all data from the beginning
 
-    external_sync_service.update_task(task_id, status=SyncStatus.SYNCING)
+    external_sync_service.update_task(
+        task_id, status=SyncStatus.SYNCING, error_message=None,
+    )
 
     try:
         items = await client.fetch_all_since(since)
@@ -414,9 +416,10 @@ async def run_once(config: Dict[str, Any]):
         )
         _update_api_config_status(config, "error")
         latest = external_sync_service.get_task_raw(task_id)
-        if latest:
-            return await _check_thresholds(latest)
-        return None
+        result = await _check_thresholds(latest) if latest else None
+        # Existing batches may still produce a generation handoff. Preserve it
+        # while reporting the source failure to a manual caller.
+        return {**(result or {}), "fetch_failed": True}
 
     # The source is considered healthy only after its full page validates.
     _update_api_config_status(config, "active")

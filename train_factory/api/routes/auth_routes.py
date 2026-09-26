@@ -14,6 +14,7 @@ from typing import Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from slowapi import Limiter
+from starlette.concurrency import run_in_threadpool
 
 from ...config import settings
 from ...auth.jwt_handler import decode_token
@@ -167,7 +168,8 @@ async def register(request: Request, response: Response, body: RegisterRequest):
 
     cookie_max_age = _cookie_max_age()
     try:
-        result = user_service.register(
+        result = await run_in_threadpool(
+            user_service.register,
             username=body.username,
             password=body.password,
             email=body.email,
@@ -204,7 +206,8 @@ async def login(request: Request, response: Response, body: LoginRequest):
     """
     cookie_max_age = _cookie_max_age()
     try:
-        result = user_service.authenticate(
+        result = await run_in_threadpool(
+            user_service.authenticate,
             username=body.username,
             password=body.password,
         )
@@ -240,7 +243,7 @@ async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
             created_at=None,
         )
 
-    user = user_service.get_user(current_user["user_id"])
+    user = await run_in_threadpool(user_service.get_user, current_user["user_id"])
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -263,7 +266,7 @@ async def logout(
     """Revoke the account's active tokens and clear the auth cookie."""
     user_id = current_user.get("user_id")
     if user_id not in (None, "anonymous"):
-        user_service.revoke_sessions(user_id)
+        await run_in_threadpool(user_service.revoke_sessions, user_id)
     _clear_auth_cookie(response)
     return {"message": "Logged out successfully"}
 
@@ -281,7 +284,8 @@ async def change_password(
 ):
     """Change current user's password."""
     try:
-        user_service.change_password(
+        await run_in_threadpool(
+            user_service.change_password,
             user_id=current_user["user_id"],
             old_password=body.old_password,
             new_password=body.new_password,
@@ -304,7 +308,11 @@ async def list_users(
     current_user: Dict[str, Any] = Depends(require_admin),
 ):
     """List user accounts for account administrators."""
-    users, total = user_service.list_users(limit=limit, offset=offset)
+    users, total = await run_in_threadpool(
+        user_service.list_users,
+        limit=limit,
+        offset=offset,
+    )
     return {
         "users": users,
         "total": total,
@@ -324,7 +332,8 @@ async def create_user(
 ):
     """Create a regular or administrator account."""
     try:
-        return user_service.create_user(
+        return await run_in_threadpool(
+            user_service.create_user,
             username=body.username,
             password=body.password,
             email=body.email,
@@ -345,7 +354,8 @@ async def update_account_flags(
 ):
     """Update an account's active or administrator flags."""
     try:
-        return user_service.set_account_flags(
+        return await run_in_threadpool(
+            user_service.set_account_flags,
             user_id,
             is_active=body.is_active,
             is_admin=body.is_admin,
@@ -374,7 +384,11 @@ async def reset_user_password(
 ):
     """Reset an account password and revoke its sessions."""
     try:
-        user_service.reset_password(user_id, body.new_password)
+        await run_in_threadpool(
+            user_service.reset_password,
+            user_id,
+            body.new_password,
+        )
     except ValueError as exc:
         if str(exc) == "User not found":
             raise HTTPException(

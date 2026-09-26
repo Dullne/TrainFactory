@@ -13,9 +13,15 @@ import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from anyio import from_thread
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from ..concurrency import (
+    await_cancellation_safe,
+    run_in_threadpool_cancellation_safe,
+)
 from ...auth.dependencies import get_current_user, verify_resource_ownership
 from ...config.settings import get_settings
 from ...enums.sync_status import (
@@ -665,25 +671,32 @@ async def create_sync_task(
     user_id = _resolve_sync_user_id(current_user)
     external_api_url = request.external_api_url or ""
     if external_api_url:
-        external_api_url = validate_user_outbound_url(
+        external_api_url = await run_in_threadpool(
+            validate_user_outbound_url,
             external_api_url,
             user_id,
         )
 
-    _validate_external_api_config_reference(request.external_api_config_id, current_user)
+    await run_in_threadpool(
+        _validate_external_api_config_reference,
+        request.external_api_config_id,
+        current_user,
+    )
     generation_config = await asyncio.to_thread(
         _validate_generation_config,
         request.generation_config,
         current_user,
     )
-    _validate_base_deployment_reference(
+    await run_in_threadpool(
+        _validate_base_deployment_reference,
         request.base_deployment_id,
         current_user,
         request.external_api_config_id,
         request.base_deployment_replica_id,
     )
     for target in request.training_targets:
-        _validate_base_deployment_reference(
+        await run_in_threadpool(
+            _validate_base_deployment_reference,
             target.base_deployment_id,
             current_user,
             request.external_api_config_id,
@@ -691,7 +704,8 @@ async def create_sync_task(
         )
 
     try:
-        config = external_sync_service.create_task(
+        config = await run_in_threadpool(
+            external_sync_service.create_task,
             task_name=request.task_name,
             user_id=user_id,
             external_api_config_id=request.external_api_config_id,
@@ -730,7 +744,8 @@ async def list_sync_tasks(
     from ...storage.services.external_sync_service import external_sync_service
 
     user_id = _resolve_sync_user_id(current_user, for_query=True)
-    configs, total = external_sync_service.list_tasks(
+    configs, total = await run_in_threadpool(
+        external_sync_service.list_tasks,
         user_id=user_id,
         external_api_config_id=external_api_config_id,
         limit=limit,
@@ -747,9 +762,9 @@ async def get_sync_task(
     """Get sync task details."""
     from ...storage.services.external_sync_service import external_sync_service
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
-    targets = _get_task_training_targets(task_id, config)
+    targets = await run_in_threadpool(_get_task_training_targets, task_id, config)
     config["training_targets"] = targets
     return {"task": config}
 
@@ -763,7 +778,7 @@ async def update_sync_task(
     """Update a sync task."""
     from ...storage.services.external_sync_service import external_sync_service
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
@@ -785,7 +800,8 @@ async def update_sync_task(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     if update_fields.get("external_api_url"):
-        update_fields["external_api_url"] = validate_user_outbound_url(
+        update_fields["external_api_url"] = await run_in_threadpool(
+            validate_user_outbound_url,
             update_fields["external_api_url"],
             _resolve_sync_user_id(current_user),
         )
@@ -799,81 +815,102 @@ async def update_sync_task(
     from ...sync.sync_manager import sync_manager
 
     source_identity_keys = {"external_api_config_id", "external_api_url"}
-    source_identity_changed = False
-    worker_stopped = False
-    updated = None
-    resume_worker = bool(config.get("is_active"))
-    try:
-        async with sync_manager.task_operation_lock(task_id):
-            latest = external_sync_service.get_task(task_id)
-            latest = verify_resource_ownership(latest, current_user, "Sync task")
-            _require_sync_task_mutable(latest)
-            resume_worker = bool(latest.get("is_active"))
-            source_identity_changed = any(
-                key in update_fields
-                and (update_fields.get(key) or "") != (latest.get(key) or "")
-                for key in source_identity_keys
-            )
-            if source_identity_changed:
-                await sync_manager.stop_worker(task_id)
-                worker_stopped = True
+    async def update_and_reconcile_worker():
+        source_identity_changed = False
+        worker_stopped = False
+        updated = None
+        resume_worker = bool(config.get("is_active"))
+        try:
+            async with sync_manager.task_operation_lock(task_id):
+                latest = await run_in_threadpool(
+                    external_sync_service.get_task,
+                    task_id,
+                )
+                latest = verify_resource_ownership(
+                    latest,
+                    current_user,
+                    "Sync task",
+                )
+                _require_sync_task_mutable(latest)
+                resume_worker = bool(latest.get("is_active"))
+                source_identity_changed = any(
+                    key in update_fields
+                    and (update_fields.get(key) or "")
+                    != (latest.get(key) or "")
+                    for key in source_identity_keys
+                )
+                if source_identity_changed:
+                    await sync_manager.stop_worker(task_id)
+                    worker_stopped = True
 
-            _validate_external_api_config_reference(
-                update_fields.get("external_api_config_id"),
-                current_user,
-            )
-            target_api_config = update_fields.get(
-                "external_api_config_id",
-                latest.get("external_api_config_id"),
-            )
-            _validate_base_deployment_reference(
-                update_fields.get(
-                    "base_deployment_id",
-                    latest.get("base_deployment_id"),
-                ),
-                current_user,
-                target_api_config,
-                update_fields.get(
-                    "base_deployment_replica_id",
-                    latest.get("base_deployment_replica_id"),
-                ),
-            )
-            updated = external_sync_service.update_task(
-                task_id,
-                expected_user_id=latest.get("user_id"),
-                **update_fields,
-            )
-            if updated is None:
-                raise HTTPException(status_code=404, detail="Sync task not found")
-    except ValueError as exc:
-        if worker_stopped and resume_worker and sync_manager.running:
-            sync_manager.start_worker(task_id)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except Exception:
-        if worker_stopped and resume_worker and sync_manager.running:
-            sync_manager.start_worker(task_id)
-        raise
-
-    if source_identity_changed and updated.get("is_active") and sync_manager.running:
-        sync_manager.start_worker(task_id)
-
-    # If sync_interval changed or is_active toggled, restart worker
-    if sync_manager.running and not source_identity_changed:
-        if "is_active" in update_fields:
-            if update_fields["is_active"]:
+                await run_in_threadpool(
+                    _validate_external_api_config_reference,
+                    update_fields.get("external_api_config_id"),
+                    current_user,
+                )
+                target_api_config = update_fields.get(
+                    "external_api_config_id",
+                    latest.get("external_api_config_id"),
+                )
+                await run_in_threadpool(
+                    _validate_base_deployment_reference,
+                    update_fields.get(
+                        "base_deployment_id",
+                        latest.get("base_deployment_id"),
+                    ),
+                    current_user,
+                    target_api_config,
+                    update_fields.get(
+                        "base_deployment_replica_id",
+                        latest.get("base_deployment_replica_id"),
+                    ),
+                )
+                updated = await run_in_threadpool(
+                    external_sync_service.update_task,
+                    task_id,
+                    expected_user_id=latest.get("user_id"),
+                    **update_fields,
+                )
+                if updated is None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail="Sync task not found",
+                    )
+        except ValueError as exc:
+            if worker_stopped and resume_worker and sync_manager.running:
                 sync_manager.start_worker(task_id)
-            else:
-                await sync_manager.stop_worker(task_id)
-        elif any(
-            key in update_fields
-            for key in (
-                "sync_interval_seconds",
-                "external_api_config_id",
-                "external_api_url",
-                "external_auth_config",
-            )
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception:
+            if worker_stopped and resume_worker and sync_manager.running:
+                sync_manager.start_worker(task_id)
+            raise
+
+        if (
+            source_identity_changed
+            and updated.get("is_active")
+            and sync_manager.running
         ):
-            await sync_manager.restart_worker(task_id)
+            sync_manager.start_worker(task_id)
+
+        if sync_manager.running and not source_identity_changed:
+            if "is_active" in update_fields:
+                if update_fields["is_active"]:
+                    sync_manager.start_worker(task_id)
+                else:
+                    await sync_manager.stop_worker(task_id)
+            elif any(
+                key in update_fields
+                for key in (
+                    "sync_interval_seconds",
+                    "external_api_config_id",
+                    "external_api_url",
+                    "external_auth_config",
+                )
+            ):
+                await sync_manager.restart_worker(task_id)
+        return updated
+
+    updated = await await_cancellation_safe(update_and_reconcile_worker())
 
     return {"message": "Sync task updated", "task": updated}
 
@@ -892,29 +929,49 @@ async def delete_sync_task(
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.sync_manager import sync_manager
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _is_matching_delete_intent(config, cascade=cascade)
 
-    # Cancelling the periodic worker does not stop manual operations. The
-    # per-task operation lock closes that race and waits for any in-flight
-    # manual cycle before deletion snapshots are taken.
-    await sync_manager.stop_worker(task_id)
-    async with sync_manager.task_operation_lock(task_id):
-        latest = external_sync_service.get_task(task_id)
-        latest = verify_resource_ownership(latest, current_user, "Sync task")
-        return _delete_sync_task_locked(
-            task_id,
-            cascade=cascade,
-            config=latest,
-            # The pre-lock snapshot can become stale while another delete
-            # request holds the task operation lock.  Rollback eligibility
-            # must be derived from the state observed inside this lock so an
-            # existing durable intent is never mistaken for one created by
-            # this request.
-            original_config=latest,
-            sync_manager=sync_manager,
-        )
+    async def stop_worker_and_delete():
+        # Cancelling the periodic worker does not stop manual operations. The
+        # per-task operation lock closes that race and waits for any in-flight
+        # manual cycle before deletion snapshots are taken.
+        await sync_manager.stop_worker(task_id)
+        async with sync_manager.task_operation_lock(task_id):
+            try:
+                latest = await run_in_threadpool(
+                    external_sync_service.get_task,
+                    task_id,
+                )
+            except Exception:
+                # Only reschedule the worker: its loop rereads current state
+                # before syncing, so this stale snapshot never revives a task
+                # that another operation has stopped or marked for deletion.
+                if config.get("is_active") and sync_manager.running:
+                    sync_manager.start_worker(task_id)
+                raise
+            latest = verify_resource_ownership(latest, current_user, "Sync task")
+            return await run_in_threadpool_cancellation_safe(
+                _delete_sync_task_locked,
+                task_id,
+                cascade=cascade,
+                config=latest,
+                # The pre-lock snapshot can become stale while another delete
+                # request holds the task operation lock.  Rollback eligibility
+                # must be derived from the state observed inside this lock so an
+                # existing durable intent is never mistaken for one created by
+                # this request.
+                original_config=latest,
+                sync_manager=sync_manager,
+                resume_worker=lambda: from_thread.run_sync(
+                    sync_manager.start_worker, task_id
+                ),
+            )
+
+    # Once the worker is stopped, finish deletion or its recovery before a
+    # caller cancellation can escape, including lock waits and the latest read.
+    return await await_cancellation_safe(stop_worker_and_delete())
 
 
 def _snapshot_sync_deletion_children(
@@ -1046,6 +1103,7 @@ def _delete_sync_task_locked(
     config: Dict[str, Any],
     original_config: Dict[str, Any],
     sync_manager: Any,
+    resume_worker: Optional[Callable[[], None]] = None,
 ) -> Dict[str, Any]:
     """Delete one quiesced sync task while its operation lock is held."""
     from ...storage.services.external_sync_service import external_sync_service
@@ -1053,7 +1111,11 @@ def _delete_sync_task_locked(
     def _resume_worker_after_aborted_cascade() -> None:
         if original_config.get("is_active") and sync_manager.running:
             try:
-                sync_manager.start_worker(task_id)
+                if resume_worker is not None:
+                    # Asyncio workers must be created on the request loop.
+                    resume_worker()
+                else:
+                    sync_manager.start_worker(task_id)
             except Exception:
                 logger.exception(
                     "Could not resume sync worker after cascade delete aborted: %s",
@@ -2400,7 +2462,8 @@ async def resume_pending_sync_deletions() -> tuple[int, int]:
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.sync_manager import sync_manager
 
-    tasks = _snapshot_all_pages(
+    tasks = await run_in_threadpool(
+        _snapshot_all_pages,
         lambda **page: external_sync_service.list_tasks(**page),
         identity_key="task_id",
         resource_name="sync task deletion recovery",
@@ -2416,17 +2479,24 @@ async def resume_pending_sync_deletions() -> tuple[int, int]:
         cascade = status == SyncStatus.DELETING_CASCADE
         try:
             async with sync_manager.task_operation_lock(task_id):
-                latest = external_sync_service.get_task(task_id)
+                latest = await run_in_threadpool(
+                    external_sync_service.get_task,
+                    task_id,
+                )
                 if not latest:
                     continue
                 if not _is_matching_delete_intent(latest, cascade=cascade):
                     continue
-                _delete_sync_task_locked(
+                await run_in_threadpool_cancellation_safe(
+                    _delete_sync_task_locked,
                     task_id,
                     cascade=cascade,
                     config=latest,
                     original_config=latest,
                     sync_manager=sync_manager,
+                    resume_worker=lambda: from_thread.run_sync(
+                        sync_manager.start_worker, task_id
+                    ),
                 )
             resumed += 1
         except Exception:
@@ -2450,22 +2520,29 @@ async def start_sync(
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.sync_manager import sync_manager
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
-    async with sync_manager.task_operation_lock(task_id):
-        latest = external_sync_service.get_task(task_id)
-        latest = verify_resource_ownership(latest, current_user, "Sync task")
-        _require_sync_task_mutable(latest)
-        updated = external_sync_service.update_task(
-            task_id,
-            expected_user_id=latest.get("user_id"),
-            is_active=True,
-        )
-        if updated is None:
-            raise HTTPException(status_code=404, detail="Sync task not found")
-    sync_manager.start_worker(task_id)
+    async def activate_and_start_worker():
+        async with sync_manager.task_operation_lock(task_id):
+            latest = await run_in_threadpool(
+                external_sync_service.get_task,
+                task_id,
+            )
+            latest = verify_resource_ownership(latest, current_user, "Sync task")
+            _require_sync_task_mutable(latest)
+            updated = await run_in_threadpool(
+                external_sync_service.update_task,
+                task_id,
+                expected_user_id=latest.get("user_id"),
+                is_active=True,
+            )
+            if updated is None:
+                raise HTTPException(status_code=404, detail="Sync task not found")
+            sync_manager.start_worker(task_id)
+
+    await await_cancellation_safe(activate_and_start_worker())
 
     return {"message": "Sync started", "worker_status": sync_manager.get_worker_status(task_id)}
 
@@ -2479,23 +2556,30 @@ async def stop_sync(
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.sync_manager import sync_manager
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
-    async with sync_manager.task_operation_lock(task_id):
-        latest = external_sync_service.get_task(task_id)
-        latest = verify_resource_ownership(latest, current_user, "Sync task")
-        _require_sync_task_mutable(latest)
-        updated = external_sync_service.update_task(
-            task_id,
-            expected_user_id=latest.get("user_id"),
-            is_active=False,
-            status=SyncStatus.IDLE,
-        )
-        if updated is None:
-            raise HTTPException(status_code=404, detail="Sync task not found")
-        await sync_manager.stop_worker(task_id)
+    async def deactivate_and_stop_worker():
+        async with sync_manager.task_operation_lock(task_id):
+            latest = await run_in_threadpool(
+                external_sync_service.get_task,
+                task_id,
+            )
+            latest = verify_resource_ownership(latest, current_user, "Sync task")
+            _require_sync_task_mutable(latest)
+            updated = await run_in_threadpool(
+                external_sync_service.update_task,
+                task_id,
+                expected_user_id=latest.get("user_id"),
+                is_active=False,
+                status=SyncStatus.IDLE,
+            )
+            if updated is None:
+                raise HTTPException(status_code=404, detail="Sync task not found")
+            await sync_manager.stop_worker(task_id)
+
+    await await_cancellation_safe(deactivate_and_stop_worker())
 
     return {"message": "Sync stopped", "worker_status": sync_manager.get_worker_status(task_id)}
 
@@ -2509,17 +2593,23 @@ async def sync_now(
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.sync_manager import (
         SyncGenerationReconciliationError,
+        SyncSourceFetchError,
         SyncTaskBusyError,
         sync_manager,
     )
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
     try:
         await sync_manager.run_once(task_id)
         return {"message": "Sync cycle completed"}
+    except SyncSourceFetchError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Sync source fetch or validation failed",
+        ) from exc
     except BackgroundTaskCapacityExceeded as exc:
         raise HTTPException(
             status_code=429,
@@ -2553,7 +2643,7 @@ async def trigger_generation(
         sync_manager,
     )
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
@@ -2592,7 +2682,7 @@ async def trigger_training(
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.sync_manager import SyncTaskBusyError, sync_manager
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
@@ -2619,12 +2709,13 @@ async def retry_adapter_load(
     from ...sync.sync_manager import sync_manager
 
     async with sync_manager.task_operation_lock(task_id):
-        config = external_sync_service.get_task(task_id)
+        config = await run_in_threadpool(external_sync_service.get_task, task_id)
         config = verify_resource_ownership(config, current_user, "Sync task")
         _require_sync_task_mutable(config)
 
-        sync_training = external_sync_service.get_training_by_task_id(
-            training_task_id
+        sync_training = await run_in_threadpool(
+            external_sync_service.get_training_by_task_id,
+            training_task_id,
         )
         if not sync_training:
             raise HTTPException(
@@ -2656,9 +2747,11 @@ async def retry_adapter_load(
             )
 
         try:
-            training_guard = background_task_admission_service.begin_deletion(
+            training_guard = await run_in_threadpool_cancellation_safe(
+                background_task_admission_service.begin_deletion,
                 "training",
                 training_task_id,
+                cancelled_result_cleanup=lambda guard: guard.release(),
             )
         except BackgroundTaskAlreadyExecuting as exc:
             raise HTTPException(
@@ -2669,7 +2762,10 @@ async def retry_adapter_load(
         guard_handed_off = False
         try:
             # Resolve the artifact only after deletion has been excluded.
-            task_info = training_task_service.get_task(training_task_id)
+            task_info = await run_in_threadpool_cancellation_safe(
+                training_task_service.get_task,
+                training_task_id,
+            )
             if not task_info:
                 raise HTTPException(
                     status_code=404,
@@ -2726,11 +2822,11 @@ async def unload_current_adapter(
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.post_training_handler import unload_current_adapter as _unload
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
     if target_id:
-        _get_training_target_for_task(task_id, target_id)
+        await run_in_threadpool(_get_training_target_for_task, task_id, target_id)
 
     try:
         await asyncio.to_thread(_unload, task_id, target_id)
@@ -2755,11 +2851,15 @@ async def list_batches(
     """List sync batches for a task."""
     from ...storage.services.external_sync_service import external_sync_service
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
 
-    batches, total = external_sync_service.list_batches(
-        task_id=task_id, status=status, limit=limit, offset=offset,
+    batches, total = await run_in_threadpool(
+        external_sync_service.list_batches,
+        task_id=task_id,
+        status=status,
+        limit=limit,
+        offset=offset,
     )
     return {"batches": batches, "total": total}
 
@@ -2775,11 +2875,15 @@ async def list_generations(
     """List generation tasks for a task."""
     from ...storage.services.external_sync_service import external_sync_service
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
 
-    generations, total = external_sync_service.list_generations(
-        task_id=task_id, status=status, limit=limit, offset=offset,
+    generations, total = await run_in_threadpool(
+        external_sync_service.list_generations,
+        task_id=task_id,
+        status=status,
+        limit=limit,
+        offset=offset,
     )
     return {"generations": generations, "total": total}
 
@@ -2794,7 +2898,7 @@ async def toggle_generation_disabled(
     """Toggle the disabled flag on a generation record."""
     from ...storage.services.external_sync_service import external_sync_service
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
@@ -2802,7 +2906,10 @@ async def toggle_generation_disabled(
     if disabled is None or not isinstance(disabled, bool):
         raise HTTPException(status_code=400, detail="'disabled' (bool) is required")
 
-    generation = external_sync_service.get_generation_by_task_id(generation_task_id)
+    generation = await run_in_threadpool(
+        external_sync_service.get_generation_by_task_id,
+        generation_task_id,
+    )
     if not generation or generation.get("task_id") != task_id:
         raise HTTPException(status_code=404, detail="Generation record not found")
     if generation.get("user_id") != config.get("user_id"):
@@ -2813,7 +2920,11 @@ async def toggle_generation_disabled(
             detail=f"Generation status is '{generation.get('status')}', only completed records can be toggled",
         )
 
-    result = external_sync_service.toggle_generation_disabled(generation_task_id, disabled)
+    result = await run_in_threadpool(
+        external_sync_service.toggle_generation_disabled,
+        generation_task_id,
+        disabled,
+    )
     if not result:
         raise HTTPException(status_code=404, detail="Generation record not found")
     return result
@@ -2831,11 +2942,14 @@ async def recalculate_counters(
     """
     from ...storage.services.external_sync_service import external_sync_service
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
-    result = external_sync_service.recalculate_sample_counters(task_id)
+    result = await run_in_threadpool(
+        external_sync_service.recalculate_sample_counters,
+        task_id,
+    )
     if not result:
         raise HTTPException(status_code=404, detail="Sync task not found")
     return result
@@ -2852,11 +2966,15 @@ async def list_trainings(
     """List training tasks for a task."""
     from ...storage.services.external_sync_service import external_sync_service
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
 
-    trainings, total = external_sync_service.list_trainings(
-        task_id=task_id, status=status, limit=limit, offset=offset,
+    trainings, total = await run_in_threadpool(
+        external_sync_service.list_trainings,
+        task_id=task_id,
+        status=status,
+        limit=limit,
+        offset=offset,
     )
     return {"trainings": trainings, "total": total}
 
@@ -2870,10 +2988,13 @@ async def get_sync_status(
     from ...storage.services.external_sync_service import external_sync_service
     from ...sync.sync_manager import sync_manager
 
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
 
-    targets = external_sync_service.list_training_targets(task_id)
+    targets = await run_in_threadpool(
+        external_sync_service.list_training_targets,
+        task_id,
+    )
 
     return {
         "task_id": task_id,
@@ -2902,9 +3023,9 @@ async def list_training_targets(
 ):
     """List training targets for a sync task."""
     from ...storage.services.external_sync_service import external_sync_service
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     verify_resource_ownership(config, current_user, "Sync task")
-    targets = _get_task_training_targets(task_id, config)
+    targets = await run_in_threadpool(_get_task_training_targets, task_id, config)
     return {"targets": targets, "total": len(targets)}
 
 
@@ -2916,28 +3037,40 @@ async def create_training_target(
 ):
     """Create a training target for a sync task."""
     from ...storage.services.external_sync_service import external_sync_service
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
     from ...sync.sync_manager import sync_manager
 
-    try:
+    async def create_target_locked():
         async with sync_manager.task_operation_lock(task_id):
-            config = external_sync_service.get_task(task_id)
-            config = verify_resource_ownership(config, current_user, "Sync task")
-            _require_sync_task_mutable(config)
-            _validate_base_deployment_reference(
+            locked_config = await run_in_threadpool(
+                external_sync_service.get_task,
+                task_id,
+            )
+            locked_config = verify_resource_ownership(
+                locked_config,
+                current_user,
+                "Sync task",
+            )
+            _require_sync_task_mutable(locked_config)
+            await run_in_threadpool(
+                _validate_base_deployment_reference,
                 request.base_deployment_id,
                 current_user,
-                config.get("external_api_config_id"),
+                locked_config.get("external_api_config_id"),
                 request.base_deployment_replica_id,
             )
-            target = external_sync_service.create_training_target(
+            return await run_in_threadpool(
+                external_sync_service.create_training_target,
                 task_id=task_id,
-                expected_user_id=config.get("user_id"),
+                expected_user_id=locked_config.get("user_id"),
                 **request.model_dump(),
             )
+
+    try:
+        target = await await_cancellation_safe(create_target_locked())
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"message": "Training target created", "target": target}
@@ -2952,7 +3085,7 @@ async def update_training_target(
 ):
     """Update a training target."""
     from ...storage.services.external_sync_service import external_sync_service
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
@@ -2971,32 +3104,51 @@ async def update_training_target(
 
     from ...sync.sync_manager import sync_manager
 
-    try:
+    async def update_target_locked():
         async with sync_manager.task_operation_lock(task_id):
-            config = external_sync_service.get_task(task_id)
-            config = verify_resource_ownership(config, current_user, "Sync task")
-            _require_sync_task_mutable(config)
-            target = _get_or_materialize_training_target_for_write(
+            locked_config = await run_in_threadpool(
+                external_sync_service.get_task,
+                task_id,
+            )
+            locked_config = verify_resource_ownership(
+                locked_config,
+                current_user,
+                "Sync task",
+            )
+            _require_sync_task_mutable(locked_config)
+            target = await run_in_threadpool(
+                _get_or_materialize_training_target_for_write,
                 task_id,
                 target_id,
-                config,
+                locked_config,
             )
-            if "base_deployment_id" in updates or "base_deployment_replica_id" in updates:
-                _validate_base_deployment_reference(
-                    updates.get("base_deployment_id", target.get("base_deployment_id")),
+            if (
+                "base_deployment_id" in updates
+                or "base_deployment_replica_id" in updates
+            ):
+                await run_in_threadpool(
+                    _validate_base_deployment_reference,
+                    updates.get(
+                        "base_deployment_id",
+                        target.get("base_deployment_id"),
+                    ),
                     current_user,
-                    config.get("external_api_config_id"),
+                    locked_config.get("external_api_config_id"),
                     updates.get(
                         "base_deployment_replica_id",
                         target.get("base_deployment_replica_id"),
                     ),
                 )
-            updated = external_sync_service.update_training_target(
+            return await run_in_threadpool(
+                external_sync_service.update_training_target,
                 target["target_id"],
                 task_id=task_id,
-                expected_user_id=config.get("user_id"),
+                expected_user_id=locked_config.get("user_id"),
                 **updates,
             )
+
+    try:
+        updated = await await_cancellation_safe(update_target_locked())
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not updated:
@@ -3012,28 +3164,40 @@ async def delete_training_target(
 ):
     """Delete a training target."""
     from ...storage.services.external_sync_service import external_sync_service
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
     from ...sync.sync_manager import sync_manager
 
-    try:
+    async def delete_target_locked():
         async with sync_manager.task_operation_lock(task_id):
-            config = external_sync_service.get_task(task_id)
-            config = verify_resource_ownership(config, current_user, "Sync task")
-            _require_sync_task_mutable(config)
-            target = _get_or_materialize_training_target_for_write(
+            locked_config = await run_in_threadpool(
+                external_sync_service.get_task,
+                task_id,
+            )
+            locked_config = verify_resource_ownership(
+                locked_config,
+                current_user,
+                "Sync task",
+            )
+            _require_sync_task_mutable(locked_config)
+            target = await run_in_threadpool(
+                _get_or_materialize_training_target_for_write,
                 task_id,
                 target_id,
-                config,
+                locked_config,
             )
             _require_training_target_mutable(target)
-            deleted = external_sync_service.delete_training_target(
+            return await run_in_threadpool(
+                external_sync_service.delete_training_target,
                 target["target_id"],
                 task_id=task_id,
-                expected_user_id=config.get("user_id"),
+                expected_user_id=locked_config.get("user_id"),
             )
+
+    try:
+        deleted = await await_cancellation_safe(delete_target_locked())
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not deleted:
@@ -3049,27 +3213,36 @@ async def trigger_target_training(
 ):
     """Manually trigger training for a specific target (ignore threshold)."""
     from ...storage.services.external_sync_service import external_sync_service
-    config = external_sync_service.get_task(task_id)
+    config = await run_in_threadpool(external_sync_service.get_task, task_id)
     config = verify_resource_ownership(config, current_user, "Sync task")
     _require_sync_task_mutable(config)
 
     try:
-        target = _get_or_materialize_training_target_for_write(
+        target = await run_in_threadpool(
+            _get_or_materialize_training_target_for_write,
             task_id,
             target_id,
             config,
         )
-        _validate_base_deployment_reference(
+        await run_in_threadpool(
+            _validate_base_deployment_reference,
             target.get("base_deployment_id"),
             current_user,
             config.get("external_api_config_id"),
             target.get("base_deployment_replica_id"),
         )
         from ...sync.level2_handler import _trigger_training_for_target
-        raw_target = external_sync_service.get_training_target_raw(target_id)
+        raw_target = await run_in_threadpool(
+            external_sync_service.get_training_target_raw,
+            target_id,
+        )
         if not raw_target or raw_target.get("task_id") != task_id:
             raise HTTPException(status_code=404, detail="Training target not found")
-        launched = _trigger_training_for_target(task_id, raw_target)
+        launched = await run_in_threadpool(
+            _trigger_training_for_target,
+            task_id,
+            raw_target,
+        )
         if not launched:
             raise HTTPException(
                 status_code=409,

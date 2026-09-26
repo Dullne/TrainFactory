@@ -23,28 +23,22 @@ import pytest
 from sqlmodel import Session
 from sqlalchemy import text
 
+from sync_integration_support import sync_integration_settings
+
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_SYNC_INTEGRATION") != "1",
     reason="set RUN_SYNC_INTEGRATION=1 and use an isolated API/database",
 )
 
 MOCK_PORT = 19876
-EXTERNAL_API_HOST = os.getenv("TEST_EXTERNAL_API_HOST", "localhost")
+EXTERNAL_API_HOST = os.getenv(
+    "TEST_WORKER_API_HOST", os.getenv("TEST_EXTERNAL_API_HOST", "localhost")
+)
 TEST_USER_ID = os.getenv("TEST_SYNC_USER_ID", "pytest-user")
 
-# Allow running against non-default local MySQL port (e.g. docker mapped 13306).
-if not os.getenv("MYSQL_URL"):
-    os.environ["MYSQL_URL"] = os.getenv(
-        "TEST_MYSQL_URL",
-        "mysql+pymysql://root:test-only-password@localhost:13306/train_factory",
-    )
-
-# Allow running against non-default local MySQL port (e.g. docker mapped 13306).
-if not os.getenv("MYSQL_URL"):
-    os.environ["MYSQL_URL"] = os.getenv(
-        "TEST_MYSQL_URL",
-        "mysql+pymysql://root:trainfactory123@localhost:13306/train_factory",
-    )
+@pytest.fixture(autouse=True)
+def isolated_database(sync_integration_settings):
+    """Fail before direct service writes unless the database is explicitly isolated."""
 
 
 # ── Mock Server ──────────────────────────────────────────

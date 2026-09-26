@@ -11,7 +11,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
+from ..concurrency import (
+    await_cancellation_safe,
+    run_in_threadpool_cancellation_safe,
+)
 from ...auth.dependencies import (
     get_current_user,
     requires_tenant_provenance,
@@ -249,23 +254,45 @@ async def load_adapter(
     task_guard = None
     try:
         # Verify deployment ownership
-        deployment = deployment_service.get_deployment(deployment_id)
+        deployment = await run_in_threadpool(
+            deployment_service.get_deployment,
+            deployment_id,
+        )
         deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
         if request.source_task_id:
-            task_guard = _begin_training_artifact_guard(request.source_task_id)
-        adapter_path = _resolve_direct_adapter_path(request, current_user)
-        user_id = current_user["user_id"]
-        adapter = adapter_service.load_adapter(
-            deployment_id=deployment_id,
-            adapter_name=request.adapter_name,
-            adapter_path=adapter_path,
-            source_task_id=request.source_task_id,
-            source_model_id=request.source_model_id,
-            deployment_replica_id=(
-                str(request.replica_id) if request.replica_id is not None else None
-            ),
-            user_id=user_id,
+            task_guard = await run_in_threadpool_cancellation_safe(
+                _begin_training_artifact_guard,
+                request.source_task_id,
+                cancelled_result_cleanup=lambda guard: guard.release(),
+            )
+
+        async def resolve_and_load():
+            adapter_path = await run_in_threadpool(
+                _resolve_direct_adapter_path,
+                request,
+                current_user,
+            )
+            return await run_in_threadpool(
+                adapter_service.load_adapter,
+                deployment_id=deployment_id,
+                adapter_name=request.adapter_name,
+                adapter_path=adapter_path,
+                source_task_id=request.source_task_id,
+                source_model_id=request.source_model_id,
+                deployment_replica_id=(
+                    str(request.replica_id)
+                    if request.replica_id is not None
+                    else None
+                ),
+                user_id=current_user["user_id"],
+            )
+
+        load_operation = resolve_and_load()
+        adapter = (
+            await await_cancellation_safe(load_operation)
+            if task_guard is not None
+            else await load_operation
         )
         return _adapter_to_response(adapter)
     except _ADAPTER_ROUTE_ERRORS as exc:
@@ -291,26 +318,40 @@ async def load_adapter_from_task(
     task_guard = None
     try:
         # Verify deployment ownership
-        deployment = deployment_service.get_deployment(deployment_id)
+        deployment = await run_in_threadpool(
+            deployment_service.get_deployment,
+            deployment_id,
+        )
         deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
-        task_guard = _begin_training_artifact_guard(request.task_id)
-        adapter_path = _resolve_owned_task_adapter_path(request.task_id, current_user)
-
-        # Generate adapter name if not specified
-        adapter_name = request.adapter_name or f"task-{request.task_id[:8]}"
-
-        user_id = current_user["user_id"]
-        adapter = adapter_service.load_adapter(
-            deployment_id=deployment_id,
-            adapter_name=adapter_name,
-            adapter_path=adapter_path,
-            source_task_id=request.task_id,
-            deployment_replica_id=(
-                str(request.replica_id) if request.replica_id is not None else None
-            ),
-            user_id=user_id,
+        task_guard = await run_in_threadpool_cancellation_safe(
+            _begin_training_artifact_guard,
+            request.task_id,
+            cancelled_result_cleanup=lambda guard: guard.release(),
         )
+
+        async def resolve_and_load():
+            adapter_path = await run_in_threadpool(
+                _resolve_owned_task_adapter_path,
+                request.task_id,
+                current_user,
+            )
+            adapter_name = request.adapter_name or f"task-{request.task_id[:8]}"
+            return await run_in_threadpool(
+                adapter_service.load_adapter,
+                deployment_id=deployment_id,
+                adapter_name=adapter_name,
+                adapter_path=adapter_path,
+                source_task_id=request.task_id,
+                deployment_replica_id=(
+                    str(request.replica_id)
+                    if request.replica_id is not None
+                    else None
+                ),
+                user_id=current_user["user_id"],
+            )
+
+        adapter = await await_cancellation_safe(resolve_and_load())
         return _adapter_to_response(adapter)
     except _ADAPTER_ROUTE_ERRORS as exc:
         raise _adapter_route_http_exception(exc) from exc
@@ -334,10 +375,14 @@ async def unload_adapter(
     """Unload a LoRA adapter from a deployment."""
     try:
         # Verify deployment ownership
-        deployment = deployment_service.get_deployment(deployment_id)
+        deployment = await run_in_threadpool(
+            deployment_service.get_deployment,
+            deployment_id,
+        )
         deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
-        success = adapter_service.unload_adapter(
+        success = await run_in_threadpool(
+            adapter_service.unload_adapter,
             deployment_id,
             adapter_name,
             deployment_replica_id=(
@@ -367,11 +412,15 @@ async def list_loaded_adapters(
 ):
     """List adapters loaded on a deployment."""
     # Verify deployment ownership
-    deployment = deployment_service.get_deployment(deployment_id)
+    deployment = await run_in_threadpool(
+        deployment_service.get_deployment,
+        deployment_id,
+    )
     deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
     try:
-        adapters = adapter_service.list_loaded_adapters(
+        adapters = await run_in_threadpool(
+            adapter_service.list_loaded_adapters,
             deployment_id,
             include_unloaded,
             deployment_replica_id=(
@@ -397,11 +446,15 @@ async def sync_loaded_adapters(
 ):
     """Sync loaded adapters with actual state from inference service."""
     # Verify deployment ownership
-    deployment = deployment_service.get_deployment(deployment_id)
+    deployment = await run_in_threadpool(
+        deployment_service.get_deployment,
+        deployment_id,
+    )
     deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
     try:
-        updated = adapter_service.sync_loaded_adapters(
+        updated = await run_in_threadpool(
+            adapter_service.sync_loaded_adapters,
             deployment_id,
             deployment_replica_id=(
                 str(replica_id) if replica_id is not None else None
@@ -426,7 +479,11 @@ async def list_available_adapters(
     - Model registry entries marked as adapters
     """
     user_id = current_user["user_id"]
-    adapters = adapter_service.get_available_adapters(base_model_id, user_id)
+    adapters = await run_in_threadpool(
+        adapter_service.get_available_adapters,
+        base_model_id,
+        user_id,
+    )
     return AvailableAdapterListResponse(
         adapters=[AvailableAdapterResponse(**a) for a in adapters]
     )
@@ -438,12 +495,15 @@ async def get_adapter(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Get adapter by ID."""
-    adapter = adapter_service.get_adapter(adapter_id)
+    adapter = await run_in_threadpool(adapter_service.get_adapter, adapter_id)
     if not adapter:
         raise HTTPException(status_code=404, detail=f"Adapter not found: {adapter_id}")
 
     # Verify ownership through deployment
-    deployment = deployment_service.get_deployment(adapter['deployment_id'])
+    deployment = await run_in_threadpool(
+        deployment_service.get_deployment,
+        adapter['deployment_id'],
+    )
     deployment = verify_resource_ownership(deployment, current_user, "Deployment")
 
     return _adapter_to_response(adapter)

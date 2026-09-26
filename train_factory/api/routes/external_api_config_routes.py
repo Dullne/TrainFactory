@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from ...auth.dependencies import get_current_user, verify_resource_ownership
 from ...config.settings import get_settings
@@ -103,11 +104,17 @@ async def test_connection_by_id(
         ExternalApiClient,
     )
 
-    config = external_api_config_service.get_config(config_id)
+    config = await run_in_threadpool(
+        external_api_config_service.get_config,
+        config_id,
+    )
     config = verify_resource_ownership(config, current_user, "External API config")
 
     # Use raw config to get unmasked token
-    raw = external_api_config_service.get_config_raw(config_id)
+    raw = await run_in_threadpool(
+        external_api_config_service.get_config_raw,
+        config_id,
+    )
     api_url = validate_user_outbound_url(
         raw["api_url"],
         current_user.get("user_id"),
@@ -121,17 +128,29 @@ async def test_connection_by_id(
             user_id=current_user.get("user_id"),
         )
         result = await client.fetch_incremental(limit=1)
-        external_api_config_service.update_config(config_id, status="active")
+        await run_in_threadpool(
+            external_api_config_service.update_config,
+            config_id,
+            status="active",
+        )
         return {
             "success": True,
             "message": f"{result['total']}",
             "status_code": 200,
         }
     except ExternalApiAuthenticationError as e:
-        external_api_config_service.update_config(config_id, status="error")
+        await run_in_threadpool(
+            external_api_config_service.update_config,
+            config_id,
+            status="error",
+        )
         return {"success": False, "message": str(e), "status_code": 401}
     except Exception as e:
-        external_api_config_service.update_config(config_id, status="error")
+        await run_in_threadpool(
+            external_api_config_service.update_config,
+            config_id,
+            status="error",
+        )
         return {"success": False, "message": str(e), "status_code": 0}
 
 
@@ -152,7 +171,8 @@ async def create_api_config(
 
     user_id = _resolve_user_id(current_user)
     api_url = validate_user_outbound_url(request.api_url, user_id)
-    config = external_api_config_service.create_config(
+    config = await run_in_threadpool(
+        external_api_config_service.create_config,
         config_name=request.config_name,
         user_id=user_id,
         api_url=api_url,
@@ -170,11 +190,19 @@ async def create_api_config(
             user_id=user_id,
         )
         await client.fetch_incremental(limit=1)
-        external_api_config_service.update_config(config_id, status="active")
+        await run_in_threadpool(
+            external_api_config_service.update_config,
+            config_id,
+            status="active",
+        )
         config["status"] = "active"
     except Exception as e:
         logger.warning(f"Auto-test failed for new API config {config_id}: {e}")
-        external_api_config_service.update_config(config_id, status="error")
+        await run_in_threadpool(
+            external_api_config_service.update_config,
+            config_id,
+            status="error",
+        )
         config["status"] = "error"
 
     return {"message": "External API config created", "config": config}
@@ -188,7 +216,10 @@ async def list_api_configs(
     from ...storage.services.external_api_config_service import external_api_config_service
 
     user_id = _resolve_user_id(current_user, for_query=True)
-    configs, total = external_api_config_service.list_configs(user_id=user_id)
+    configs, total = await run_in_threadpool(
+        external_api_config_service.list_configs,
+        user_id=user_id,
+    )
     return {"configs": configs, "total": total}
 
 
@@ -200,7 +231,10 @@ async def get_api_config(
     """Get a single external API configuration."""
     from ...storage.services.external_api_config_service import external_api_config_service
 
-    config = external_api_config_service.get_config(config_id)
+    config = await run_in_threadpool(
+        external_api_config_service.get_config,
+        config_id,
+    )
     config = verify_resource_ownership(config, current_user, "External API config")
     return {"config": config}
 
@@ -214,7 +248,10 @@ async def update_api_config(
     """Update an external API configuration."""
     from ...storage.services.external_api_config_service import external_api_config_service
 
-    config = external_api_config_service.get_config(config_id)
+    config = await run_in_threadpool(
+        external_api_config_service.get_config,
+        config_id,
+    )
     config = verify_resource_ownership(config, current_user, "External API config")
 
     updates = {k: v for k, v in request.model_dump().items() if v is not None}
@@ -227,7 +264,11 @@ async def update_api_config(
         )
 
     try:
-        updated = external_api_config_service.update_config(config_id, **updates)
+        updated = await run_in_threadpool(
+            external_api_config_service.update_config,
+            config_id,
+            **updates,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"message": "Config updated", "config": updated}
@@ -241,11 +282,17 @@ async def delete_api_config(
     """Delete an external API configuration."""
     from ...storage.services.external_api_config_service import external_api_config_service
 
-    config = external_api_config_service.get_config(config_id)
+    config = await run_in_threadpool(
+        external_api_config_service.get_config,
+        config_id,
+    )
     config = verify_resource_ownership(config, current_user, "External API config")
 
     try:
-        external_api_config_service.delete_config(config_id)
+        await run_in_threadpool(
+            external_api_config_service.delete_config,
+            config_id,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"message": "Config deleted"}

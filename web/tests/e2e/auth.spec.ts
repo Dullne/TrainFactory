@@ -90,11 +90,11 @@ async function openSignOutDialog(page: Page) {
   await expect(page.getByRole('dialog', { name: 'Sign out?' })).toBeVisible()
 }
 
-async function expectRetriableSignOutFailure(page: Page) {
+async function expectRetriableSignOutFailure(page: Page, timeout = 5000) {
   await expect(page).toHaveURL(/\/training$/)
   const dialog = page.getByRole('dialog', { name: 'Sign out?' })
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByRole('alert')).toHaveCount(1)
+  await expect(dialog.getByRole('alert')).toHaveCount(1, { timeout })
   await expect(dialog.getByRole('alert')).toHaveText(signOutFailureMessage)
   await expect(
     page.getByRole('button', {
@@ -198,7 +198,9 @@ test('official brand shows the complete TrainFactory workflow on desktop login',
 
   const workflow = page.getByRole('img', { name: workflowAccessibleName, exact: true })
   await expect.soft(workflow).toBeVisible()
-  await expect.soft(workflow).toHaveAttribute('src', /trainfactory-workflow\.svg(?:[?#].*)?$/)
+  await expect
+    .soft(workflow)
+    .toHaveAttribute('src', /trainfactory-workflow(?:-[\w-]+)?\.svg(?:[?#].*)?$/)
   await expect.soft(workflow).toHaveJSProperty('complete', true)
   await expect.soft(workflow).toHaveJSProperty('naturalWidth', 960)
   await expect.soft(page.locator('.auth-workflow-step')).toHaveCount(0)
@@ -1323,24 +1325,18 @@ test('logout 503 keeps the session and offers retry', async ({ page }) => {
 })
 
 test('logout timeout keeps the session and offers retry', async ({ page }) => {
+  test.setTimeout(45000)
   let logoutRequests = 0
   await mockAuth(page, { authenticated: true, isAdmin: false })
-  await page.route('**/api/auth/logout', async (route) => {
+  await page.route('**/api/auth/logout', () => {
     logoutRequests += 1
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-    await route
-      .fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ message: 'Logged out successfully' }),
-      })
-      .catch(() => undefined)
+    // Stay pending for both the short dev timeout and the production default.
   })
   await openSignOutDialog(page)
 
   await page.getByRole('button', { name: 'Confirm sign out' }).click()
 
-  await expectRetriableSignOutFailure(page)
+  await expectRetriableSignOutFailure(page, 35000)
   expect(logoutRequests).toBe(1)
 })
 

@@ -1221,8 +1221,15 @@ def verify_deployment(
                 expected_host=bind_address,
             )
             status, payload = http_request("GET", web_origin + "/health", None)
-            if status != 200 or payload != b"healthy\n":
+            if status != 200:
                 raise VerificationError("deployment verification failed")
+            # Captured rollback images can predate proxied readiness. Their
+            # identity is checked above, and direct API health is still required.
+            legacy_rollback_health = rollback_mode is not None and payload == b"healthy\n"
+            if not legacy_rollback_health:
+                web_health = _parse_json(payload, expected_keys={"status", "version"})
+                if web_health != health:
+                    raise VerificationError("deployment verification failed")
             status, payload = http_request("GET", web_origin + "/api/auth/config", None)
             proxied = _parse_json(
                 payload,

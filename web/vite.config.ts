@@ -60,6 +60,20 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 500,
       rollupOptions: {
         output: {
+          onlyExplicitManualChunks: true,
+          manualChunks(id) {
+            const modulePath = id.replace(/\\/g, '/')
+            if (/\/node_modules\/(react|react-dom|scheduler)\//.test(modulePath)) {
+              return 'react-runtime'
+            }
+            if (modulePath.includes('/src/i18n/locales/')) {
+              return 'locales'
+            }
+            // Keep the renderer in the lazy chart dependency tree.
+            if (modulePath.includes('/node_modules/zrender/')) {
+              return 'chart-renderer'
+            }
+          },
           // Asset file naming
           assetFileNames: 'assets/[name]-[hash][extname]',
           chunkFileNames: 'chunks/[name]-[hash].js',

@@ -1,4 +1,6 @@
 import asyncio
+import importlib
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +18,7 @@ from train_factory.api.routes import (
     training_routes,
 )
 from train_factory.sync import post_training_handler
+from train_factory.sync.sync_manager import SyncManager
 from train_factory.storage.entities.loaded_adapter_entity import LoadedAdapterDB
 from train_factory.storage.services.background_task_admission_service import (
     BackgroundTaskAlreadyExecuting,
@@ -28,8 +31,8 @@ from train_factory.storage.services.training_task_service import (
     training_task_service,
 )
 
-
 USER = {"user_id": "user-1", "is_admin": False}
+sync_manager_module = importlib.import_module("train_factory.sync.sync_manager")
 
 
 @pytest.fixture(autouse=True)
@@ -259,6 +262,142 @@ def test_adapter_load_releases_training_guard_after_failure(
         asyncio.run(_adapter_load_request(endpoint_name, task_id))
 
     assert exc_info.value.status_code == 500
+    assert releases == [True]
+
+
+@pytest.mark.parametrize("endpoint_name", ["direct", "from-task"])
+def test_cancelled_adapter_guard_acquisition_releases_delivered_guard(
+    monkeypatch,
+    endpoint_name,
+):
+    task_id = f"task-cancel-acquire-{endpoint_name}"
+    acquisition_started = threading.Event()
+    finish_acquisition = threading.Event()
+    releases = []
+    loads = []
+    monkeypatch.setattr(
+        adapter_routes.deployment_service,
+        "get_deployment",
+        lambda _deployment_id: {
+            "deployment_id": "deployment-1",
+            "user_id": USER["user_id"],
+        },
+    )
+
+    def begin_deletion(_kind, _task_id):
+        acquisition_started.set()
+        assert finish_acquisition.wait(5)
+        return SimpleNamespace(release=lambda: releases.append(True))
+
+    monkeypatch.setattr(
+        adapter_routes,
+        "background_task_admission_service",
+        SimpleNamespace(begin_deletion=begin_deletion),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        adapter_routes.adapter_service,
+        "load_adapter",
+        lambda **kwargs: loads.append(kwargs) or _loaded_adapter(task_id),
+    )
+
+    async def exercise():
+        request = asyncio.create_task(_adapter_load_request(endpoint_name, task_id))
+        try:
+            assert await asyncio.to_thread(acquisition_started.wait, 2)
+            request.cancel()
+            await asyncio.sleep(0.05)
+            assert not request.done()
+            assert releases == []
+
+            request.cancel()
+            await asyncio.sleep(0.05)
+            assert not request.done()
+            assert releases == []
+
+            finish_acquisition.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        finally:
+            finish_acquisition.set()
+            if not request.done():
+                request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+
+    asyncio.run(exercise())
+
+    assert releases == [True]
+    assert loads == []
+
+
+@pytest.mark.parametrize("endpoint_name", ["direct", "from-task"])
+def test_cancelled_adapter_load_keeps_guard_until_worker_finishes(
+    monkeypatch,
+    endpoint_name,
+):
+    task_id = f"task-cancel-load-{endpoint_name}"
+    load_started = threading.Event()
+    finish_load = threading.Event()
+    releases = []
+    monkeypatch.setattr(
+        adapter_routes.deployment_service,
+        "get_deployment",
+        lambda _deployment_id: {
+            "deployment_id": "deployment-1",
+            "user_id": USER["user_id"],
+        },
+    )
+    monkeypatch.setattr(
+        adapter_routes,
+        "background_task_admission_service",
+        SimpleNamespace(begin_deletion=lambda *_args: SimpleNamespace(release=lambda: releases.append(True))),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        adapter_routes,
+        "_resolve_direct_adapter_path",
+        lambda *_args: f"/app/output/{task_id}/final_model",
+    )
+    monkeypatch.setattr(
+        adapter_routes,
+        "_resolve_owned_task_adapter_path",
+        lambda *_args: f"/app/output/{task_id}/final_model",
+    )
+
+    def blocked_load(**_kwargs):
+        load_started.set()
+        assert finish_load.wait(5)
+        return _loaded_adapter(task_id)
+
+    monkeypatch.setattr(adapter_routes.adapter_service, "load_adapter", blocked_load)
+
+    async def exercise():
+        request = asyncio.create_task(_adapter_load_request(endpoint_name, task_id))
+        try:
+            assert await asyncio.to_thread(load_started.wait, 2)
+            request.cancel()
+            await asyncio.sleep(0.05)
+            assert not request.done()
+            assert releases == []
+
+            request.cancel()
+            await asyncio.sleep(0.05)
+            assert not request.done()
+            assert releases == []
+
+            finish_load.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        finally:
+            finish_load.set()
+            if not request.done():
+                request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+
+    asyncio.run(exercise())
+
     assert releases == [True]
 
 
@@ -1185,3 +1324,105 @@ def test_manual_adapter_retry_rejects_concurrent_training_deletion(monkeypatch):
         )
 
     assert exc_info.value.status_code == 409
+
+
+def test_cancelled_manual_adapter_retry_releases_acquired_guard_before_unlock(
+    monkeypatch,
+):
+    sync_task_id = "sync-cancelled-retry"
+    training_task_id = "training-cancelled-retry"
+    acquisition_started = threading.Event()
+    finish_acquisition = threading.Event()
+    releases = []
+    monkeypatch.setattr(
+        external_sync_service,
+        "get_task",
+        lambda _task_id: {
+            "task_id": sync_task_id,
+            "user_id": USER["user_id"],
+            "status": "idle",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        external_sync_service,
+        "get_training_by_task_id",
+        lambda _task_id: {
+            "task_id": sync_task_id,
+            "training_task_id": training_task_id,
+            "user_id": USER["user_id"],
+            "status": "adapter_load_failed",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        training_task_service,
+        "get_task",
+        lambda _task_id: pytest.fail("cancelled retry must not read artifacts"),
+        raising=False,
+    )
+
+    def begin_deletion(_kind, _task_id):
+        acquisition_started.set()
+        assert finish_acquisition.wait(5)
+        return SimpleNamespace(release=lambda: releases.append(True))
+
+    monkeypatch.setattr(
+        sync_routes,
+        "background_task_admission_service",
+        SimpleNamespace(begin_deletion=begin_deletion),
+        raising=False,
+    )
+
+    async def exercise():
+        manager = SyncManager()
+        monkeypatch.setattr(sync_manager_module, "sync_manager", manager)
+        request = asyncio.create_task(
+            sync_routes.retry_adapter_load(
+                sync_task_id,
+                training_task_id,
+                True,
+                USER,
+            )
+        )
+        competitor_entered = asyncio.Event()
+
+        async def compete_for_lock():
+            async with manager.task_operation_lock(sync_task_id):
+                competitor_entered.set()
+
+        competitor = None
+        try:
+            assert await asyncio.to_thread(acquisition_started.wait, 2)
+            competitor = asyncio.create_task(compete_for_lock())
+            await asyncio.sleep(0)
+            request.cancel()
+            await asyncio.sleep(0.05)
+            assert not request.done()
+            assert not competitor_entered.is_set()
+            assert releases == []
+
+            request.cancel()
+            await asyncio.sleep(0.05)
+            assert not request.done()
+            assert not competitor_entered.is_set()
+            assert releases == []
+
+            finish_acquisition.set()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            await asyncio.wait_for(competitor, timeout=2)
+        finally:
+            finish_acquisition.set()
+            if not request.done():
+                request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            if competitor is not None and not competitor.done():
+                competitor.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await competitor
+
+    asyncio.run(exercise())
+
+    assert releases == [True]

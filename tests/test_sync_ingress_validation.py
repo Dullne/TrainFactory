@@ -208,3 +208,13 @@ def test_stable_chunk_ids_are_versioned_session_aware_and_unambiguous():
     assert composite.startswith("v2:")
     assert single != composite
     assert first_session != second_session
+
+
+def test_successful_empty_sync_clears_previous_source_error(monkeypatch, tmp_path):
+    service, _saved = _install_run_once_harness(monkeypatch, tmp_path, [[]])
+    service.config.update(status="error", error_message="previous source failure")
+
+    asyncio.run(sync_worker.run_once(dict(service.config)))
+
+    assert service.config["status"] == "idle"
+    assert service.config["error_message"] is None

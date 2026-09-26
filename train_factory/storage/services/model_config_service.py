@@ -11,7 +11,7 @@ from train_factory.core.time_utils import now_naive
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
-from sqlalchemy import update
+from sqlalchemy import case, update
 
 from sqlmodel import Session, select, func, or_
 
@@ -983,11 +983,9 @@ class ModelConfigService:
                 conditions.append(ModelConfigDB.provider == provider)
             if status:
                 conditions.append(ModelConfigDB.status == status)
-            if user_id:
-                # Show user's own configs AND public configs (user_id is NULL)
-                conditions.append(
-                    or_(ModelConfigDB.user_id == user_id, ModelConfigDB.user_id.is_(None))
-                )
+            visibility = self._user_visibility_condition(user_id)
+            if visibility is not None:
+                conditions.append(visibility)
 
             # Get total count
             count_stmt = select(func.count()).select_from(ModelConfigDB)
@@ -1148,6 +1146,16 @@ class ModelConfigService:
 
     # === Default Management ===
 
+    @staticmethod
+    def _user_visibility_condition(user_id: Optional[str]):
+        """Return the read scope shared by user-owned and public configs."""
+        if not user_id:
+            return None
+        return or_(
+            ModelConfigDB.user_id == user_id,
+            ModelConfigDB.user_id.is_(None),
+        )
+
     def get_default_config(
         self,
         model_type: str,
@@ -1160,8 +1168,12 @@ class ModelConfigService:
                 ModelConfigDB.is_default.is_(True),
                 ModelConfigDB.status == "active"
             )
-            if user_id:
-                stmt = stmt.where(ModelConfigDB.user_id == user_id)
+            visibility = self._user_visibility_condition(user_id)
+            if visibility is not None:
+                stmt = stmt.where(visibility).order_by(
+                    case((ModelConfigDB.user_id == user_id, 0), else_=1),
+                    ModelConfigDB.created_at.desc(),
+                )
 
             config = session.exec(stmt).first()
             return self._to_dict(config) if config else None
@@ -1222,8 +1234,9 @@ class ModelConfigService:
 
             if model_type:
                 stmt = stmt.where(ModelConfigDB.model_type == model_type)
-            if user_id:
-                stmt = stmt.where(ModelConfigDB.user_id == user_id)
+            visibility = self._user_visibility_condition(user_id)
+            if visibility is not None:
+                stmt = stmt.where(visibility)
 
             stmt = stmt.limit(limit)
             configs = session.exec(stmt).all()
@@ -1270,7 +1283,7 @@ class ModelConfigService:
         """
         import time
 
-        config = self.get_config(config_id)
+        config = await asyncio.to_thread(self.get_config, config_id)
         if not config:
             return {"success": False, "error": "Config not found"}
 
@@ -1418,8 +1431,18 @@ class ModelConfigService:
                             f"Model '{model_name}' not found in Xinference endpoint "
                             f"(available: {available_models})"
                         )
-                        self.update_check_status(config_id, "error", error)
-                        self._sync_deployment_status(config_id, success=False, error=error)
+                        await asyncio.to_thread(
+                            self.update_check_status,
+                            config_id,
+                            "error",
+                            error,
+                        )
+                        await asyncio.to_thread(
+                            self._sync_deployment_status,
+                            config_id,
+                            success=False,
+                            error=error,
+                        )
                         return {
                             "success": False,
                             "latency_ms": round(latency_ms, 2),
@@ -1431,8 +1454,16 @@ class ModelConfigService:
                     # Endpoint is reachable - mark as healthy
                     # For local deployed Xinference configs, the target model must
                     # still exist on the shared endpoint; otherwise the config is stale.
-                    self.update_check_status(config_id, "healthy")
-                    self._sync_deployment_status(config_id, success=True)
+                    await asyncio.to_thread(
+                        self.update_check_status,
+                        config_id,
+                        "healthy",
+                    )
+                    await asyncio.to_thread(
+                        self._sync_deployment_status,
+                        config_id,
+                        success=True,
+                    )
 
                     # Add warning if model_name not found (but still mark as healthy)
                     warning = None
@@ -1450,14 +1481,34 @@ class ModelConfigService:
                     return result
             else:
                 error = f"HTTP {response.status_code}: {response.text[:200]}"
-                self.update_check_status(config_id, "error", error)
-                self._sync_deployment_status(config_id, success=False, error=error)
+                await asyncio.to_thread(
+                    self.update_check_status,
+                    config_id,
+                    "error",
+                    error,
+                )
+                await asyncio.to_thread(
+                    self._sync_deployment_status,
+                    config_id,
+                    success=False,
+                    error=error,
+                )
                 return {"success": False, "latency_ms": round(latency_ms, 2), "error": error}
 
         except Exception as e:
             error = str(e)
-            self.update_check_status(config_id, "error", error)
-            self._sync_deployment_status(config_id, success=False, error=error)
+            await asyncio.to_thread(
+                self.update_check_status,
+                config_id,
+                "error",
+                error,
+            )
+            await asyncio.to_thread(
+                self._sync_deployment_status,
+                config_id,
+                success=False,
+                error=error,
+            )
             return {"success": False, "error": error}
 
     def _sync_deployment_status(self, config_id: str, success: bool, error: Optional[str] = None) -> None:
@@ -1506,8 +1557,9 @@ class ModelConfigService:
         with Session(self._get_engine()) as session:
             def _grouped(column):
                 stmt = select(column, func.count()).group_by(column)
-                if user_id:
-                    stmt = stmt.where(ModelConfigDB.user_id == user_id)
+                visibility = self._user_visibility_condition(user_id)
+                if visibility is not None:
+                    stmt = stmt.where(visibility)
                 # row[0] = group value, row[1] = count; skip null/empty keys
                 return {
                     row[0]: row[1]
@@ -1516,8 +1568,9 @@ class ModelConfigService:
                 }
 
             count_stmt = select(func.count()).select_from(ModelConfigDB)
-            if user_id:
-                count_stmt = count_stmt.where(ModelConfigDB.user_id == user_id)
+            visibility = self._user_visibility_condition(user_id)
+            if visibility is not None:
+                count_stmt = count_stmt.where(visibility)
             total = session.exec(count_stmt).one()
 
             return {

@@ -49,8 +49,25 @@ def _manifest(selection: Path, *, gpu_mode="raw"):
 @pytest.mark.parametrize("schema_head", [
     "053_validate_lifecycle_schema", "058_add_model_artifact_membership_gate",
 ])
+@pytest.mark.parametrize(
+    "web_status,web_payload,accepted",
+    [
+        pytest.param(200, b'{"status":"healthy","version":"0.1.0"}', True, id="ready"),
+        pytest.param(200, b'{ "version": "0.1.0", "status": "healthy" }', True, id="reordered-json"),
+        pytest.param(503, b'{"status":"healthy","version":"0.1.0"}', False, id="http-failure"),
+        pytest.param(200, b'{"status":"unhealthy","version":"0.1.0"}', False, id="unhealthy"),
+        pytest.param(200, b'{"status":"healthy","version":"other"}', False, id="wrong-upstream"),
+        pytest.param(200, b'{"status":"healthy"}', False, id="missing-version"),
+        pytest.param(200, b'{"status":"healthy","version":1}', False, id="invalid-version"),
+        pytest.param(200, b'{"status":"healthy","version":"0.1.0","extra":true}', False, id="extra-field"),
+        pytest.param(200, b'{"status":"unhealthy","status":"healthy","version":"0.1.0"}', False, id="duplicate-key"),
+        pytest.param(200, b'{"status":"healthy","version":NaN}', False, id="non-finite"),
+        pytest.param(200, b'not-json', False, id="malformed"),
+        pytest.param(200, b'healthy\n', False, id="legacy-liveness-only"),
+    ],
+)
 def test_verifier_full_scope_checks_identity_health_restart_proxy_schema_and_gpu(
-    tmp_path, monkeypatch, capsys, schema_head
+    tmp_path, monkeypatch, capsys, schema_head, web_status, web_payload, accepted
 ):
     from scripts import compose_manifest
     from scripts import verify_deployment
@@ -145,7 +162,7 @@ def test_verifier_full_scope_checks_identity_health_restart_proxy_schema_and_gpu
                 b'"direct_storage_registration_enabled":false}'
             )
         if url == "http://127.0.0.1:49080/health":
-            return 200, b"healthy\n"
+            return web_status, web_payload
         if url == "http://127.0.0.1:49080/api/auth/config":
             return 200, (
                 b'{"self_registration_enabled":false,'
@@ -166,7 +183,7 @@ def test_verifier_full_scope_checks_identity_health_restart_proxy_schema_and_gpu
 
     session = Session()
 
-    verify_deployment.verify_deployment(
+    arguments = dict(
         project=PROJECT,
         compose_manifest=manifest_path,
         release_env=selection,
@@ -180,6 +197,11 @@ def test_verifier_full_scope_checks_identity_health_restart_proxy_schema_and_gpu
         request=session,
         sleep=lambda _seconds: None,
     )
+    if not accepted:
+        with pytest.raises(verify_deployment.VerificationError, match="deployment verification failed"):
+            verify_deployment.verify_deployment(**arguments)
+        return
+    verify_deployment.verify_deployment(**arguments)
 
     assert verified_services == [
         "mysql",
@@ -336,7 +358,7 @@ def test_verifier_full_no_gpu_uses_body_only_paired_credentials(
                 b'"direct_storage_registration_enabled":false}'
             )
         if url == "http://127.0.0.1:49080/health":
-            return 200, b"healthy\n"
+            return 200, b'{"status":"healthy","version":"0.1.0"}'
         if url == "http://127.0.0.1:49080/api/auth/config":
             return 200, (
                 b'{"self_registration_enabled":false,'
@@ -1808,6 +1830,15 @@ def test_private_credential_file_accepts_same_windows_path_with_drive_case_chang
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "web_status,web_payload,healthy_web",
+    [
+        pytest.param(200, b"healthy\n", True, id="legacy-web"),
+        pytest.param(200, b'{"status":"healthy","version":"0.1.0"}', True, id="ready-web"),
+        pytest.param(503, b"healthy\n", False, id="failed-legacy-web"),
+        pytest.param(200, b'{"status":"unhealthy","version":"0.1.0"}', False, id="unready-web"),
+    ],
+)
 def test_verifier_accepts_only_approved_rollback_identity_modes(
     tmp_path,
     monkeypatch,
@@ -1815,6 +1846,9 @@ def test_verifier_accepts_only_approved_rollback_identity_modes(
     rollback_target,
     api_id,
     tamper,
+    web_status,
+    web_payload,
+    healthy_web,
 ):
     from scripts import compose_manifest
     from scripts import verify_deployment
@@ -1971,7 +2005,7 @@ def test_verifier_accepts_only_approved_rollback_identity_modes(
         if url.endswith("/health") and "49080" not in url:
             return 200, b'{"status":"healthy","version":"0.1.0"}'
         if url.endswith("/health"):
-            return 200, b"healthy\n"
+            return web_status, web_payload
         if url.endswith("/api/auth/config"):
             return 200, (
                 b'{"self_registration_enabled":false,'
@@ -2030,7 +2064,7 @@ def test_verifier_accepts_only_approved_rollback_identity_modes(
         "request": session,
         "sleep": lambda _seconds: None,
     }
-    if tamper is not None:
+    if tamper is not None or not healthy_web:
         with pytest.raises(verify_deployment.VerificationError):
             verify_deployment.verify_deployment(**arguments)
         return

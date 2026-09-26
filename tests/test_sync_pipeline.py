@@ -16,24 +16,35 @@ import os
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta
-from train_factory.core.time_utils import now_naive
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 import requests
 
+from sync_integration_support import (
+    sync_artifact_path,
+    sync_integration_session,
+    sync_integration_settings,
+)
+
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_SYNC_INTEGRATION") != "1",
     reason="set RUN_SYNC_INTEGRATION=1 and use an isolated API/database",
 )
 
-BASE = os.getenv("TEST_API_BASE", "http://localhost:18000/api").rstrip("/")
+BASE = os.getenv("TEST_API_BASE", "").rstrip("/")
 EXTERNAL_API_HOST = os.getenv("TEST_EXTERNAL_API_HOST", "localhost")
 MOCK_PORT = 19877
 TEST_USER_ID = os.getenv("TEST_SYNC_USER_ID", "pytest-user")
 OTHER_USER_ID = os.getenv("TEST_SYNC_OTHER_USER_ID", "pytest-other-user")
+
+
+@pytest.fixture(autouse=True)
+def authenticated_requests(monkeypatch, sync_integration_session):
+    """Use the real login session for every API request in this module."""
+    monkeypatch.setitem(globals(), "requests", sync_integration_session)
 
 
 # ── Mock External API Server ─────────────────────────────
@@ -41,7 +52,7 @@ OTHER_USER_ID = os.getenv("TEST_SYNC_OTHER_USER_ID", "pytest-other-user")
 
 def _make_mock_data(count=30):
     data = []
-    now = now_naive()
+    now = datetime.now(timezone.utc)
     for i in range(count):
         ts = (now - timedelta(hours=count - i)).strftime("%Y-%m-%dT%H:%M:%SZ")
         data.append(
@@ -544,13 +555,14 @@ class TestManualTriggerAPI:
         self, pipeline_mock_server, monkeypatch,
     ):
         data = _make_mock_data(2)
-        data[-1]["created_at"] = (now_naive() + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        data[-1]["created_at"] = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         monkeypatch.setitem(globals(), "MOCK_DATA", data)
         api_cfg = _create_api_config(pipeline_mock_server)
         sync_cfg = _create_sync_config(api_cfg["config_id"])
         try:
             response = requests.post(f"{BASE}/sync/tasks/{sync_cfg['task_id']}/sync-now")
-            assert response.status_code == 200
+            assert response.status_code == 502
+            assert response.json() == {"detail": "Sync source fetch or validation failed"}
             status = requests.get(f"{BASE}/sync/tasks/{sync_cfg['task_id']}/status").json()
             assert status["status"] == "error"
             detail = requests.get(f"{BASE}/sync/tasks/{sync_cfg['task_id']}")
@@ -587,7 +599,7 @@ class TestManualTriggerAPI:
             assert data["batches"][0]["status"] == "fetched"
 
             # Verify the JSONL file exists and has correct content
-            batch_path = data["batches"][0]["storage_path"]
+            batch_path = sync_artifact_path(data["batches"][0]["storage_path"])
             assert os.path.exists(batch_path)
             with open(batch_path) as f:
                 lines = f.readlines()
@@ -640,7 +652,7 @@ class TestManualTriggerAPI:
             _cleanup(sync_cfg["task_id"], api_cfg["config_id"])
 
     def test_sync_now_with_invalid_api_sets_error(self):
-        """sync-now with unreachable API should set status to 'error'."""
+        """An unreachable source returns 502 without consuming any records."""
         api_cfg = _create_api_config(
             f"http://{EXTERNAL_API_HOST}:19999/nonexistent",
             token="bad",
@@ -649,12 +661,19 @@ class TestManualTriggerAPI:
         try:
             config_id = sync_cfg["task_id"]
 
-            requests.post(f"{BASE}/sync/tasks/{config_id}/sync-now")
+            response = requests.post(f"{BASE}/sync/tasks/{config_id}/sync-now")
+            assert response.status_code == 502
+            assert response.json() == {"detail": "Sync source fetch or validation failed"}
 
             r = requests.get(f"{BASE}/sync/tasks/{config_id}/status")
             status = r.json()
             assert status["status"] == "error"
             assert status["pending_record_count"] == 0
+            assert status["total_record_count"] == 0
+            assert status["last_sync_at"] is None
+            batches = requests.get(f"{BASE}/sync/tasks/{config_id}/batches")
+            assert batches.status_code == 200
+            assert batches.json()["total"] == 0
         finally:
             _cleanup(sync_cfg["task_id"], api_cfg["config_id"])
 
@@ -693,6 +712,12 @@ class TestRuntimeResolution:
             r = requests.post(f"{BASE}/sync/tasks/{config_id}/sync-now")
             assert r.status_code == 200
 
+            before_response = requests.get(f"{BASE}/sync/tasks/{config_id}/status")
+            assert before_response.status_code == 200
+            before_failure = before_response.json()
+            assert before_failure["pending_record_count"] == 30
+            assert before_failure["total_record_count"] == 30
+
             # Update token to invalid one
             requests.patch(
                 f"{BASE}/sync/api-configs/{api_cfg['config_id']}",
@@ -700,10 +725,16 @@ class TestRuntimeResolution:
             )
 
             # Second sync should fail (empty token → 401 from mock server)
-            requests.post(f"{BASE}/sync/tasks/{config_id}/sync-now")
+            response = requests.post(f"{BASE}/sync/tasks/{config_id}/sync-now")
+            assert response.status_code == 502
+            assert response.json() == {"detail": "Sync source fetch or validation failed"}
 
             r = requests.get(f"{BASE}/sync/tasks/{config_id}/status")
-            assert r.json()["status"] == "error"
+            assert r.status_code == 200
+            after_failure = r.json()
+            assert after_failure["status"] == "error"
+            for field in ("pending_record_count", "total_record_count", "last_sync_at"):
+                assert after_failure[field] == before_failure[field]
 
             # Restore valid token
             requests.patch(

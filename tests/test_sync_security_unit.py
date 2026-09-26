@@ -278,8 +278,8 @@ def test_sync_worker_control_revalidates_owner_and_forwards_it_to_update(
             "lock-enter",
             "get",
             ("update", {"expected_user_id": "user-1", "is_active": True}),
-            "lock-exit",
             "start-worker",
+            "lock-exit",
         ]
     else:
         asyncio.run(sync_routes.stop_sync(task_id, CURRENT_USER))

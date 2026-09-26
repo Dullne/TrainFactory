@@ -333,6 +333,11 @@ def _config_to_response(config: Dict[str, Any], mask_key: bool = True) -> Config
     )
 
 
+def _configs_to_response(configs: List[Dict[str, Any]]) -> List[ConfigResponse]:
+    """Convert configs, including deployment lookups, off the API event loop."""
+    return [_config_to_response(config) for config in configs]
+
+
 # === API Endpoints ===
 
 class ValidateConfigRequest(BaseModel):
@@ -443,7 +448,7 @@ async def create_config(
             save_on_validation_failure=not request.fail_on_invalid,
         )
 
-        response = _config_to_response(config)
+        response = await run_in_threadpool(_config_to_response, config)
 
         # Include validation result if validation was performed
         if "validation" in config:
@@ -468,7 +473,8 @@ async def list_configs(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """List all configurations with optional filters."""
-    configs, total = model_config_service.list_configs(
+    configs, total = await run_in_threadpool(
+        model_config_service.list_configs,
         model_type=model_type,
         provider=provider,
         status=status,
@@ -477,7 +483,7 @@ async def list_configs(
         offset=offset,
     )
     return ConfigListResponse(
-        configs=[_config_to_response(c) for c in configs],
+        configs=await run_in_threadpool(_configs_to_response, configs),
         total=total,
     )
 
@@ -490,14 +496,15 @@ async def search_configs(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Search configurations by name, description, or model name."""
-    configs = model_config_service.search_configs(
+    configs = await run_in_threadpool(
+        model_config_service.search_configs,
         query=query,
         model_type=model_type,
         user_id=current_user.get("user_id"),
         limit=limit,
     )
     return ConfigListResponse(
-        configs=[_config_to_response(c) for c in configs],
+        configs=await run_in_threadpool(_configs_to_response, configs),
         total=len(configs),
     )
 
@@ -505,7 +512,10 @@ async def search_configs(
 @router.get("/configs/stats", response_model=StatsResponse)
 async def get_stats(current_user: Dict[str, Any] = Depends(get_current_user)):
     """Get configuration statistics."""
-    return model_config_service.get_stats(user_id=current_user.get("user_id"))
+    return await run_in_threadpool(
+        model_config_service.get_stats,
+        user_id=current_user.get("user_id"),
+    )
 
 
 @router.get("/configs/default/{model_type}", response_model=ConfigResponse)
@@ -514,15 +524,17 @@ async def get_default_config(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Get default configuration for a model type."""
-    config = model_config_service.get_default_config(
-        model_type, current_user.get("user_id")
+    config = await run_in_threadpool(
+        model_config_service.get_default_config,
+        model_type,
+        current_user.get("user_id"),
     )
     if not config:
         raise HTTPException(
             status_code=404,
             detail=f"No default config found for model_type: {model_type}"
         )
-    return _config_to_response(config)
+    return await run_in_threadpool(_config_to_response, config)
 
 
 # === Provider Templates (must be before /{config_id} routes) ===
@@ -632,9 +644,11 @@ async def get_config(
 ):
     """Get configuration by ID."""
     config = _verify_model_config_access(
-        model_config_service.get_config(config_id), current_user, allow_public=True
+        await run_in_threadpool(model_config_service.get_config, config_id),
+        current_user,
+        allow_public=True,
     )
-    return _config_to_response(config)
+    return await run_in_threadpool(_config_to_response, config)
 
 
 @router.put("/configs/{config_id}", response_model=ConfigResponse)
@@ -645,7 +659,8 @@ async def update_config(
 ):
     """Update configuration."""
     existing_config = _verify_model_config_access(
-        model_config_service.get_config(config_id), current_user
+        await run_in_threadpool(model_config_service.get_config, config_id),
+        current_user,
     )
     has_local_binding = (
         existing_config.get("source_type") == "local_deployed"
@@ -669,7 +684,8 @@ async def update_config(
         )
     # Bound local configs keep their server-controlled connection identity.
     # Metadata edits must still work while the deployment is stopped.
-    success = model_config_service.update_config(
+    success = await run_in_threadpool(
+        model_config_service.update_config,
         config_id=config_id,
         config_name=request.config_name,
         model_type=None if has_local_binding else request.model_type,
@@ -687,8 +703,8 @@ async def update_config(
     if not success:
         raise HTTPException(status_code=404, detail=f"Config not found: {config_id}")
 
-    config = model_config_service.get_config(config_id)
-    return _config_to_response(config)
+    config = await run_in_threadpool(model_config_service.get_config, config_id)
+    return await run_in_threadpool(_config_to_response, config)
 
 
 @router.delete("/configs/{config_id}")
@@ -698,10 +714,11 @@ async def delete_config(
 ):
     """Delete configuration."""
     _verify_model_config_access(
-        model_config_service.get_config(config_id), current_user
+        await run_in_threadpool(model_config_service.get_config, config_id),
+        current_user,
     )
     try:
-        success = model_config_service.delete_config(config_id)
+        success = await run_in_threadpool(model_config_service.delete_config, config_id)
     except RuntimeDependencyUnavailableError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not success:
@@ -716,9 +733,10 @@ async def set_default(
 ):
     """Set configuration as default for its model type."""
     _verify_model_config_access(
-        model_config_service.get_config(config_id), current_user
+        await run_in_threadpool(model_config_service.get_config, config_id),
+        current_user,
     )
-    success = model_config_service.set_default(config_id)
+    success = await run_in_threadpool(model_config_service.set_default, config_id)
     if not success:
         raise HTTPException(status_code=404, detail=f"Config not found: {config_id}")
     return {"message": f"Config {config_id} set as default"}
@@ -730,7 +748,7 @@ async def check_connectivity(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Check connectivity to the configured API endpoint."""
-    config = model_config_service.get_config(config_id)
+    config = await run_in_threadpool(model_config_service.get_config, config_id)
     _verify_model_config_access(config, current_user)
     config = dict(config)
     config["api_endpoint"] = validate_user_outbound_url(
@@ -1022,7 +1040,7 @@ async def test_api_proxy(
     }
     ```
     """
-    config = model_config_service.get_config(config_id)
+    config = await run_in_threadpool(model_config_service.get_config, config_id)
     _verify_model_config_access(config, current_user)
     config = dict(config)
     config["api_endpoint"] = validate_user_outbound_url(
@@ -1040,7 +1058,10 @@ async def test_api_proxy(
             inference_framework = _deployment_framework_cache[deployment_id] or ''
         else:
             try:
-                deployment = deployment_service.get_deployment(deployment_id)
+                deployment = await run_in_threadpool(
+                    deployment_service.get_deployment,
+                    deployment_id,
+                )
                 if deployment:
                     inference_framework = (
                         deployment.get('inference_framework')
@@ -1071,10 +1092,14 @@ async def test_api_proxy(
     if not mode and ("sentence1" in body or "sentence2" in body):
         mode = "embedding_similarity"
 
-    def _mark_config_healthy() -> None:
+    async def _mark_config_healthy() -> None:
         """API 测试成功仅标记为 healthy，不在此路径将失败回写为 error。"""
         try:
-            model_config_service.update_check_status(config_id, "healthy")
+            await run_in_threadpool(
+                model_config_service.update_check_status,
+                config_id,
+                "healthy",
+            )
         except Exception:
             # 测试请求本身不应因状态写回失败而中断
             pass
@@ -1086,7 +1111,7 @@ async def test_api_proxy(
         try:
             data = await _compute_embedding_similarity(config, body)
             latency_ms = (time.time() - start_time) * 1000
-            _mark_config_healthy()
+            await _mark_config_healthy()
             return TestProxyResponse(
                 success=True,
                 status_code=200,
@@ -1111,7 +1136,7 @@ async def test_api_proxy(
         try:
             data = await _compute_embedding_recall(config, body, current_user)
             latency_ms = (time.time() - start_time) * 1000
-            _mark_config_healthy()
+            await _mark_config_healthy()
             return TestProxyResponse(
                 success=True,
                 status_code=200,
@@ -1196,7 +1221,7 @@ async def test_api_proxy(
                 error=error_msg,
             )
 
-        _mark_config_healthy()
+        await _mark_config_healthy()
         return TestProxyResponse(
             success=True,
             status_code=response.status_code,
@@ -1230,7 +1255,7 @@ async def list_matching_collections(
     current_user: Dict[str, Any] = Depends(get_current_user),
 ):
     """列出所有向量库，标注与当前模型配置的匹配关系。"""
-    config = model_config_service.get_config(config_id)
+    config = await run_in_threadpool(model_config_service.get_config, config_id)
     config = _verify_model_config_access(config, current_user, allow_public=True)
 
     from ...storage.services.milvus_collection_service import milvus_collection_service
@@ -1242,7 +1267,8 @@ async def list_matching_collections(
         # auth disabled fallback: keep response scoped to config owner when available
         user_id = config.get("user_id")
 
-    registered, _total = milvus_collection_service.list_collections(
+    registered, _total = await run_in_threadpool(
+        milvus_collection_service.list_collections,
         user_id=user_id,
         limit=1000,
     )
@@ -1284,7 +1310,8 @@ async def check_all_connectivity(
 ):
     """Check connectivity for all active configurations."""
     user_id = current_user.get("user_id")
-    configs, _total = model_config_service.list_configs(
+    configs, _total = await run_in_threadpool(
+        model_config_service.list_configs,
         model_type=model_type,
         status="active",
         user_id=user_id,

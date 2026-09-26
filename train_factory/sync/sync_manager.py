@@ -31,6 +31,10 @@ class SyncGenerationReconciliationError(RuntimeError):
     """Keep sync state when generation ownership cannot be proven safely."""
 
 
+class SyncSourceFetchError(RuntimeError):
+    """The current cycle could not fetch or validate its external source."""
+
+
 def _reconcile_terminal_sync_generation(task_id: str) -> int:
     """Reconcile terminal generation tracking during normal worker operation."""
     from .sync_worker import _restore_stopped_queued_batches
@@ -67,7 +71,8 @@ def _run_sync_cycle(config: dict) -> Optional[dict]:
     Returns:
         Optional dict with ``gen_task_id`` and ``pipeline_config`` when
         a generation task was created and needs to be launched on the main
-        event loop.  ``None`` otherwise.
+        event loop. A ``fetch_failed`` flag reports a failed source fetch even
+        when existing batches yield a generation task. ``None`` otherwise.
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -459,6 +464,9 @@ class SyncManager:
             raise
         if gen_result and "gen_task_id" in gen_result:
             self._launch_generation(gen_result)
+
+        if gen_result and gen_result.get("fetch_failed"):
+            raise SyncSourceFetchError("Sync source fetch or validation failed")
 
     def _launch_generation(self, gen_result: dict):
         """Schedule a generation worker from the main event loop.

@@ -4,7 +4,8 @@ Sync API integration tests.
 Tests all external API config and sync config CRUD endpoints,
 worker control, and runtime resolution.
 
-Requires the API server running at TEST_API_BASE (default: http://localhost:18000/api).
+Requires an explicitly configured isolated API, database, and test account.
+See docs/local-tests.md for TEST_API_BASE and the remaining environment variables.
 Run: pytest tests/test_sync_api.py -v
 """
 
@@ -14,14 +15,22 @@ import time
 import pytest
 import requests
 
+from sync_integration_support import sync_integration_session, sync_integration_settings
+
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_SYNC_INTEGRATION") != "1",
     reason="set RUN_SYNC_INTEGRATION=1 and use an isolated API/database",
 )
 
-BASE = os.getenv("TEST_API_BASE", "http://localhost:18000/api").rstrip("/")
+BASE = os.getenv("TEST_API_BASE", "").rstrip("/")
 EXTERNAL_API_HOST = os.getenv("TEST_EXTERNAL_API_HOST", "localhost")
 UNREACHABLE_API_URL = f"http://{EXTERNAL_API_HOST}:19999/api/texts"
+
+
+@pytest.fixture(autouse=True)
+def authenticated_requests(monkeypatch, sync_integration_session):
+    """Use the real login session for every API request in this module."""
+    monkeypatch.setitem(globals(), "requests", sync_integration_session)
 
 
 # ── Helpers ──────────────────────────────────────────────
@@ -156,7 +165,7 @@ class TestSyncConfigCRUD:
 
     def test_create_with_direct_url(self):
         sync_cfg = create_sync_config(
-            external_api_url="http://example.com/api",
+            external_api_url=UNREACHABLE_API_URL,
             external_auth_config={"token": "direct"},
         )
         try:
@@ -202,7 +211,7 @@ class TestSyncConfigCRUD:
 
     def test_delete_sync_config(self):
         sync_cfg = create_sync_config(
-            external_api_url="http://example.com/api",
+            external_api_url=UNREACHABLE_API_URL,
             external_auth_config={"token": "del"},
         )
         r = requests.delete(f"{BASE}/sync/tasks/{sync_cfg['task_id']}")
@@ -210,7 +219,7 @@ class TestSyncConfigCRUD:
 
     def test_get_sync_status(self):
         sync_cfg = create_sync_config(
-            external_api_url="http://example.com/api",
+            external_api_url=UNREACHABLE_API_URL,
             external_auth_config={"token": "status"},
         )
         try:
@@ -225,7 +234,7 @@ class TestSyncConfigCRUD:
 
     def test_list_batches_empty(self):
         sync_cfg = create_sync_config(
-            external_api_url="http://example.com/api",
+            external_api_url=UNREACHABLE_API_URL,
             external_auth_config={"token": "b"},
         )
         try:
@@ -237,7 +246,7 @@ class TestSyncConfigCRUD:
 
     def test_list_generations_empty(self):
         sync_cfg = create_sync_config(
-            external_api_url="http://example.com/api",
+            external_api_url=UNREACHABLE_API_URL,
             external_auth_config={"token": "g"},
         )
         try:
@@ -249,7 +258,7 @@ class TestSyncConfigCRUD:
 
     def test_list_trainings_empty(self):
         sync_cfg = create_sync_config(
-            external_api_url="http://example.com/api",
+            external_api_url=UNREACHABLE_API_URL,
             external_auth_config={"token": "t"},
         )
         try:
@@ -267,7 +276,7 @@ class TestWorkerControl:
 
     def test_start_sync(self):
         sync_cfg = create_sync_config(
-            external_api_url="http://example.com/api",
+            external_api_url=UNREACHABLE_API_URL,
             external_auth_config={"token": "start"},
         )
         try:
@@ -282,7 +291,7 @@ class TestWorkerControl:
 
     def test_stop_sync(self):
         sync_cfg = create_sync_config(
-            external_api_url="http://example.com/api",
+            external_api_url=UNREACHABLE_API_URL,
             external_auth_config={"token": "stop"},
         )
         try:
@@ -303,9 +312,10 @@ class TestWorkerControl:
 class TestRuntimeResolution:
 
     def test_runtime_url_resolution(self):
+        resolved_url = f"http://{EXTERNAL_API_HOST}:19997/api/data"
         api_cfg = create_api_config(
             config_name="resolve-url",
-            api_url="http://resolved-host:9000/api/data",
+            api_url=resolved_url,
             auth_config={"token": "resolve-v1"},
         )
         sync_cfg = create_sync_config(external_api_config_id=api_cfg["config_id"])
@@ -315,7 +325,7 @@ class TestRuntimeResolution:
             )
 
             raw = external_sync_service.get_task_raw(sync_cfg["task_id"])
-            assert raw["external_api_url"] == "http://resolved-host:9000/api/data"
+            assert raw["external_api_url"] == resolved_url
             assert raw["external_auth_config"]["token"] == "resolve-v1"
         finally:
             delete_sync_config(sync_cfg["task_id"])

@@ -682,6 +682,8 @@ Triplet format (sentence1, sentence2, label):
 
 Issues and Pull Requests are welcome!
 
+See [local backend tests](docs/local-tests.md) for the Windows project environment and test commands.
+
 ## License
 
 [MIT License](LICENSE)

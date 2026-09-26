@@ -669,6 +669,8 @@ Instruction/Alpaca 格式（SFT）：
 
 欢迎提交 Issue 和 Pull Request！
 
+本地开发测试请参阅 [后端测试说明](docs/local-tests.md)，其中包含 Windows 环境安装和测试入口。
+
 ## License
 
 [MIT License](LICENSE)
